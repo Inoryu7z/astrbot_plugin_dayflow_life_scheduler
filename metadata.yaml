@@ -1,0 +1,6 @@
+name: astrbot_plugin_dayflow_life_scheduler
+display_name: 心迹日程
+desc: "基于人格、日记、对话与生活上下文生成每日穿搭与完整日程的主动生活规划插件。"
+version: v0.2.3
+author: Inoryu7z
+repo: "https://github.com/Inoryu7z/astrbot_plugin_dayflow_life_scheduler"
