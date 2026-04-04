@@ -1,0 +1,114 @@
+{
+  "default_prompt_template": {
+    "description": "默认 Prompt 模板",
+    "type": "text",
+    "default": "",
+    "hint": "作用于所有未单独填写人格模板的配置项，适合放通用规则、固定输出要求和全局约束；留空时使用插件内置模板。",
+    "obvious_hint": true,
+    "editor_mode": true,
+    "editor_mode_fullscreen": true,
+    "editor_language": "markdown",
+    "editor_theme": "vs-dark"
+  },
+  "schedule_retention_days": {
+    "description": "日程持久化保留天数",
+    "type": "int",
+    "default": 3
+  },
+  "personas": {
+    "description": "人格配置",
+    "type": "template_list",
+    "templates": {
+      "persona": {
+        "name": "Persona",
+        "items": {
+          "select_persona": {
+            "type": "string",
+            "description": "人格",
+            "default": "default",
+            "_special": "select_persona"
+          },
+          "enabled": {
+            "type": "bool",
+            "description": "启用",
+            "default": true
+          },
+          "reference_schedule_days": {
+            "description": "参考日程天数",
+            "type": "int",
+            "default": 0
+          },
+          "reference_diary_days": {
+            "description": "参考日记天数",
+            "type": "int",
+            "default": 3
+          },
+          "reference_recent_count": {
+            "description": "参考对话数量",
+            "type": "int",
+            "default": 10
+          },
+          "schedule_variation_level": {
+            "description": "日程变化等级",
+            "type": "select",
+            "default": "随机",
+            "options": ["低", "中", "高", "随机"],
+            "hint": "可选：低 / 中 / 高 / 随机。随机会在程序侧按 3:6:1 抽为低/中/高。"
+          },
+          "pool": {
+            "description": "生成约束池",
+            "type": "object",
+            "items": {
+              "today_weather": {
+                "description": "今日天气",
+                "type": "list",
+                "default": ["晴", "多云", "阴", "晴转多云", "多云转晴", "晴转阴", "阴转晴", "雨", "阵雨", "雷雨", "雪", "雨夹雪", "雾", "风", "大风", "霾", "高温", "闷热", "寒冷", "回暖"]
+              },
+              "outfit_styles": {
+                "description": "穿搭风格池",
+                "type": "list",
+                "default": ["中华风洛丽塔风格", "新中式禅意温婉风", "改良韩服温柔风", "东方古典氛围感风", "甜系洛丽塔风格", "暗黑洛丽塔风格", "芭蕾少女风", "甜妹体操芭蕾风", "奶甜幼态少女风", "宫廷甜妹风", "清甜初恋风", "柔焦纯欲风", "轻熟曲线纯欲风", "挂脖露肩纯欲风", "仙气公主风", "轻礼服千金风", "水手领甜美风", "日系软妹风", "法式浪漫风", "复古甜妹风", "居家纯欲氛围感风", "软萌居家少女风", "女仆风", "知性学院风", "温柔淑女风", "慵懒居家风", "精致约会风", "日系森女风", "法式优雅风", "韩系甜美风", "暗黑系风格"]
+              },
+              "schedule_main_types": {
+                "description": "日程主线类型池",
+                "type": "list",
+                "default": ["日常常规型", "任务攻坚型", "社交聚首型", "休闲游逛型", "宅家休息型", "调整过渡型"]
+              },
+              "core_event_drivers": {
+                "description": "核心事件驱动池",
+                "type": "list",
+                "default": ["人际驱动", "任务驱动", "情感驱动", "抉择驱动", "突发驱动", "仪式驱动", "回忆驱动"]
+              }
+            }
+          },
+          "select_provider": {
+            "type": "string",
+            "description": "模型提供商",
+            "default": "",
+            "_special": "select_provider"
+          },
+          "generate_time": {
+            "type": "string",
+            "description": "自动生成时间",
+            "default": "07:00"
+          },
+          "retry_count": {
+            "type": "int",
+            "description": "重试次数",
+            "default": 2
+          },
+          "prompt_template": {
+            "description": "人格复写 Prompt 模板",
+            "type": "text",
+            "default": "",
+            "hint": "只对当前人格生效，优先级高于全局默认模板；适合写这个人格独有的语气、禁忌、偏好和节奏要求。留空则继承上方全局模板。",
+            "editor_mode": true,
+            "editor_mode_fullscreen": true,
+            "editor_language": "markdown",
+            "editor_theme": "vs-dark"
+          }
+        }
+      }
+    }
+  }
+}
