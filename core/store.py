@@ -16,6 +16,7 @@ class DayflowStore:
         self.memory_store: dict[str, dict] = {}
         self.history_store: dict[str, list[dict[str, Any]]] = {}
         self.auto_generation_state: dict[str, list[str]] = {}
+        self.auto_generation_failures: dict[str, dict[str, int]] = {}
         self._gen_lock = asyncio.Lock()
         self.generating_personas: set[str] = set()
         self.retention_days = self._normalize_retention_days(retention_days)
@@ -153,6 +154,33 @@ class DayflowStore:
             self.prune_expired()
             self._save_state()
 
+    def get_auto_generation_failure_count(self, persona_name: str, trigger_key: str) -> int:
+        persona_state = self.auto_generation_failures.get(persona_name, {}) or {}
+        try:
+            return max(int(persona_state.get(trigger_key, 0) or 0), 0)
+        except Exception:
+            return 0
+
+    def record_auto_generation_failure(self, persona_name: str, trigger_key: str) -> int:
+        persona_state = self.auto_generation_failures.setdefault(persona_name, {})
+        current = self.get_auto_generation_failure_count(persona_name, trigger_key)
+        next_value = current + 1
+        persona_state[trigger_key] = next_value
+        self.prune_expired()
+        self._save_state()
+        return next_value
+
+    def clear_auto_generation_failure(self, persona_name: str, trigger_key: str):
+        persona_state = self.auto_generation_failures.get(persona_name)
+        if not isinstance(persona_state, dict):
+            return
+        if trigger_key in persona_state:
+            persona_state.pop(trigger_key, None)
+            if not persona_state:
+                self.auto_generation_failures.pop(persona_name, None)
+            self.prune_expired()
+            self._save_state()
+
     def prune_expired(self):
         if self.retention_days == -1:
             return
@@ -189,6 +217,25 @@ class DayflowStore:
                 new_auto_state[persona_name] = sorted(set(valid))
         self.auto_generation_state = new_auto_state
 
+        new_auto_failures: dict[str, dict[str, int]] = {}
+        for persona_name, state in self.auto_generation_failures.items():
+            if not isinstance(state, dict):
+                continue
+            valid: dict[str, int] = {}
+            for key, count in state.items():
+                date_part = str(key).split("@", 1)[0]
+                if not self._date_kept(date_part, cutoff):
+                    continue
+                try:
+                    normalized_count = max(int(count or 0), 0)
+                except Exception:
+                    normalized_count = 0
+                if normalized_count > 0:
+                    valid[str(key)] = normalized_count
+            if valid:
+                new_auto_failures[persona_name] = valid
+        self.auto_generation_failures = new_auto_failures
+
     def _date_kept(self, date_str: str | None, cutoff: datetime.date) -> bool:
         if not date_str:
             return False
@@ -206,6 +253,7 @@ class DayflowStore:
             memory_store = payload.get("memory_store", {}) or {}
             history_store = payload.get("history_store", {}) or {}
             auto_generation_state = payload.get("auto_generation_state", {}) or {}
+            auto_generation_failures = payload.get("auto_generation_failures", {}) or {}
             if isinstance(memory_store, dict):
                 self.memory_store = memory_store
             if isinstance(history_store, dict):
@@ -216,6 +264,22 @@ class DayflowStore:
                     if isinstance(v, list):
                         normalized_auto[str(k)] = [str(x) for x in v if str(x).strip()]
                 self.auto_generation_state = normalized_auto
+            if isinstance(auto_generation_failures, dict):
+                normalized_failures: dict[str, dict[str, int]] = {}
+                for persona_name, state in auto_generation_failures.items():
+                    if not isinstance(state, dict):
+                        continue
+                    persona_map: dict[str, int] = {}
+                    for key, count in state.items():
+                        try:
+                            normalized_count = max(int(count or 0), 0)
+                        except Exception:
+                            normalized_count = 0
+                        if str(key).strip() and normalized_count > 0:
+                            persona_map[str(key)] = normalized_count
+                    if persona_map:
+                        normalized_failures[str(persona_name)] = persona_map
+                self.auto_generation_failures = normalized_failures
             saved_retention = payload.get("retention_days")
             if saved_retention is not None:
                 self.retention_days = self._normalize_retention_days(saved_retention)
@@ -231,6 +295,7 @@ class DayflowStore:
                 "memory_store": self.memory_store,
                 "history_store": self.history_store,
                 "auto_generation_state": self.auto_generation_state,
+                "auto_generation_failures": self.auto_generation_failures,
             }
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
