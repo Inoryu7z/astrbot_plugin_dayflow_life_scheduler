@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import json
 import random
 from pathlib import Path
 from typing import Any
@@ -22,9 +23,43 @@ from .generator import (
 from .store import DayflowStore
 
 
+STYLE_RESEARCH_SYSTEM_PROMPT = """你是服饰风格研究助手。你的任务不是泛泛科普，而是为另一个日程/穿搭生成模型提供低歧义、可执行的风格约束。
+请结合联网搜索结果，优先输出一个 JSON 对象，字段尽量固定为：
+- definition: string，风格定义，明确主体风格是什么，不是什么
+- must_keep: string[]，两套穿搭都必须保留的核心识别点，3-6条
+- morning_look: string[]，晨间第一套穿搭建议，3-6条
+- afternoon_look: string[]，午后第二套换装建议，3-6条
+- avoid: string[]，常见误判与禁区，3-6条
+- notes: string，补充说明，强调两次换装必须属于同一风格体系
+如果你无法稳定输出 JSON，则允许输出结构清晰的纯文本，但文本中必须覆盖：
+1. 风格定义
+2. 晨间第一套建议
+3. 午后第二套换装建议
+4. 常见误判与禁区
+规则：
+1. 不要输出 Markdown 代码块，不要额外解释。
+2. 必须服务于“一天内两次装扮”的使用场景。
+3. 第二套换装只能做同风格场景化变化，不能换成别的相近风格。
+4. 如果风格是混合风格，必须指出主体风格与辅助元素的关系。
+5. 结果要去重、压缩、边界清晰。
+6. 用中文输出。"""
+
+STYLE_RESEARCH_QUERY_TEMPLATE = """请为日程生成模型研究穿搭风格“{style_name}”。
+要求：
+1. 明确这个风格的准确定义，指出主体风格与辅助元素的关系。
+2. 给出两套同一风格体系下的穿搭建议：晨间第一套、午后第二套换装。
+3. 第二套只能是同风格的场景化变化，不能换成相近但不同的风格。
+4. 提炼两套都必须保留的识别点。
+5. 提炼常见误判与禁区，尤其避免把风格按字面联想错误理解。
+6. 输出要适合后续模型直接拿去生成穿搭与日程，不要泛泛而谈。"""
+
+
 class DayflowService:
     PLUGIN_NAME = "astrbot_plugin_dayflow_life_scheduler"
+    GROK_PLUGIN_NAME = "astrbot_plugin_grok_web_search"
     LLM_RETRY_DELAY_SECONDS = 2.0
+    STYLE_RESEARCH_CACHE_DAYS = 0
+    STYLE_RESEARCH_MAX_CHARS = 1200
 
     def __init__(self, context, config=None):
         self.context = context
@@ -37,6 +72,8 @@ class DayflowService:
         self.scheduler_task: asyncio.Task | None = None
         self._scheduler_running = False
         self._last_debug_payload: dict[str, Any] = {}
+        self._style_cache_path = self.data_dir / "style_research_cache.json"
+        self._style_research_cache: dict[str, Any] = {}
 
     def _schedule_retention_days(self) -> int:
         try:
@@ -46,6 +83,26 @@ class DayflowService:
             return max(0, value)
         except Exception:
             return 3
+
+    def _style_research_cache_days(self) -> int:
+        return self.STYLE_RESEARCH_CACHE_DAYS
+
+    def _style_research_max_chars(self) -> int:
+        return self.STYLE_RESEARCH_MAX_CHARS
+
+    def _style_research_retry_count(self) -> int:
+        try:
+            return max(int(self.config.get("style_research_retry_count", 1) or 1), 0)
+        except Exception:
+            return 1
+
+    def _style_research_system_prompt(self) -> str:
+        value = str(self.config.get("style_research_system_prompt") or "").strip()
+        return value or STYLE_RESEARCH_SYSTEM_PROMPT
+
+    def _style_research_query_template(self) -> str:
+        value = str(self.config.get("style_research_query_template") or "").strip()
+        return value or STYLE_RESEARCH_QUERY_TEMPLATE
 
     def normalize_persona_key(self, persona_name: str | None = None, persona_id: str | None = None) -> str:
         return self.cfg.resolve_store_key(persona_name, persona_id)
@@ -59,6 +116,12 @@ class DayflowService:
 
     def is_persona_configured(self, persona_name: str | None = None, persona_id: str | None = None) -> bool:
         return self.get_persona_config(persona_name, persona_id) is not None
+
+    def _get_auto_retry_limit(self, persona: dict[str, Any] | None) -> int:
+        try:
+            return max(int((persona or {}).get("retry_count", 2) or 0), 0)
+        except Exception:
+            return 2
 
     def _build_persona_not_enabled_data(self, persona_name: str | None) -> dict:
         target = str(persona_name or "").strip() or "（未识别人格）"
@@ -94,19 +157,299 @@ class DayflowService:
     def _variation_definition(self, level: str) -> str:
         return VARIATION_LEVEL_DEFINITIONS.get(level, VARIATION_LEVEL_DEFINITIONS["中"])
 
-    def _build_history_structure_summary(self, persona_name: str, days: int = 3) -> str:
-        return ""
-
-    def _get_auto_retry_limit(self, persona: dict[str, Any] | None) -> int:
+    def _load_style_research_cache(self):
         try:
-            return max(int((persona or {}).get("retry_count", 2) or 0), 0)
+            if self._style_cache_path.exists():
+                data = json.loads(self._style_cache_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self._style_research_cache = data
+        except Exception as e:
+            logger.warning(f"[dayflow] load style research cache failed: {e}")
+            self._style_research_cache = {}
+
+    def _save_style_research_cache(self):
+        try:
+            self._style_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self._style_cache_path.write_text(
+                json.dumps(self._style_research_cache, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning(f"[dayflow] save style research cache failed: {e}")
+
+    def _is_style_cache_entry_valid(self, entry: dict[str, Any] | None) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        if not entry.get("summary"):
+            return False
+        cache_days = self._style_research_cache_days()
+        if cache_days <= 0:
+            return False
+        updated_at = str(entry.get("updated_at") or "").strip()
+        if not updated_at:
+            return False
+        try:
+            updated = datetime.datetime.fromisoformat(updated_at)
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=datetime.timezone.utc)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            age = now - updated.astimezone(datetime.timezone.utc)
+            return age <= datetime.timedelta(days=cache_days)
         except Exception:
-            return 2
+            return False
+
+    def _normalize_style_key(self, style_name: str) -> str:
+        return "".join(str(style_name or "").strip().lower().split())
+
+    def _clip_list(self, value: Any, max_items: int = 6, max_chars: int = 80) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        result = []
+        seen = set()
+        for item in value:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            text = text.replace("\r", " ").replace("\n", " ").strip()
+            key = "".join(text.lower().split())
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            if len(text) > max_chars:
+                text = text[:max_chars].rstrip("，,；;。.!?？") + "…"
+            result.append(text)
+            if len(result) >= max_items:
+                break
+        return result
+
+    def _preview_text(self, text: Any, limit: int = 1200) -> str:
+        content = str(text or "").strip()
+        if len(content) <= limit:
+            return content
+        return content[:limit].rstrip() + "…"
+
+    def _render_sources_preview(self, sources: list[dict[str, str]] | None) -> str:
+        lines = []
+        for src in sources or []:
+            title = str((src or {}).get("title") or "").strip()
+            url = str((src or {}).get("url") or "").strip()
+            snippet = self._preview_text((src or {}).get("snippet") or "", limit=120)
+            if not url:
+                continue
+            line = f"- {title or '未命名来源'}\n  {url}"
+            if snippet:
+                line += f"\n  {snippet}"
+            lines.append(line)
+            if len(lines) >= 3:
+                break
+        return "\n".join(lines)
+
+    def _render_style_reference(self, style_name: str, payload: dict[str, Any] | None, sources: list[dict[str, str]] | None = None) -> str:
+        if not payload:
+            return "（本次未获取到联网风格研究结果，请严格按风格名本身与上下文谨慎生成，禁止想当然混入相近风格。）"
+        definition = str(payload.get("definition") or "").strip()
+        notes = str(payload.get("notes") or "").strip()
+        must_keep = self._clip_list(payload.get("must_keep"), max_items=6)
+        morning_look = self._clip_list(payload.get("morning_look"), max_items=6)
+        afternoon_look = self._clip_list(payload.get("afternoon_look"), max_items=6)
+        avoid = self._clip_list(payload.get("avoid"), max_items=6)
+        lines = [f"风格名：{style_name}"]
+        if definition:
+            lines.append(f"风格定义：{definition}")
+        if must_keep:
+            lines.append("两套穿搭都必须保留的核心识别点：")
+            lines.extend(f"- {item}" for item in must_keep)
+        if morning_look:
+            lines.append("晨间第一套建议：")
+            lines.extend(f"- {item}" for item in morning_look)
+        if afternoon_look:
+            lines.append("午后第二套换装建议：")
+            lines.extend(f"- {item}" for item in afternoon_look)
+        if avoid:
+            lines.append("常见误判与禁区：")
+            lines.extend(f"- {item}" for item in avoid)
+        if notes:
+            lines.append(f"补充说明：{notes}")
+        source_urls = []
+        for src in sources or []:
+            url = str((src or {}).get("url") or "").strip()
+            if url and url not in source_urls:
+                source_urls.append(url)
+            if len(source_urls) >= 3:
+                break
+        if source_urls:
+            lines.append("参考来源：")
+            lines.extend(f"- {url}" for url in source_urls)
+        text = "\n".join(lines).strip()
+        max_chars = self._style_research_max_chars()
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "…"
+        return text
+
+    def _render_style_reference_from_plain_text(self, style_name: str, plain_text: str, sources: list[dict[str, str]] | None = None) -> str:
+        lines = [f"风格名：{style_name}"]
+        plain_text = self._preview_text(plain_text, limit=self._style_research_max_chars())
+        if plain_text:
+            lines.append(plain_text)
+        source_urls = []
+        for src in sources or []:
+            url = str((src or {}).get("url") or "").strip()
+            if url and url not in source_urls:
+                source_urls.append(url)
+            if len(source_urls) >= 3:
+                break
+        if source_urls:
+            lines.append("参考来源：")
+            lines.extend(f"- {url}" for url in source_urls)
+        return "\n".join(lines).strip()
+
+    def _find_grok_plugin(self):
+        try:
+            stars = self.context.get_all_stars()
+        except Exception as e:
+            logger.debug(f"[dayflow] get_all_stars failed when finding grok: {e}")
+            stars = []
+        for meta in stars or []:
+            plugin_name = str(getattr(meta, "name", "") or "").strip()
+            root_dir_name = str(getattr(meta, "root_dir_name", "") or "").strip()
+            module_path = str(getattr(meta, "module_path", "") or "").strip()
+            if plugin_name != self.GROK_PLUGIN_NAME and root_dir_name != self.GROK_PLUGIN_NAME and self.GROK_PLUGIN_NAME not in module_path:
+                continue
+            for attr in ("star", "instance", "plugin", "obj", "star_cls"):
+                candidate = getattr(meta, attr, None)
+                if candidate is not None and hasattr(candidate, "_do_search"):
+                    return candidate
+        for star in self._iter_loaded_stars():
+            cls_module = getattr(star.__class__, "__module__", "")
+            if self.GROK_PLUGIN_NAME in cls_module and hasattr(star, "_do_search"):
+                return star
+        return None
+
+    def _build_style_research_query(self, style_name: str) -> str:
+        template = self._style_research_query_template()
+        try:
+            return template.format(style_name=style_name)
+        except Exception as e:
+            logger.warning(f"[dayflow] invalid style research query template, fallback to default: {e}")
+            return STYLE_RESEARCH_QUERY_TEMPLATE.format(style_name=style_name)
+
+    async def _research_style_reference(self, style_name: str) -> tuple[str, dict[str, Any], list[dict[str, str]]]:
+        style_name = str(style_name or "").strip()
+        if not style_name:
+            return "", {}, []
+        cache_key = self._normalize_style_key(style_name)
+        cached = self._style_research_cache.get(cache_key)
+        if self._is_style_cache_entry_valid(cached):
+            payload = dict(cached.get("payload") or {})
+            sources = list(cached.get("sources") or [])
+            summary = str(cached.get("summary") or "")
+            self._last_debug_payload.update({
+                "style_research_cache_hit": True,
+                "style_research_query_preview": self._preview_text(self._build_style_research_query(style_name), limit=1200),
+                "style_research_system_prompt_preview": self._preview_text(self._style_research_system_prompt(), limit=1200),
+                "style_research_raw_response_preview": self._preview_text(cached.get("raw_response") or "", limit=1600),
+                "style_research_payload_preview": self._preview_text(json.dumps(payload, ensure_ascii=False, indent=2), limit=1600) if payload else "",
+                "style_research_sources_preview": self._render_sources_preview(sources),
+            })
+            logger.info(f"[dayflow-style-research] cache hit | style={style_name}")
+            return summary, payload, sources
+
+        grok = self._find_grok_plugin()
+        if grok is None:
+            logger.warning(f"[dayflow] grok plugin not found, skip style research: style={style_name}")
+            return "", {}, []
+
+        query = self._build_style_research_query(style_name)
+        system_prompt = self._style_research_system_prompt()
+        logger.info(f"[dayflow-style-research] query | style={style_name} | query={query}")
+        retries = self._style_research_retry_count()
+        last_reason = ""
+        result = None
+        parsed_payload = None
+        raw_text = ""
+        for attempt in range(1, retries + 2):
+            result = await grok._do_search(query=query, system_prompt=system_prompt, use_retry=False)
+            if not result.get("ok"):
+                last_reason = str(result.get("error") or "grok search failed")
+                logger.warning(f"[dayflow] style research search failed: style={style_name}, attempt={attempt}, reason={last_reason}")
+                continue
+            raw_text = str(result.get("content") or "").strip()
+            logger.info(f"[dayflow-style-research] raw_response | style={style_name} | content={self._preview_text(raw_text, limit=1600)}")
+            parsed = safe_json_loads(raw_text)
+            if isinstance(parsed, dict) and parsed.get("definition"):
+                parsed_payload = parsed
+                break
+            last_reason = "研究结果不是有效 JSON"
+            logger.warning(f"[dayflow] style research parse failed: style={style_name}, attempt={attempt}, reason={last_reason}")
+
+        sources = list((result or {}).get("sources") or [])
+
+        if parsed_payload:
+            summary = self._render_style_reference(style_name, parsed_payload, sources)
+            self._style_research_cache[cache_key] = {
+                "style_name": style_name,
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "payload": parsed_payload,
+                "summary": summary,
+                "sources": sources,
+                "raw_response": raw_text,
+            }
+            self._save_style_research_cache()
+            payload_preview = json.dumps(parsed_payload, ensure_ascii=False, indent=2)
+            logger.info(f"[dayflow-style-research] parsed_payload | style={style_name} | payload={self._preview_text(payload_preview, limit=1600)}")
+            logger.info(f"[dayflow-style-research] sources | style={style_name} | sources={self._render_sources_preview(sources)}")
+            self._last_debug_payload.update({
+                "style_research_cache_hit": False,
+                "style_research_query_preview": self._preview_text(query, limit=1200),
+                "style_research_system_prompt_preview": self._preview_text(system_prompt, limit=1200),
+                "style_research_raw_response_preview": self._preview_text(raw_text, limit=1600),
+                "style_research_payload_preview": self._preview_text(payload_preview, limit=1600),
+                "style_research_sources_preview": self._render_sources_preview(sources),
+            })
+            logger.info(f"[dayflow] style research success(json): style={style_name}, sources={len(sources)}")
+            return summary, parsed_payload, sources
+
+        if raw_text:
+            summary = self._render_style_reference_from_plain_text(style_name, raw_text, sources)
+            self._style_research_cache[cache_key] = {
+                "style_name": style_name,
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "payload": {},
+                "summary": summary,
+                "sources": sources,
+                "raw_response": raw_text,
+            }
+            self._save_style_research_cache()
+            self._last_debug_payload.update({
+                "style_research_cache_hit": False,
+                "style_research_query_preview": self._preview_text(query, limit=1200),
+                "style_research_system_prompt_preview": self._preview_text(system_prompt, limit=1200),
+                "style_research_raw_response_preview": self._preview_text(raw_text, limit=1600),
+                "style_research_payload_preview": "（JSON 解析失败，已降级使用纯文本研究结果）",
+                "style_research_sources_preview": self._render_sources_preview(sources),
+            })
+            logger.info(f"[dayflow-style-research] fallback_plain_text | style={style_name} | summary={self._preview_text(summary, limit=1600)}")
+            logger.info(f"[dayflow-style-research] sources | style={style_name} | sources={self._render_sources_preview(sources)}")
+            logger.warning(f"[dayflow] style research downgraded to plain text: style={style_name}, reason={last_reason or '非 JSON 输出'}")
+            return summary, {}, sources
+
+        if last_reason:
+            logger.warning(f"[dayflow] style research unavailable: style={style_name}, reason={last_reason}")
+        self._last_debug_payload.update({
+            "style_research_cache_hit": False,
+            "style_research_query_preview": self._preview_text(query, limit=1200),
+            "style_research_system_prompt_preview": self._preview_text(system_prompt, limit=1200),
+            "style_research_raw_response_preview": "",
+            "style_research_payload_preview": "",
+            "style_research_sources_preview": self._render_sources_preview(sources),
+        })
+        return "", {}, sources
 
     async def initialize(self):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.store.initialize()
         self.store.set_retention_days(self._schedule_retention_days())
+        self._load_style_research_cache()
         logger.info("[dayflow] plugin initialized")
         logger.info(f"[dayflow] loaded personas: {[p.get('name') for p in self.cfg.personas()]}")
         await self.start_scheduler()
@@ -115,6 +458,7 @@ class DayflowService:
         await self.stop_scheduler()
         self.store.prune_expired()
         self.store._save_state()
+        self._save_style_research_cache()
         logger.info("[dayflow] terminated")
 
     async def start_scheduler(self):
@@ -723,25 +1067,8 @@ class DayflowService:
     async def build_debug_snapshot(self, event=None, persona_name: str | None = None) -> dict[str, Any]:
         persona_ctx = await self.resolve_persona_context(event=event, persona_name=persona_name)
         resolved_name = self.normalize_persona_key(persona_ctx.get("persona_name"), persona_ctx.get("persona_id"))
-        last_payload = self.get_last_debug_payload()
-        if last_payload and self.normalize_persona_key(last_payload.get("persona_name")) == resolved_name:
-            return {
-                "persona_name": resolved_name,
-                "persona_source": persona_ctx.get("source", ""),
-                "persona_desc_preview": last_payload.get("persona_desc_preview", "")[:800],
-                "outfit_styles_pool": [],
-                "schedule_main_types_pool": [],
-                "core_event_drivers_pool": [],
-                "today_weather_pool": [],
-                "variation_configured": last_payload.get("variation_configured", ""),
-                "variation_effective": last_payload.get("variation_effective", ""),
-                "variation_definition": last_payload.get("variation_definition", ""),
-                "history_structure_summary": last_payload.get("history_structure_summary", "")[:800],
-                "rendered_prompt_preview": last_payload.get("rendered_prompt_preview", "")[:2200],
-                "recent_chats_preview": last_payload.get("recent_chats_preview", "")[:500],
-                "recent_diaries_preview": last_payload.get("recent_diaries_preview", "")[:500],
-            }
-        if not self.is_persona_configured(persona_ctx.get("persona_name"), persona_ctx.get("persona_id")):
+        persona = self.get_persona_config(resolved_name) or self.cfg.find_persona(resolved_name)
+        if not persona:
             return {
                 "persona_name": persona_ctx.get("persona_name", ""),
                 "persona_source": persona_ctx.get("source", ""),
@@ -753,30 +1080,60 @@ class DayflowService:
                 "variation_configured": "",
                 "variation_effective": "",
                 "variation_definition": "",
-                "history_structure_summary": "",
+                "style_research_cache_hit": "",
+                "style_research_query_preview": "",
+                "style_research_system_prompt_preview": "",
+                "style_research_raw_response_preview": "",
+                "style_research_payload_preview": "",
+                "style_research_sources_preview": "",
                 "rendered_prompt_preview": f"人格未在 Dayflow 中启用：{persona_ctx.get('persona_name', '')}",
                 "recent_chats_preview": "",
                 "recent_diaries_preview": "",
             }
-        persona = self.get_persona_config(resolved_name) or self.cfg.find_persona(resolved_name)
+
         pool = persona.get("pool", {}) or {}
+        outfit_styles_pool = pool.get("outfit_styles") or []
+        schedule_main_types_pool = pool.get("schedule_main_types") or []
+        core_event_drivers_pool = pool.get("core_event_drivers") or []
+        today_weather_pool = pool.get("today_weather") or []
+
+        last_payload = self.get_last_debug_payload()
+        if last_payload and self.normalize_persona_key(last_payload.get("persona_name")) == resolved_name:
+            return {
+                "persona_name": resolved_name,
+                "persona_source": persona_ctx.get("source", ""),
+                "persona_desc_preview": last_payload.get("persona_desc_preview", "")[:800],
+                "outfit_styles_pool": outfit_styles_pool,
+                "schedule_main_types_pool": schedule_main_types_pool,
+                "core_event_drivers_pool": core_event_drivers_pool,
+                "today_weather_pool": today_weather_pool,
+                "variation_configured": last_payload.get("variation_configured", ""),
+                "variation_effective": last_payload.get("variation_effective", ""),
+                "variation_definition": last_payload.get("variation_definition", ""),
+                "style_research_cache_hit": last_payload.get("style_research_cache_hit", ""),
+                "style_research_query_preview": last_payload.get("style_research_query_preview", ""),
+                "style_research_system_prompt_preview": last_payload.get("style_research_system_prompt_preview", ""),
+                "style_research_raw_response_preview": last_payload.get("style_research_raw_response_preview", ""),
+                "style_research_payload_preview": last_payload.get("style_research_payload_preview", ""),
+                "style_research_sources_preview": last_payload.get("style_research_sources_preview", ""),
+                "rendered_prompt_preview": last_payload.get("rendered_prompt_preview", "")[:2200],
+                "recent_chats_preview": last_payload.get("recent_chats_preview", "")[:500],
+                "recent_diaries_preview": last_payload.get("recent_diaries_preview", "")[:500],
+            }
+
         session_id = getattr(event, "unified_msg_origin", None) if event else None
         if session_id is None:
             session_id = await self._get_recent_session_id_for_persona(resolved_name, persona_ctx.get("persona_id"))
         now = datetime.datetime.now()
         date_str = now.strftime("%Y-%m-%d")
         weekday = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][now.weekday()]
-        today_weather_pool = pool.get("today_weather") or []
-        outfit_styles_pool = pool.get("outfit_styles") or []
-        schedule_main_types_pool = pool.get("schedule_main_types") or []
-        core_event_drivers_pool = pool.get("core_event_drivers") or []
         today_weather = today_weather_pool[0] if today_weather_pool else ""
         outfit_style = outfit_styles_pool[0] if outfit_styles_pool else ""
         schedule_main_type = schedule_main_types_pool[0] if schedule_main_types_pool else ""
         core_event_driver = core_event_drivers_pool[0] if core_event_drivers_pool else ""
         configured_variation = persona.get("schedule_variation_level", DEFAULT_VARIATION_LEVEL)
         effective_variation = self._effective_variation_level(configured_variation)
-        history_structure_summary = ""
+        style_reference, _, _ = await self._research_style_reference(outfit_style)
         replacements = {
             "date": date_str,
             "date_str": date_str,
@@ -789,11 +1146,12 @@ class DayflowService:
             "schedule_main_type": schedule_main_type,
             "core_event_driver": core_event_driver,
             "history_schedules": self.store.recent_history_text(resolved_name, int(persona.get("reference_schedule_days", 0) or 0)),
-            "history_structure_summary": history_structure_summary,
+            "history_structure_summary": "",
             "recent_diaries": await self.collect_recent_diaries_text(resolved_name, persona, session_id),
             "recent_chats": await self.collect_recent_chat_text(event=event, persona=persona, session_id=session_id),
             "daily_theme": "",
             "mood_color": "",
+            "style_reference": style_reference,
             "schedule_variation_level": effective_variation,
             "schedule_variation_definition": self._variation_definition(effective_variation),
         }
@@ -811,7 +1169,12 @@ class DayflowService:
             "variation_configured": configured_variation,
             "variation_effective": effective_variation,
             "variation_definition": self._variation_definition(effective_variation),
-            "history_structure_summary": history_structure_summary[:800],
+            "style_research_cache_hit": self._last_debug_payload.get("style_research_cache_hit", ""),
+            "style_research_query_preview": self._last_debug_payload.get("style_research_query_preview", ""),
+            "style_research_system_prompt_preview": self._last_debug_payload.get("style_research_system_prompt_preview", ""),
+            "style_research_raw_response_preview": self._last_debug_payload.get("style_research_raw_response_preview", ""),
+            "style_research_payload_preview": self._last_debug_payload.get("style_research_payload_preview", ""),
+            "style_research_sources_preview": self._last_debug_payload.get("style_research_sources_preview", ""),
             "rendered_prompt_preview": prompt[:2200],
             "recent_chats_preview": replacements["recent_chats"][:500],
             "recent_diaries_preview": replacements["recent_diaries"][:500],
@@ -845,7 +1208,7 @@ class DayflowService:
         core_event_driver = random.choice(core_event_drivers_pool) if core_event_drivers_pool else "任务驱动"
         configured_variation = persona.get("schedule_variation_level", DEFAULT_VARIATION_LEVEL)
         effective_variation = self._effective_variation_level(configured_variation)
-        history_structure_summary = ""
+        style_reference, style_payload, style_sources = await self._research_style_reference(outfit_style)
         replacements = {
             "date": date_str,
             "date_str": date_str,
@@ -858,11 +1221,12 @@ class DayflowService:
             "schedule_main_type": schedule_main_type,
             "core_event_driver": core_event_driver,
             "history_schedules": self.store.recent_history_text(normalized_persona_name, int(persona.get("reference_schedule_days", 0) or 0)),
-            "history_structure_summary": history_structure_summary,
+            "history_structure_summary": "",
             "recent_diaries": await self.collect_recent_diaries_text(normalized_persona_name, persona, effective_session_id),
             "recent_chats": await self.collect_recent_chat_text(event=event, persona=persona, session_id=effective_session_id),
             "daily_theme": "",
             "mood_color": "",
+            "style_reference": style_reference,
             "schedule_variation_level": effective_variation,
             "schedule_variation_definition": self._variation_definition(effective_variation),
         }
@@ -874,7 +1238,7 @@ class DayflowService:
             "core_event_driver": core_event_driver,
             "today_weather": today_weather,
         })
-        self._last_debug_payload = {
+        self._last_debug_payload.update({
             "persona_name": normalized_persona_name,
             "persona_desc_preview": (replacements["persona_desc"] or "")[:1200],
             "outfit_style": outfit_style,
@@ -884,11 +1248,13 @@ class DayflowService:
             "variation_configured": configured_variation,
             "variation_effective": effective_variation,
             "variation_definition": self._variation_definition(effective_variation),
-            "history_structure_summary": history_structure_summary[:800],
             "recent_chats_preview": replacements["recent_chats"][:500],
             "recent_diaries_preview": replacements["recent_diaries"][:500],
+            "style_reference_preview": style_reference[:800],
+            "style_research_payload": style_payload,
+            "style_research_sources": style_sources[:3],
             "rendered_prompt_preview": prompt[:2500],
-        }
+        })
         logger.info(
             f"[dayflow-debug] persona={normalized_persona_name} style={outfit_style} "
             f"main={schedule_main_type} driver={core_event_driver} variation={configured_variation}->{effective_variation} "
@@ -953,10 +1319,11 @@ class DayflowService:
                     "session_provider_id": session_provider_id or "",
                     "source_session_id": effective_session_id or "",
                     "weather": today_weather,
-                    "prompt_template_version": "persona_full_template_v7_main_type_driver",
+                    "prompt_template_version": "persona_full_template_v8_grok_style_research",
                     "fallback": False,
                     "variation_configured": configured_variation,
                     "variation_effective": effective_variation,
+                    "style_reference": style_reference,
                 },
                 "timeline": extract_timeline(schedule),
                 "weather": today_weather,
