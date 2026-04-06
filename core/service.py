@@ -95,28 +95,13 @@ class DayflowService:
         return VARIATION_LEVEL_DEFINITIONS.get(level, VARIATION_LEVEL_DEFINITIONS["中"])
 
     def _build_history_structure_summary(self, persona_name: str, days: int = 3) -> str:
-        history = self.store.history_store.get(persona_name, []) or []
-        if not history:
-            return "（暂无近三日结构摘要）"
-        selected = history[-max(0, days):]
-        if not selected:
-            return "（暂无近三日结构摘要）"
-        lines = []
-        for item in selected:
-            converted = self.store._history_item_to_schedule(persona_name, item) or {}
-            date_str = str((converted.get("meta") or {}).get("date") or "")
-            schedule = str(converted.get("schedule") or "")
-            first_lines = []
-            for line in schedule.splitlines():
-                text = line.strip()
-                if not text:
-                    continue
-                first_lines.append(text[:42])
-                if len(first_lines) >= 4:
-                    break
-            summary = "；".join(first_lines) if first_lines else "（无可提取结构）"
-            lines.append(f"- {date_str}: {summary}")
-        return "\n".join(lines)
+        return ""
+
+    def _get_auto_retry_limit(self, persona: dict[str, Any] | None) -> int:
+        try:
+            return max(int((persona or {}).get("retry_count", 2) or 0), 0)
+        except Exception:
+            return 2
 
     async def initialize(self):
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -185,8 +170,20 @@ class DayflowService:
             if self.store.has_consumed_auto_generation(store_key, trigger_key):
                 continue
             if self.store.has_generated_for_date(store_key, today):
+                self.store.clear_auto_generation_failure(store_key, trigger_key)
                 self.store.mark_auto_generation_consumed(store_key, trigger_key)
                 continue
+
+            auto_retry_limit = self._get_auto_retry_limit(persona)
+            failure_count = self.store.get_auto_generation_failure_count(store_key, trigger_key)
+            if failure_count >= auto_retry_limit + 1:
+                self.store.mark_auto_generation_consumed(store_key, trigger_key)
+                logger.warning(
+                    f"[dayflow] auto generation retry limit reached, stop retrying today: "
+                    f"persona={configured_persona_name}, trigger={trigger_key}, failures={failure_count}, limit={auto_retry_limit}"
+                )
+                continue
+
             ok = await self.enter_generation(store_key)
             if not ok:
                 continue
@@ -201,15 +198,38 @@ class DayflowService:
                 )
                 if not data.get("meta", {}).get("error"):
                     self.save_generated(store_key, data)
+                    self.store.clear_auto_generation_failure(store_key, trigger_key)
                     self.store.mark_auto_generation_consumed(store_key, trigger_key)
                     logger.info(
                         f"[dayflow] auto generated schedule for persona={configured_persona_name}, "
                         f"store_key={store_key}, trigger={trigger_key}, session={auto_session_id or 'none'}"
                     )
                 else:
-                    logger.warning(f"[dayflow] auto generation failed but will retry later for persona={configured_persona_name}, trigger={trigger_key}, reason={data.get('memo', '')}")
+                    failure_count = self.store.record_auto_generation_failure(store_key, trigger_key)
+                    if failure_count >= auto_retry_limit + 1:
+                        self.store.mark_auto_generation_consumed(store_key, trigger_key)
+                        logger.warning(
+                            f"[dayflow] auto generation failed and reached retry limit, stop retrying today: "
+                            f"persona={configured_persona_name}, trigger={trigger_key}, failures={failure_count}, limit={auto_retry_limit}, reason={data.get('memo', '')}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[dayflow] auto generation failed, will retry later: "
+                            f"persona={configured_persona_name}, trigger={trigger_key}, failures={failure_count}/{auto_retry_limit + 1}, reason={data.get('memo', '')}"
+                        )
             except Exception as e:
-                logger.warning(f"[dayflow] auto generation failed for persona={configured_persona_name}: {e}")
+                failure_count = self.store.record_auto_generation_failure(store_key, trigger_key)
+                if failure_count >= auto_retry_limit + 1:
+                    self.store.mark_auto_generation_consumed(store_key, trigger_key)
+                    logger.warning(
+                        f"[dayflow] auto generation exception and reached retry limit, stop retrying today: "
+                        f"persona={configured_persona_name}, trigger={trigger_key}, failures={failure_count}, limit={auto_retry_limit}, error={e}"
+                    )
+                else:
+                    logger.warning(
+                        f"[dayflow] auto generation failed for persona={configured_persona_name}: {e}, "
+                        f"failures={failure_count}/{auto_retry_limit + 1}, trigger={trigger_key}"
+                    )
             finally:
                 await self.exit_generation(store_key)
 
@@ -702,6 +722,25 @@ class DayflowService:
 
     async def build_debug_snapshot(self, event=None, persona_name: str | None = None) -> dict[str, Any]:
         persona_ctx = await self.resolve_persona_context(event=event, persona_name=persona_name)
+        resolved_name = self.normalize_persona_key(persona_ctx.get("persona_name"), persona_ctx.get("persona_id"))
+        last_payload = self.get_last_debug_payload()
+        if last_payload and self.normalize_persona_key(last_payload.get("persona_name")) == resolved_name:
+            return {
+                "persona_name": resolved_name,
+                "persona_source": persona_ctx.get("source", ""),
+                "persona_desc_preview": last_payload.get("persona_desc_preview", "")[:800],
+                "outfit_styles_pool": [],
+                "schedule_main_types_pool": [],
+                "core_event_drivers_pool": [],
+                "today_weather_pool": [],
+                "variation_configured": last_payload.get("variation_configured", ""),
+                "variation_effective": last_payload.get("variation_effective", ""),
+                "variation_definition": last_payload.get("variation_definition", ""),
+                "history_structure_summary": last_payload.get("history_structure_summary", "")[:800],
+                "rendered_prompt_preview": last_payload.get("rendered_prompt_preview", "")[:2200],
+                "recent_chats_preview": last_payload.get("recent_chats_preview", "")[:500],
+                "recent_diaries_preview": last_payload.get("recent_diaries_preview", "")[:500],
+            }
         if not self.is_persona_configured(persona_ctx.get("persona_name"), persona_ctx.get("persona_id")):
             return {
                 "persona_name": persona_ctx.get("persona_name", ""),
@@ -719,7 +758,6 @@ class DayflowService:
                 "recent_chats_preview": "",
                 "recent_diaries_preview": "",
             }
-        resolved_name = self.normalize_persona_key(persona_ctx["persona_name"], persona_ctx.get("persona_id"))
         persona = self.get_persona_config(resolved_name) or self.cfg.find_persona(resolved_name)
         pool = persona.get("pool", {}) or {}
         session_id = getattr(event, "unified_msg_origin", None) if event else None
@@ -738,7 +776,7 @@ class DayflowService:
         core_event_driver = core_event_drivers_pool[0] if core_event_drivers_pool else ""
         configured_variation = persona.get("schedule_variation_level", DEFAULT_VARIATION_LEVEL)
         effective_variation = self._effective_variation_level(configured_variation)
-        history_structure_summary = self._build_history_structure_summary(resolved_name, 3)
+        history_structure_summary = ""
         replacements = {
             "date": date_str,
             "date_str": date_str,
@@ -807,7 +845,7 @@ class DayflowService:
         core_event_driver = random.choice(core_event_drivers_pool) if core_event_drivers_pool else "任务驱动"
         configured_variation = persona.get("schedule_variation_level", DEFAULT_VARIATION_LEVEL)
         effective_variation = self._effective_variation_level(configured_variation)
-        history_structure_summary = self._build_history_structure_summary(normalized_persona_name, 3)
+        history_structure_summary = ""
         replacements = {
             "date": date_str,
             "date_str": date_str,

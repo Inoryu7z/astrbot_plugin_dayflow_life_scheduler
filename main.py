@@ -114,6 +114,7 @@ class DayflowPlugin(Star):
         lines = self.service.describe_personas()
         yield event.plain_result("已启用人格：\n" + "\n".join(lines))
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("dayflow_debug", alias={"查看日程调试", "日程调试"})
     async def dayflow_debug(self, event: AstrMessageEvent):
         snapshot = await self.service.build_debug_snapshot(event=event)
