@@ -19,8 +19,8 @@ class DayflowPlugin(Star):
     async def terminate(self):
         await self.service.terminate()
 
-    async def get_life_context(self, session_id: str | None = None, persona_name: str | None = None) -> dict:
-        return await self.service.get_life_context(session_id=session_id, persona_name=persona_name)
+    async def get_life_context(self, session_id: str | None = None, persona_name: str | None = None, target_date: str | None = None) -> dict:
+        return await self.service.get_life_context(session_id=session_id, persona_name=persona_name, target_date=target_date)
 
     async def _generate_for_event(self, event: AstrMessageEvent, persona_name: str, persona_desc: str, store_key: str, force_regenerate: bool = False):
         if not self.service.is_persona_configured(persona_name):
@@ -28,9 +28,14 @@ class DayflowPlugin(Star):
             return
 
         today = datetime.datetime.now().strftime("%Y-%m-%d")
+        session_id = getattr(event, "unified_msg_origin", None)
 
-        existing_before_lock = self.service.store.get_schedule_for_date(store_key, today)
-        if existing_before_lock and not existing_before_lock.get("meta", {}).get("error") and not force_regenerate:
+        existing_before_lock = await self.service.get_life_context(
+            session_id=session_id,
+            persona_name=persona_name,
+            target_date=today,
+        )
+        if existing_before_lock and not existing_before_lock.get("meta", {}).get("error") and not existing_before_lock.get("meta", {}).get("fallback") and not force_regenerate:
             yield event.plain_result(
                 f"🧠 人格：{persona_name}\n👕 今日穿搭：{existing_before_lock['outfit']}\n📝 日程安排：\n{existing_before_lock['schedule']}"
             )
@@ -38,8 +43,12 @@ class DayflowPlugin(Star):
 
         ok = await self.service.enter_generation(store_key)
         if not ok:
-            existing_while_busy = self.service.store.get_schedule_for_date(store_key, today)
-            if existing_while_busy and not existing_while_busy.get("meta", {}).get("error") and not force_regenerate:
+            existing_while_busy = await self.service.get_life_context(
+                session_id=session_id,
+                persona_name=persona_name,
+                target_date=today,
+            )
+            if existing_while_busy and not existing_while_busy.get("meta", {}).get("error") and not existing_while_busy.get("meta", {}).get("fallback") and not force_regenerate:
                 yield event.plain_result(
                     f"🧠 人格：{persona_name}\n👕 今日穿搭：{existing_while_busy['outfit']}\n📝 日程安排：\n{existing_while_busy['schedule']}"
                 )
@@ -48,8 +57,12 @@ class DayflowPlugin(Star):
             return
 
         try:
-            existing_after_lock = self.service.store.get_schedule_for_date(store_key, today)
-            if existing_after_lock and not existing_after_lock.get("meta", {}).get("error") and not force_regenerate:
+            existing_after_lock = await self.service.get_life_context(
+                session_id=session_id,
+                persona_name=persona_name,
+                target_date=today,
+            )
+            if existing_after_lock and not existing_after_lock.get("meta", {}).get("error") and not existing_after_lock.get("meta", {}).get("fallback") and not force_regenerate:
                 yield event.plain_result(
                     f"🧠 人格：{persona_name}\n👕 今日穿搭：{existing_after_lock['outfit']}\n📝 日程安排：\n{existing_after_lock['schedule']}"
                 )
@@ -59,7 +72,7 @@ class DayflowPlugin(Star):
                 yield event.plain_result(f"🪄 正在为 {persona_name} 强制重生成今日日程，请稍候...")
             else:
                 yield event.plain_result(f"🪄 正在为 {persona_name} 生成今日日程，请稍候...")
-            data = await self.service.generate_schedule(event=event, persona_name=store_key, persona_desc=persona_desc)
+            data = await self.service.generate_schedule(event=event, persona_name=store_key, persona_desc=persona_desc, target_date=today)
             if data.get("meta", {}).get("error"):
                 yield event.plain_result(f"⚠️ 生成失败：{data.get('memo', '未知错误')}")
                 return
@@ -86,9 +99,13 @@ class DayflowPlugin(Star):
         store_key = self.service.normalize_persona_key(persona_name, persona_ctx.get("persona_id"))
 
         today = datetime.datetime.now().strftime("%Y-%m-%d")
-        today_schedule = self.service.store.get_schedule_for_date(store_key, today)
+        today_schedule = await self.service.get_life_context(
+            session_id=getattr(event, "unified_msg_origin", None),
+            persona_name=persona_name,
+            target_date=today,
+        )
 
-        if today_schedule and not today_schedule.get("meta", {}).get("error"):
+        if today_schedule and not today_schedule.get("meta", {}).get("error") and not today_schedule.get("meta", {}).get("fallback"):
             yield event.plain_result(
                 f"🧠 人格：{persona_name}\n👕 今日穿搭：{today_schedule['outfit']}\n📝 日程安排：\n{today_schedule['schedule']}"
             )
