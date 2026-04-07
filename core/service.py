@@ -123,7 +123,7 @@ class DayflowService:
         except Exception:
             return 2
 
-    def _build_persona_not_enabled_data(self, persona_name: str | None) -> dict:
+    def _build_persona_not_enabled_data(self, persona_name: str | None, target_date: str | None = None) -> dict:
         target = str(persona_name or "").strip() or "（未识别人格）"
         reason = f"人格未在 Dayflow 中启用：{target}"
         return {
@@ -135,7 +135,7 @@ class DayflowService:
                 "fallback_reason": reason,
                 "persona_not_enabled": True,
                 "error": True,
-                "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                "date": target_date or datetime.datetime.now().strftime("%Y-%m-%d"),
             },
             "timeline": [],
             "weather": "",
@@ -539,6 +539,7 @@ class DayflowService:
                     persona_name=configured_persona_name,
                     persona_desc=persona_ctx["persona_desc"],
                     session_id=auto_session_id,
+                    target_date=today,
                 )
                 if not data.get("meta", {}).get("error"):
                     self.save_generated(store_key, data)
@@ -680,15 +681,19 @@ class DayflowService:
     async def resolve_persona_context(self, event=None, persona_name: str | None = None) -> dict[str, str]:
         return await self._resolve_persona_context_internal(event=event, persona_name=persona_name)
 
-    def get_cached_or_fallback(self, persona_name: str) -> dict:
+    def get_cached_or_fallback(self, persona_name: str, target_date: str | None = None) -> dict:
         store_key = self.normalize_persona_key(persona_name)
+        if target_date:
+            exact = self.store.get_schedule_for_date(store_key, target_date)
+            if exact:
+                return exact
         latest = self.store.get_latest_schedule(store_key)
         if latest:
             return latest
         return {
             "outfit": "尚未生成",
             "schedule": "暂无日程记录，请使用 /生成日程 命令。",
-            "meta": {"persona_name": store_key, "fallback": True, "fallback_reason": "无历史日程"},
+            "meta": {"persona_name": store_key, "fallback": True, "fallback_reason": "无历史日程", "date": target_date or ""},
             "timeline": [],
             "weather": "",
             "memo": "",
@@ -707,14 +712,14 @@ class DayflowService:
                 candidates.append(store_key)
         return candidates
 
-    def _build_missing_today_context(self, store_key: str, today: str, latest: dict | None = None, fallback_reason: str = "今日尚无有效日程") -> dict:
+    def _build_missing_today_context(self, store_key: str, target_date: str, latest: dict | None = None, fallback_reason: str = "目标日期尚无有效日程") -> dict:
         latest_date = str((latest or {}).get("meta", {}).get("date") or "")
         return {
             "outfit": "尚未生成",
-            "schedule": "今日日程尚未生成成功，请先重新生成今日日程。",
+            "schedule": f"{target_date} 的日程尚未生成成功，请先重新生成该日期日程。",
             "meta": {
                 "persona_name": store_key,
-                "date": today,
+                "date": target_date,
                 "fallback": True,
                 "fallback_reason": fallback_reason,
                 "latest_available_date": latest_date,
@@ -725,22 +730,22 @@ class DayflowService:
             "long_term_memory": [],
         }
 
-    async def get_life_context(self, session_id: str | None = None, persona_name: str | None = None) -> dict:
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
+    async def get_life_context(self, session_id: str | None = None, persona_name: str | None = None, target_date: str | None = None) -> dict:
+        effective_date = str(target_date or datetime.datetime.now().strftime("%Y-%m-%d")).strip() or datetime.datetime.now().strftime("%Y-%m-%d")
         resolved_ctx = await self._resolve_persona_context_internal(session_id=session_id, persona_name=persona_name)
         if not self.is_persona_configured(resolved_ctx.get("persona_name"), resolved_ctx.get("persona_id")):
             reason = f"人格未在 Dayflow 中启用：{resolved_ctx.get('persona_name') or persona_name or '（未识别人格）'}"
             logger.warning(
                 f"[dayflow] get_life_context rejected unconfigured persona: session={session_id or ''}, "
                 f"requested_persona={persona_name or ''}, resolved_persona={resolved_ctx.get('persona_name', '')}, "
-                f"resolved_persona_id={resolved_ctx.get('persona_id', '')}"
+                f"resolved_persona_id={resolved_ctx.get('persona_id', '')}, target_date={effective_date}"
             )
             return {
                 "outfit": "尚未生成",
                 "schedule": reason,
                 "meta": {
                     "persona_name": str(resolved_ctx.get('persona_name') or persona_name or '').strip(),
-                    "date": today,
+                    "date": effective_date,
                     "fallback": True,
                     "fallback_reason": reason,
                     "persona_not_enabled": True,
@@ -754,14 +759,14 @@ class DayflowService:
         candidate_keys = self._candidate_store_keys(resolved_ctx=resolved_ctx, persona_name=persona_name)
 
         for store_key in candidate_keys:
-            today_schedule = self.store.get_schedule_for_date(store_key, today)
-            if today_schedule and not today_schedule.get("meta", {}).get("error"):
+            exact_schedule = self.store.get_schedule_for_date(store_key, effective_date)
+            if exact_schedule and not exact_schedule.get("meta", {}).get("error"):
                 logger.info(
-                    f"[dayflow] get_life_context hit today schedule: session={session_id or ''}, "
+                    f"[dayflow] get_life_context hit target schedule: session={session_id or ''}, "
                     f"requested_persona={persona_name or ''}, resolved_persona={resolved_ctx.get('persona_name', '')}, "
-                    f"resolved_persona_id={resolved_ctx.get('persona_id', '')}, store_key={store_key}, date={today}"
+                    f"resolved_persona_id={resolved_ctx.get('persona_id', '')}, store_key={store_key}, date={effective_date}"
                 )
-                return today_schedule
+                return exact_schedule
 
         latest = None
         latest_store_key = candidate_keys[0] if candidate_keys else self.cfg.default_persona_name()
@@ -774,16 +779,16 @@ class DayflowService:
 
         latest_date = str((latest or {}).get("meta", {}).get("date") or "")
         logger.warning(
-            f"[dayflow] get_life_context missing today schedule: session={session_id or ''}, "
+            f"[dayflow] get_life_context missing target schedule: session={session_id or ''}, "
             f"requested_persona={persona_name or ''}, resolved_persona={resolved_ctx.get('persona_name', '')}, "
             f"resolved_persona_id={resolved_ctx.get('persona_id', '')}, candidate_keys={candidate_keys}, "
-            f"today={today}, latest_date={latest_date or 'none'}, returning_fallback=yes"
+            f"target_date={effective_date}, latest_date={latest_date or 'none'}, returning_fallback=yes"
         )
         return self._build_missing_today_context(
             store_key=latest_store_key,
-            today=today,
+            target_date=effective_date,
             latest=latest,
-            fallback_reason="今日尚无有效日程，已拒绝回退到旧日程",
+            fallback_reason="目标日期尚无有效日程，已拒绝回退到其他日期旧日程",
         )
 
     async def enter_generation(self, persona_name: str) -> bool:
@@ -1180,20 +1185,26 @@ class DayflowService:
             "recent_diaries_preview": replacements["recent_diaries"][:500],
         }
 
-    async def generate_schedule(self, event, persona_name: str, persona_desc: str = "", session_id: str | None = None) -> dict:
+    async def generate_schedule(self, event, persona_name: str, persona_desc: str = "", session_id: str | None = None, target_date: str | None = None) -> dict:
         persona_ctx = await self._resolve_persona_context_internal(event=event, persona_name=persona_name, session_id=session_id)
         matched_persona = self.get_persona_config(persona_ctx.get("persona_name"), persona_ctx.get("persona_id"))
+        effective_date = str(target_date or datetime.datetime.now().strftime("%Y-%m-%d")).strip() or datetime.datetime.now().strftime("%Y-%m-%d")
         if not matched_persona:
             target_persona = persona_ctx.get("persona_name") or persona_name
             logger.warning(f"[dayflow] reject generation for unconfigured persona={target_persona}")
-            return self._build_persona_not_enabled_data(target_persona)
+            return self._build_persona_not_enabled_data(target_persona, target_date=effective_date)
 
         normalized_persona_name = str(matched_persona.get("name") or self.normalize_persona_key(persona_ctx.get("persona_name"), persona_ctx.get("persona_id"))).strip()
         persona = matched_persona
         pool = persona.get("pool", {}) or {}
         now = datetime.datetime.now()
-        date_str = now.strftime("%Y-%m-%d")
-        weekday = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][now.weekday()]
+        date_str = effective_date
+        try:
+            target_dt = datetime.datetime.strptime(effective_date, "%Y-%m-%d")
+        except Exception:
+            target_dt = now
+            date_str = now.strftime("%Y-%m-%d")
+        weekday = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][target_dt.weekday()]
         holiday = ""
         effective_session_id = session_id or (getattr(event, "unified_msg_origin", None) if event else None)
         if effective_session_id is None:
@@ -1258,7 +1269,7 @@ class DayflowService:
         logger.info(
             f"[dayflow-debug] persona={normalized_persona_name} style={outfit_style} "
             f"main={schedule_main_type} driver={core_event_driver} variation={configured_variation}->{effective_variation} "
-            f"desc_len={len(replacements['persona_desc'] or '')}, session={effective_session_id or 'none'}"
+            f"desc_len={len(replacements['persona_desc'] or '')}, session={effective_session_id or 'none'}, target_date={date_str}"
         )
 
         configured_provider_id = persona.get("provider_id") or None
@@ -1299,11 +1310,10 @@ class DayflowService:
             schedule = str(payload.get("schedule") or "").strip()
             if not outfit or not schedule:
                 return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少必要字段")
-            today = now.strftime("%Y-%m-%d")
             logger.info(
                 f"[dayflow] llm json schedule generated for persona={normalized_persona_name}, "
                 f"provider_used={actual_provider_id or 'session_default'}, configured_provider={configured_provider_id or 'none'}, "
-                f"session_provider={session_provider_id or 'none'}, session={effective_session_id or 'none'}"
+                f"session_provider={session_provider_id or 'none'}, session={effective_session_id or 'none'}, target_date={date_str}"
             )
             return {
                 "outfit": outfit,
@@ -1313,7 +1323,7 @@ class DayflowService:
                     "schedule_main_type": schedule_main_type,
                     "core_event_driver": core_event_driver,
                     "persona_name": normalized_persona_name,
-                    "date": today,
+                    "date": date_str,
                     "provider_id": actual_provider_id or "",
                     "configured_provider_id": configured_provider_id or "",
                     "session_provider_id": session_provider_id or "",
@@ -1333,6 +1343,6 @@ class DayflowService:
         except Exception as e:
             logger.warning(
                 f"[dayflow] llm generation failed for persona={normalized_persona_name}: {e}, "
-                f"configured_provider={configured_provider_id or 'none'}, session_provider={session_provider_id or 'none'}"
+                f"configured_provider={configured_provider_id or 'none'}, session_provider={session_provider_id or 'none'}, target_date={date_str}"
             )
             return build_generation_error_data(normalized_persona_name, validate_persona, f"LLM 调用失败: {e}")
