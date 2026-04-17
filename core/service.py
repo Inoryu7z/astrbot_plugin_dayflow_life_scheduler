@@ -540,6 +540,7 @@ class DayflowService:
                     persona_desc=persona_ctx["persona_desc"],
                     session_id=auto_session_id,
                     target_date=today,
+                    auto_retry=False,
                 )
                 if not data.get("meta", {}).get("error"):
                     self.save_generated(store_key, data)
@@ -1014,6 +1015,24 @@ class DayflowService:
             logger.warning(f"[dayflow] get_current_chat_provider_id failed: {e}")
             return None
 
+    async def _get_default_provider_id(self) -> str | None:
+        try:
+            if hasattr(self.context, "get_using_provider"):
+                provider = self.context.get_using_provider()
+                if provider:
+                    return getattr(provider, "id", None) or getattr(provider, "provider_id", None)
+            if hasattr(self.context, "provider_manager"):
+                pm = self.context.provider_manager
+                if hasattr(pm, "get_using_provider"):
+                    provider = pm.get_using_provider()
+                    if provider:
+                        return getattr(provider, "id", None) or getattr(provider, "provider_id", None)
+                if hasattr(pm, "selected_provider_id"):
+                    return pm.selected_provider_id or None
+        except Exception as e:
+            logger.debug(f"[dayflow] get_default_provider_id failed: {e}")
+        return None
+
     async def call_llm_with_provider_fallback(
         self,
         prompt: str,
@@ -1033,6 +1052,7 @@ class DayflowService:
 
         last_error: Exception | None = None
         last_text = ""
+        primary_failed = False
 
         if primary_provider_id is not None or fallback_provider_id is None:
             try:
@@ -1040,17 +1060,19 @@ class DayflowService:
                 if text:
                     return text, primary_provider_id
                 last_text = text
+                primary_failed = True
                 logger.warning(
-                    f"[dayflow] primary provider exhausted with empty result: provider={primary_provider_id or 'session_default'}"
+                    f"[dayflow] primary provider exhausted with empty result, switching to fallback: provider={primary_provider_id or 'session_default'}"
                 )
             except Exception as e:
                 last_error = e
+                primary_failed = True
                 logger.warning(
                     f"[dayflow] primary provider exhausted retries, switching to fallback: "
                     f"provider={primary_provider_id or 'session_default'}, error={e}"
                 )
 
-        if fallback_provider_id is not None:
+        if fallback_provider_id is not None and primary_failed:
             try:
                 text = await self.call_llm_with_retries(prompt, fallback_provider_id, retry_count=retry_count)
                 if text:
@@ -1064,7 +1086,7 @@ class DayflowService:
 
         if last_error is not None:
             raise last_error
-        return last_text, (fallback_provider_id if last_text and fallback_provider_id is not None else primary_provider_id)
+        return last_text, (fallback_provider_id if last_text and primary_failed and fallback_provider_id is not None else primary_provider_id)
 
     def get_last_debug_payload(self) -> dict[str, Any]:
         return self._last_debug_payload or {}
@@ -1185,7 +1207,7 @@ class DayflowService:
             "recent_diaries_preview": replacements["recent_diaries"][:500],
         }
 
-    async def generate_schedule(self, event, persona_name: str, persona_desc: str = "", session_id: str | None = None, target_date: str | None = None) -> dict:
+    async def generate_schedule(self, event, persona_name: str, persona_desc: str = "", session_id: str | None = None, target_date: str | None = None, auto_retry: bool = False) -> dict:
         persona_ctx = await self._resolve_persona_context_internal(event=event, persona_name=persona_name, session_id=session_id)
         matched_persona = self.get_persona_config(persona_ctx.get("persona_name"), persona_ctx.get("persona_id"))
         effective_date = str(target_date or datetime.datetime.now().strftime("%Y-%m-%d")).strip() or datetime.datetime.now().strftime("%Y-%m-%d")
@@ -1274,12 +1296,21 @@ class DayflowService:
 
         configured_provider_id = persona.get("provider_id") or None
         session_provider_id = await self._resolve_session_provider_id(event)
-        primary_provider_id = configured_provider_id or session_provider_id
-        fallback_provider_id = session_provider_id if configured_provider_id else None
-        if primary_provider_id and fallback_provider_id and primary_provider_id == fallback_provider_id:
-            fallback_provider_id = None
+        default_provider_id = await self._get_default_provider_id()
 
-        repair_retries = int(persona.get("retry_count", 2) or 2)
+        primary_provider_id = configured_provider_id or session_provider_id or default_provider_id
+        fallback_candidates = []
+        if configured_provider_id:
+            if session_provider_id and session_provider_id != configured_provider_id:
+                fallback_candidates.append(session_provider_id)
+            if default_provider_id and default_provider_id != configured_provider_id and default_provider_id != session_provider_id:
+                fallback_candidates.append(default_provider_id)
+        elif session_provider_id:
+            if default_provider_id and default_provider_id != session_provider_id:
+                fallback_candidates.append(default_provider_id)
+        fallback_provider_id = fallback_candidates[0] if fallback_candidates else None
+
+        repair_retries = int(persona.get("retry_count", 2) or 2) if auto_retry else 0
         actual_provider_id = primary_provider_id
         try:
             raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
@@ -1310,10 +1341,12 @@ class DayflowService:
             schedule = str(payload.get("schedule") or "").strip()
             if not outfit or not schedule:
                 return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少必要字段")
+            used_fallback = actual_provider_id != configured_provider_id and configured_provider_id is not None
             logger.info(
                 f"[dayflow] llm json schedule generated for persona={normalized_persona_name}, "
                 f"provider_used={actual_provider_id or 'session_default'}, configured_provider={configured_provider_id or 'none'}, "
-                f"session_provider={session_provider_id or 'none'}, session={effective_session_id or 'none'}, target_date={date_str}"
+                f"session_provider={session_provider_id or 'none'}, default_provider={default_provider_id or 'none'}, "
+                f"fallback_used={used_fallback}, session={effective_session_id or 'none'}, target_date={date_str}"
             )
             return {
                 "outfit": outfit,
@@ -1327,10 +1360,11 @@ class DayflowService:
                     "provider_id": actual_provider_id or "",
                     "configured_provider_id": configured_provider_id or "",
                     "session_provider_id": session_provider_id or "",
+                    "default_provider_id": default_provider_id or "",
                     "source_session_id": effective_session_id or "",
                     "weather": today_weather,
                     "prompt_template_version": "persona_full_template_v8_grok_style_research",
-                    "fallback": False,
+                    "fallback": used_fallback,
                     "variation_configured": configured_variation,
                     "variation_effective": effective_variation,
                     "style_reference": style_reference,

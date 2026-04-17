@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.1.2 - 2026-04-18
+
+**🔧 无限重试修复与自动Fallback机制**
+
+**1. 🐛 修复自动调度无限重试Bug**
+
+* 之前自动调度失败时，`generate_schedule` 内部会重试N次LLM调用，调度器本身又会重试N次，导致指数级重试（如9×9=81次请求）。
+* 现在新增 `auto_retry` 参数，自动调度场景下禁用 `generate_schedule` 内部重试，由调度器统一管理重试次数。
+* 手动触发（`/生成日程`）仍保留完整重试机制。
+
+**2. 🔄 修复空结果不触发Fallback的Bug**
+
+* 之前 `call_llm_with_provider_fallback` 在 primary provider 返回空结果时不会触发 fallback，直接返回空。
+* 现在无论异常还是空结果，都会正确切换到 fallback provider。
+
+**3. 🌐 新增自动Fallback到聊天模型机制**
+
+* 当配置的模型重试全部失败后，自动切换到聊天模型继续重试。
+* 重试流程：Primary provider重试N次 → Fallback provider重试N次 → 全部失败则停止。
+* 自动调度场景（无session）会 fallback 到 astrbot 默认聊天 provider。
+* 手动触发场景会 fallback 到当前会话使用的聊天模型。
+
+**4. 📊 增强Meta信息**
+
+* 新增 `default_provider_id` 字段，记录使用的默认 provider。
+* `fallback` 字段现在会正确反映是否使用了 fallback provider。
+* 日志新增 `fallback_used`、`default_provider` 等调试信息。
+
+**5. 🏗️ 新增 `_get_default_provider_id` 方法**
+
+* 支持多种 astrbot API 获取默认 provider 的方式。
+* 为自动调度场景提供 fallback 目标。
+
+---
+
 ## v1.1.1 - 2026-04-08
 
 **🛠️ 联动读取与重复生成修复**
