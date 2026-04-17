@@ -72,7 +72,7 @@ class DayflowPlugin(Star):
                 yield event.plain_result(f"🪄 正在为 {persona_name} 强制重生成今日日程，请稍候...")
             else:
                 yield event.plain_result(f"🪄 正在为 {persona_name} 生成今日日程，请稍候...")
-            data = await self.service.generate_schedule(event=event, persona_name=store_key, persona_desc=persona_desc, target_date=today)
+            data = await self.service.generate_schedule(event=event, persona_name=store_key, persona_desc=persona_desc, target_date=today, auto_retry=True)
             if data.get("meta", {}).get("error"):
                 yield event.plain_result(f"⚠️ 生成失败：{data.get('memo', '未知错误')}")
                 return
