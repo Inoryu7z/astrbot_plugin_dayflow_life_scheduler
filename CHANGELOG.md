@@ -1,5 +1,68 @@
 # Changelog
 
+## v1.2.0 - 2026-04-19
+
+**🧭 日程输出格式重构与提示词全面优化**
+
+**1. 🏗️ 日程输出格式从字符串改为结构化 timeline 数组**
+
+* JSON 输出结构从 `{outfit_style, outfit, schedule}` 改为 `{outfit_style, outfit, summary, timeline[]}`
+* `timeline` 数组中每个对象包含 `time_start`、`time_end`、`title`、`detail`、`outfit_change` 五个字段
+* 新增 `summary` 字段：25字内概括今天的主题和心情
+* 新增 `title` 字段：每个时段必须有创意标题，用诗意或生动的短语概括
+* `schedule` 字符串字段保留，由 `timeline` 数组自动合成，兼容 DayMind 等下游插件
+
+**2. 🧠 人设脱钩声明**
+
+* 明确 persona_desc 中的对话约束（字数限制、标点限制等）不适用于日程生成
+* 解决月见雪等角色人设污染日程叙述的问题（如20字限制导致日程事件也变短、标点自由导致全用空格）
+
+**3. 🚫 禁止元标签泄漏**
+
+* 禁止在 title/detail 中出现"核心事件"、"主线事件"、"XX驱动"等构思逻辑标签
+* 这些是内部构思依据，不是日程内容，不得泄露到输出文本中
+
+**4. ✨ 事件创造性要求**
+
+* 新增正面引导：每个非固定事件应有记忆点（小插曲/小转折）
+* 核心主线事件应有完整的起承转合：触发→发展→高潮→收束
+* 禁止两个以上连续时段都是被动消磨型内容
+
+**5. 👗 换装差异要求**
+
+* 两次穿搭须在同一风格体系下呈现明显差异：单品选择、配色深浅、层次搭配、版型轮廓等至少两项不同
+* 措辞改为性别中立，兼容男性角色
+
+**6. 📊 优先级体系重构**
+
+* 消除"必须严格遵循"通胀，统一为三层优先级：格式合规 > 人设脱钩 > 内容质量
+
+**7. 🔁 反重复规则优化**
+
+* 日记参考明确"只取连续性不取结构"，禁止复用日记中的事件序列和场景组合
+* 日记是主观感受，日程是客观记录，两者体裁不同
+
+**8. 🎲 随机度定义重写**
+
+* 从"和前几天有多不同"改为"今天有多大事发生"
+* 低=普通日常，中=小插曲日，高=重要事件日
+* 去掉具体例子避免提示词污染
+
+**9. 🌐 联网风格研究提示词重构**
+
+* SYSTEM_PROMPT：新增"工作方式"段落，穿搭建议要求包含搭配理由，新增 `difference` 字段明确两套穿搭差异，删除"无法稳定输出 JSON 则允许纯文本"兜底
+* QUERY_TEMPLATE：从7条指令性文本改为简洁搜索关键词，让搜索词和指令各司其职
+* 渲染逻辑：`_render_style_reference` 新增渲染 `difference` 字段，穿搭建议条数上限从6提升到8
+
+**10. 🔧 代码变更**
+
+* `generator.py`：新增 `_synthesize_schedule_from_timeline()` 函数（兼容 DayMind），`normalize_payload` 自动合成 schedule，`validate_payload` 支持 timeline 数组校验，`extract_timeline` 支持从 dict 或 string 提取，`build_repair_prompt` 适配新格式
+* `service.py`：返回值新增 `summary` 和 `timeline` 字段，`_render_style_reference` 新增 difference 渲染，`prompt_template_version` 升级为 `persona_full_template_v9_timeline_struct`
+* `main.py`：新增 `_render_schedule_display()` 渲染函数，优先用 timeline 数组渲染（含标题），回退到 schedule 字符串
+* `_conf_schema.json`：同步更新 `style_research_system_prompt` 和 `style_research_query_template` 的 default 值
+
+---
+
 ## v1.1.2 - 2026-04-18
 
 **🔧 无限重试修复与自动Fallback机制**
@@ -17,7 +80,7 @@
 
 **3. 🌐 新增自动Fallback到聊天模型机制**
 
-* 当配置的模型重试全部失败后，自动切换到聊天模型继续重试。
+* 当配置的专家模型重试全部失败后，自动切换到聊天模型（session provider 或默认 provider）继续重试。
 * 重试流程：Primary provider重试N次 → Fallback provider重试N次 → 全部失败则停止。
 * 自动调度场景（无session）会 fallback 到 astrbot 默认聊天 provider。
 * 手动触发场景会 fallback 到当前会话使用的聊天模型。

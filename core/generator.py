@@ -9,18 +9,20 @@ from astrbot.api import logger
 FORMAT_PRIORITY_APPEND_PROMPT = """
 
 ---
-【格式输出优先级追加要求】
-本任务首先是“格式合规任务”，其次才是“内容创作任务”。
-若格式不合规，则整次输出直接视为失败。
-请把“格式正确”放在最高优先级，优先级高于文采、人格演绎、氛围表达和内容丰富度。
+【格式输出追加要求】
+本任务有三层优先级，冲突时上层优先：
+1. 格式合规：输出必须是合法 JSON，字段结构正确，否则无法解析
+2. 内容质量：事件有趣、细节丰富、逻辑连贯
+3. 文采表达：语言美感、氛围表达
 
-你必须严格遵守以下规则：
+请严格遵守以下规则：
 1. 只允许输出 JSON 对象本体，不要 Markdown，不要代码块，不要解释，不要额外前后缀。
-2. JSON 必须包含字段：outfit_style、outfit、schedule。
+2. JSON 必须包含字段：outfit_style、outfit、summary、timeline。
 3. outfit_style 必须严格等于指定风格，不允许近义改写，不允许变体，不允许替换措辞。
 4. outfit 的第一行必须严格写为：风格：{outfit_style}
-5. 除了“风格：{outfit_style}”这行以外，不允许写成“【风格】”、“穿搭风格：”、“风格为：”或任何其他变体。
-6. 如果你觉得内容表达与格式要求冲突，必须优先服从格式要求。
+5. 除了"风格：{outfit_style}"这行以外，不允许写成"【风格】"、"穿搭风格："、"风格为："或任何其他变体。
+6. timeline 必须是数组，每个元素包含 time_start、time_end、title、detail、outfit_change 五个字段。
+7. title 禁止出现"核心事件"、"XX驱动"等元标签。
 """
 
 
@@ -64,6 +66,38 @@ def build_format_priority_append_prompt(persona: dict[str, Any]) -> str:
     return FORMAT_PRIORITY_APPEND_PROMPT.replace("{outfit_style}", required_style)
 
 
+def _synthesize_schedule_from_timeline(payload: dict) -> str:
+    # 兼容 DayMind：DayMind 只读取 schedule 字符串字段，不读取 timeline 数组。
+    # 当模型输出 timeline 数组但未输出 schedule 时，从此处合成 schedule 字符串，
+    # 使 DayMind 的 diary/reflection 提示词仍能获取完整日程信息。
+    timeline = payload.get("timeline")
+    if not isinstance(timeline, list) or not timeline:
+        return ""
+    parts = []
+    for item in timeline:
+        if not isinstance(item, dict):
+            continue
+        time_start = str(item.get("time_start") or "").strip()
+        time_end = str(item.get("time_end") or "").strip()
+        title = str(item.get("title") or "").strip()
+        detail = str(item.get("detail") or "").strip()
+        outfit_change = str(item.get("outfit_change") or "").strip()
+        time_range = f"{time_start}-{time_end}" if time_start and time_end else ""
+        line_parts = []
+        if time_range:
+            line_parts.append(time_range)
+        if title:
+            line_parts.append(title)
+        header = " ".join(line_parts)
+        block = header
+        if detail:
+            block += f"\n{detail}"
+        if outfit_change:
+            block += f"\n👗 换装：{outfit_change}"
+        parts.append(block)
+    return "\n".join(parts)
+
+
 def normalize_payload(payload: dict | None, persona: dict[str, Any]) -> dict | None:
     if not payload or not isinstance(payload, dict):
         return payload
@@ -87,6 +121,19 @@ def normalize_payload(payload: dict | None, persona: dict[str, Any]) -> dict | N
             outfit = f"风格：{required_style}"
         normalized["outfit"] = outfit
 
+    # 兼容 DayMind：若模型输出了 timeline 但未输出 schedule，
+    # 从 timeline 数组合成 schedule 字符串，确保 DayMind 可正常读取日程。
+    raw_schedule = normalized.get("schedule")
+    if isinstance(raw_schedule, list):
+        if "timeline" not in normalized or not isinstance(normalized.get("timeline"), list):
+            normalized["timeline"] = raw_schedule
+        normalized["schedule"] = _synthesize_schedule_from_timeline(normalized)
+    schedule = str(normalized.get("schedule") or "").strip()
+    if not schedule:
+        synthesized = _synthesize_schedule_from_timeline(normalized)
+        if synthesized:
+            normalized["schedule"] = synthesized
+
     return normalized
 
 
@@ -97,18 +144,37 @@ def validate_payload(payload: dict | None, persona: dict[str, Any]) -> tuple[boo
     required_style = str(persona.get("outfit_style") or "").strip()
     outfit_style = str(payload.get("outfit_style") or "").strip()
     outfit = str(payload.get("outfit") or "").strip()
-    schedule = str(payload.get("schedule") or "").strip()
 
     if not outfit:
         return False, "outfit 不能为空"
-    if not schedule:
-        return False, "schedule 不能为空"
     if required_style and outfit_style != required_style:
         return False, f'outfit_style 必须严格等于 "{required_style}"'
     if required_style:
         first_line = (outfit.splitlines()[0] if outfit.splitlines() else "").strip()
         if first_line != f"风格：{required_style}":
             return False, f'outfit 第一行必须为 "风格：{required_style}"'
+
+    timeline = payload.get("timeline")
+    schedule = str(payload.get("schedule") or "").strip()
+
+    if isinstance(timeline, list):
+        if not timeline:
+            return False, "timeline 不能为空数组"
+        for i, item in enumerate(timeline):
+            if not isinstance(item, dict):
+                return False, f"timeline[{i}] 不是有效对象"
+            title = str(item.get("title") or "").strip()
+            detail = str(item.get("detail") or "").strip()
+            if not title:
+                return False, f"timeline[{i}] 的 title 不能为空"
+            if not detail:
+                return False, f"timeline[{i}] 的 detail 不能为空"
+            for meta_label in ["核心事件", "主线事件", "情感驱动", "任务驱动", "人际驱动", "抉择驱动", "突发驱动", "仪式驱动", "回忆驱动"]:
+                if meta_label in title:
+                    return False, f'timeline[{i}] 的 title 包含禁止的元标签："{meta_label}"'
+    elif not schedule:
+        return False, "timeline 和 schedule 均为空，至少需要提供其一"
+
     return True, ""
 
 
@@ -136,14 +202,30 @@ def build_repair_prompt(
         f"JSON 的 outfit_style 必须严格等于 \"{required_style}\"。\n"
         f"outfit 第一行必须严格为：风格：{required_style}\n"
         "不要写成“【风格】”、“穿搭风格：”、“风格为：”或任何其他变体。\n"
+        "JSON 必须包含 timeline 数组，每个元素含 time_start、time_end、title、detail、outfit_change。\n"
+        "title 禁止出现“核心事件”、“XX驱动”等元标签。\n"
         "如果格式与内容表达发生冲突，必须优先满足格式要求。\n"
         "之前的不合格输出如下（仅供修复参考）：\n"
         f"{bad_text}"
     )
 
 
-def extract_timeline(schedule: str) -> list[dict[str, str]]:
+def extract_timeline(schedule: str | dict) -> list[dict[str, str]]:
     timeline = []
+    if isinstance(schedule, dict):
+        tl_array = schedule.get("timeline")
+        if isinstance(tl_array, list):
+            for item in tl_array:
+                if not isinstance(item, dict):
+                    continue
+                start = str(item.get("time_start") or "").strip()
+                end = str(item.get("time_end") or "").strip()
+                title = str(item.get("title") or "").strip()
+                if start and end:
+                    entry = {"time": start, "activity": f"至 {end} {title}", "status": "planned"}
+                    timeline.append(entry)
+            return timeline[:20]
+        schedule = str(schedule.get("schedule") or "")
     for m in re.finditer(r"(\d{2}:\d{2})\s*[-—~～]\s*(\d{2}:\d{2})", schedule or ""):
         start = m.group(1)
         end = m.group(2)

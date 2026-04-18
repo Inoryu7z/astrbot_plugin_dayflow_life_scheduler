@@ -6,6 +6,41 @@ from astrbot.api.star import Context, Star
 from .core.service import DayflowService
 
 
+def _render_schedule_display(data: dict) -> str:
+    outfit = str(data.get("outfit") or "").strip()
+    summary = str(data.get("summary") or "").strip()
+    timeline = data.get("timeline")
+
+    header = f"👕 今日穿搭：{outfit}"
+    if summary:
+        header += f"\n💬 {summary}"
+
+    if isinstance(timeline, list) and timeline:
+        parts = []
+        for i, item in enumerate(timeline, 1):
+            if not isinstance(item, dict):
+                continue
+            time_start = str(item.get("time_start") or "").strip()
+            time_end = str(item.get("time_end") or "").strip()
+            title = str(item.get("title") or "").strip()
+            detail = str(item.get("detail") or "").strip()
+            outfit_change = str(item.get("outfit_change") or "").strip()
+            time_range = f"{time_start}-{time_end}" if time_start and time_end else ""
+            block = f"── 第 {i} 项 ──\n🕐 {time_range}"
+            if title:
+                block += f"\n📌 {title}"
+            if detail:
+                block += f"\n📄 {detail}"
+            if outfit_change:
+                block += f"\n👗 换装：{outfit_change}"
+            parts.append(block)
+        schedule_text = "\n\n".join(parts)
+    else:
+        schedule_text = str(data.get("schedule") or "").strip()
+
+    return f"{header}\n📝 日程安排：\n{schedule_text}"
+
+
 class DayflowPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -37,7 +72,7 @@ class DayflowPlugin(Star):
         )
         if existing_before_lock and not existing_before_lock.get("meta", {}).get("error") and not existing_before_lock.get("meta", {}).get("fallback") and not force_regenerate:
             yield event.plain_result(
-                f"🧠 人格：{persona_name}\n👕 今日穿搭：{existing_before_lock['outfit']}\n📝 日程安排：\n{existing_before_lock['schedule']}"
+                f"🧠 人格：{persona_name}\n{_render_schedule_display(existing_before_lock)}"
             )
             return
 
@@ -50,7 +85,7 @@ class DayflowPlugin(Star):
             )
             if existing_while_busy and not existing_while_busy.get("meta", {}).get("error") and not existing_while_busy.get("meta", {}).get("fallback") and not force_regenerate:
                 yield event.plain_result(
-                    f"🧠 人格：{persona_name}\n👕 今日穿搭：{existing_while_busy['outfit']}\n📝 日程安排：\n{existing_while_busy['schedule']}"
+                    f"🧠 人格：{persona_name}\n{_render_schedule_display(existing_while_busy)}"
                 )
             else:
                 yield event.plain_result(f"当前人格 {persona_name} 已有生成任务在进行中，请稍后再试。")
@@ -64,7 +99,7 @@ class DayflowPlugin(Star):
             )
             if existing_after_lock and not existing_after_lock.get("meta", {}).get("error") and not existing_after_lock.get("meta", {}).get("fallback") and not force_regenerate:
                 yield event.plain_result(
-                    f"🧠 人格：{persona_name}\n👕 今日穿搭：{existing_after_lock['outfit']}\n📝 日程安排：\n{existing_after_lock['schedule']}"
+                    f"🧠 人格：{persona_name}\n{_render_schedule_display(existing_after_lock)}"
                 )
                 return
 
@@ -79,11 +114,11 @@ class DayflowPlugin(Star):
             self.service.save_generated(store_key, data)
             if force_regenerate:
                 yield event.plain_result(
-                    f"✅ 已强制重生成 {persona_name} 的今日日程\n👕 今日穿搭：{data['outfit']}\n📝 日程安排：\n{data['schedule']}"
+                    f"✅ 已强制重生成 {persona_name} 的今日日程\n{_render_schedule_display(data)}"
                 )
             else:
                 yield event.plain_result(
-                    f"✅ 已生成 {persona_name} 的今日日程\n👕 今日穿搭：{data['outfit']}\n📝 日程安排：\n{data['schedule']}"
+                    f"✅ 已生成 {persona_name} 的今日日程\n{_render_schedule_display(data)}"
                 )
         finally:
             await self.service.exit_generation(store_key)
@@ -107,7 +142,7 @@ class DayflowPlugin(Star):
 
         if today_schedule and not today_schedule.get("meta", {}).get("error") and not today_schedule.get("meta", {}).get("fallback"):
             yield event.plain_result(
-                f"🧠 人格：{persona_name}\n👕 今日穿搭：{today_schedule['outfit']}\n📝 日程安排：\n{today_schedule['schedule']}"
+                f"🧠 人格：{persona_name}\n{_render_schedule_display(today_schedule)}"
             )
             return
 
