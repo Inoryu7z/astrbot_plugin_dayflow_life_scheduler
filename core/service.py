@@ -23,35 +23,33 @@ from .generator import (
 from .store import DayflowStore
 
 
-STYLE_RESEARCH_SYSTEM_PROMPT = """你是服饰风格研究助手。你的任务不是泛泛科普，而是为另一个日程/穿搭生成模型提供低歧义、可执行的风格约束。
-请结合联网搜索结果，优先输出一个 JSON 对象，字段尽量固定为：
-- definition: string，风格定义，明确主体风格是什么，不是什么
-- must_keep: string[]，两套穿搭都必须保留的核心识别点，3-6条
-- morning_look: string[]，晨间第一套穿搭建议，3-6条
-- afternoon_look: string[]，午后第二套换装建议，3-6条
-- avoid: string[]，常见误判与禁区，3-6条
-- notes: string，补充说明，强调两次换装必须属于同一风格体系
-如果你无法稳定输出 JSON，则允许输出结构清晰的纯文本，但文本中必须覆盖：
-1. 风格定义
-2. 晨间第一套建议
-3. 午后第二套换装建议
-4. 常见误判与禁区
-规则：
-1. 不要输出 Markdown 代码块，不要额外解释。
-2. 必须服务于“一天内两次装扮”的使用场景。
-3. 第二套换装只能做同风格场景化变化，不能换成别的相近风格。
-4. 如果风格是混合风格，必须指出主体风格与辅助元素的关系。
-5. 结果要去重、压缩、边界清晰。
-6. 用中文输出。"""
+STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰风格研究助手。你的任务是基于联网搜索结果，为另一个日程生成模型提供低歧义、可执行的穿搭方案。
 
-STYLE_RESEARCH_QUERY_TEMPLATE = """请为日程生成模型研究穿搭风格“{style_name}”。
-要求：
-1. 明确这个风格的准确定义，指出主体风格与辅助元素的关系。
-2. 给出两套同一风格体系下的穿搭建议：晨间第一套、午后第二套换装。
-3. 第二套只能是同风格的场景化变化，不能换成相近但不同的风格。
-4. 提炼两套都必须保留的识别点。
-5. 提炼常见误判与禁区，尤其避免把风格按字面联想错误理解。
-6. 输出要适合后续模型直接拿去生成穿搭与日程，不要泛泛而谈。"""
+## 工作方式
+1. 从搜索结果中提炼该风格的核心特征、典型单品和搭配逻辑
+2. 不要复述搜索结果原文，要提炼成可直接用于穿搭生成的指令
+
+## 输出格式
+输出 JSON 对象，字段如下：
+- definition: string，风格定义——这个风格是什么，不是什么，主体风格与辅助元素的关系
+- must_keep: string[]，两套穿搭都必须保留的核心识别点，3-6条
+- morning_look: string[]，晨间第一套穿搭建议，5-8条，每条须包含：具体单品名称+材质+配色+搭配理由
+- afternoon_look: string[]，午后第二套换装建议，5-8条，每条须包含：具体单品名称+材质+配色+搭配理由
+- difference: string[]，两套穿搭之间的关键差异点，3-5条（须具体：如"晨间浅粉系轻盈搭配，午后深酒红系沉稳搭配"，而非"风格场景化变化"）
+- avoid: string[]，常见误判与禁区，3-6条
+- notes: string，补充说明
+
+## 两套穿搭的要求
+1. 必须属于同一风格体系，但必须在视觉上呈现明显差异——不是换件上衣就完事，而是从单品选择、配色深浅、层次搭配、版型轮廓等多维度拉开差距
+2. 两套都应完整覆盖从上到下、从里到外的搭配逻辑，让日程生成模型能直接据此写出完整穿搭描述
+3. 如果风格是混合风格，两套都须体现主体风格与辅助元素的主辅关系
+
+规则：
+1. 必须输出 JSON 对象，不要输出 Markdown 代码块，不要额外解释
+2. 结果要去重、压缩、边界清晰
+3. 用中文输出"""
+
+STYLE_RESEARCH_QUERY_TEMPLATE = """「{style_name}」穿搭风格 搭配要点 单品推荐 常见误区"""
 
 
 class DayflowService:
@@ -250,8 +248,9 @@ class DayflowService:
         definition = str(payload.get("definition") or "").strip()
         notes = str(payload.get("notes") or "").strip()
         must_keep = self._clip_list(payload.get("must_keep"), max_items=6)
-        morning_look = self._clip_list(payload.get("morning_look"), max_items=6)
-        afternoon_look = self._clip_list(payload.get("afternoon_look"), max_items=6)
+        morning_look = self._clip_list(payload.get("morning_look"), max_items=8)
+        afternoon_look = self._clip_list(payload.get("afternoon_look"), max_items=8)
+        difference = self._clip_list(payload.get("difference"), max_items=5)
         avoid = self._clip_list(payload.get("avoid"), max_items=6)
         lines = [f"风格名：{style_name}"]
         if definition:
@@ -265,6 +264,9 @@ class DayflowService:
         if afternoon_look:
             lines.append("午后第二套换装建议：")
             lines.extend(f"- {item}" for item in afternoon_look)
+        if difference:
+            lines.append("两套穿搭之间的关键差异：")
+            lines.extend(f"- {item}" for item in difference)
         if avoid:
             lines.append("常见误判与禁区：")
             lines.extend(f"- {item}" for item in avoid)
@@ -1339,8 +1341,12 @@ class DayflowService:
             parsed_style = str(payload.get("outfit_style") or outfit_style).strip()
             outfit = str(payload.get("outfit") or "").strip()
             schedule = str(payload.get("schedule") or "").strip()
-            if not outfit or not schedule:
-                return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少必要字段")
+            summary = str(payload.get("summary") or "").strip()
+            timeline_data = payload.get("timeline")
+            if not outfit:
+                return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少 outfit 字段")
+            if not schedule and not timeline_data:
+                return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少 schedule 和 timeline 字段")
             used_fallback = actual_provider_id != configured_provider_id and configured_provider_id is not None
             logger.info(
                 f"[dayflow] llm json schedule generated for persona={normalized_persona_name}, "
@@ -1351,6 +1357,7 @@ class DayflowService:
             return {
                 "outfit": outfit,
                 "schedule": schedule,
+                "summary": summary,
                 "meta": {
                     "style": parsed_style,
                     "schedule_main_type": schedule_main_type,
@@ -1363,13 +1370,13 @@ class DayflowService:
                     "default_provider_id": default_provider_id or "",
                     "source_session_id": effective_session_id or "",
                     "weather": today_weather,
-                    "prompt_template_version": "persona_full_template_v8_grok_style_research",
+                    "prompt_template_version": "persona_full_template_v9_timeline_struct",
                     "fallback": used_fallback,
                     "variation_configured": configured_variation,
                     "variation_effective": effective_variation,
                     "style_reference": style_reference,
                 },
-                "timeline": extract_timeline(schedule),
+                "timeline": timeline_data if isinstance(timeline_data, list) and timeline_data else extract_timeline(schedule),
                 "weather": today_weather,
                 "memo": "",
                 "long_term_memory": [],
