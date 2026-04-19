@@ -1,9 +1,19 @@
 import datetime
+import re
 
+from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
+from astrbot.core.provider.entities import ProviderRequest
 
 from .core.service import DayflowService
+
+DAYFLOW_INJECTION_HEADER = "<DayFlow-Schedule>"
+DAYFLOW_INJECTION_FOOTER = "</DayFlow-Schedule>"
+_INJECTION_PATTERN = re.compile(
+    re.escape(DAYFLOW_INJECTION_HEADER) + r".*?" + re.escape(DAYFLOW_INJECTION_FOOTER),
+    flags=re.DOTALL,
+)
 
 
 def _render_schedule_display(data: dict) -> str:
@@ -41,6 +51,31 @@ def _render_schedule_display(data: dict) -> str:
     return f"{header}\n📝 日程安排：\n{schedule_text}"
 
 
+def _build_injection_text(data: dict) -> str | None:
+    meta = data.get("meta") or {}
+    if meta.get("error") or meta.get("fallback"):
+        return None
+    outfit = str(data.get("outfit") or "").strip()
+    schedule = str(data.get("schedule") or "").strip()
+    if not outfit and not schedule:
+        return None
+    parts = []
+    if outfit:
+        parts.append(f"今日穿搭：{outfit}")
+    if schedule:
+        parts.append(f"今日日程：\n{schedule}")
+    body = "\n".join(parts)
+    return f"{DAYFLOW_INJECTION_HEADER}\n{body}\n{DAYFLOW_INJECTION_FOOTER}"
+
+
+def _remove_dayflow_injection(system_prompt: str | None) -> tuple[str, bool]:
+    if not system_prompt:
+        return system_prompt or "", False
+    cleaned = _INJECTION_PATTERN.sub("", system_prompt)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, cleaned != system_prompt
+
+
 class DayflowPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -56,6 +91,33 @@ class DayflowPlugin(Star):
 
     async def get_life_context(self, session_id: str | None = None, persona_name: str | None = None, target_date: str | None = None) -> dict:
         return await self.service.get_life_context(session_id=session_id, persona_name=persona_name, target_date=target_date)
+
+    @filter.on_llm_request()
+    async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+        try:
+            session_id = getattr(event, "unified_msg_origin", None)
+            if not session_id:
+                return
+
+            if getattr(req, "system_prompt", None) is None:
+                req.system_prompt = ""
+
+            req.system_prompt, removed = _remove_dayflow_injection(req.system_prompt)
+            if removed:
+                logger.debug(f"[dayflow] 已清理上次日程注入: session={session_id}")
+
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            data = await self.service.get_life_context(session_id=session_id, target_date=today)
+
+            injection = _build_injection_text(data)
+            if injection:
+                req.system_prompt += f"\n\n{injection}"
+                logger.info(
+                    f"[dayflow] 已注入今日日程到系统提示词: session={session_id}, "
+                    f"persona={str((data.get('meta') or {}).get('persona_name') or '')}, date={today}"
+                )
+        except Exception as e:
+            logger.warning(f"[dayflow] on_llm_request 注入失败: {e}")
 
     async def _generate_for_event(self, event: AstrMessageEvent, persona_name: str, persona_desc: str, store_key: str, force_regenerate: bool = False):
         if not self.service.is_persona_configured(persona_name):
