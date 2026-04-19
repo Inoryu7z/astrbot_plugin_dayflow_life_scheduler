@@ -1,5 +1,52 @@
 # Changelog
 
+## v1.2.2 - 2026-04-19
+
+**✨ 新增定制日程功能**
+
+**1. 🎯 新增 `/定制日程` 命令**
+
+* 用户可通过 `/定制日程 <要求>` 命令，在生成日程时注入额外的定制要求。
+* 例如：`/定制日程 今天穿洛丽塔，下午约会`、`/定制日程 今天穿杏花微雨`。
+
+**2. 🧠 意图解析机制**
+
+* 当用户使用 `/定制日程` 时，Grok 会在风格研究的同时解析用户意图。
+* 支持识别并覆盖：
+  - `outfit_style`：穿搭风格大类（优先使用池中相近值）
+  - `outfit_item`：具体单品名（如"杏花微雨"）
+  - `schedule_main_type`：日程主线类型
+  - `core_event_driver`：核心事件驱动
+  - `outfit_adjustments`：穿搭调整（如"第二套下身换裤子"）
+
+**3. 🔄 风格研究自动重搜索**
+
+* 当用户指定的风格与随机抽取的不同时，会自动用新风格重新搜索风格参考。
+* 例如：随机抽到"女仆装"，用户说"穿杏花微雨"，Grok 会重新搜索"杏花微雨"的风格信息。
+
+**4. 📝 Prompt 注入优化**
+
+* 用户定制要求会清晰地注入到最终生成的 Prompt 中。
+* 明确标注穿搭风格、具体单品、穿搭调整等信息。
+
+**5. ✅ 校验兼容**
+
+* `validate_payload` 支持放行用户指定的池外风格。
+* 通过 `user_specified_outfit_style` 标记区分用户指定和随机抽取。
+
+**6. ⚙️ 新增配置项**
+
+* `custom_schedule_intent_append`：定制日程意图解析追加模板，高级用户可自定义。
+
+**7. 🔧 代码变更**
+
+* `main.py`：新增 `/定制日程` 命令，`_generate_for_event` 支持 `extra_requirement` 参数。
+* `service.py`：新增 `CUSTOM_SCHEDULE_INTENT_APPEND` 常量，`_research_style_reference` 支持意图解析，`generate_schedule` 支持意图覆盖和 Prompt 注入。
+* `generator.py`：`validate_payload` 放行用户指定风格。
+* `_conf_schema.json`：新增 `custom_schedule_intent_append` 配置项。
+
+---
+
 ## v1.2.1 - 2026-04-19
 
 **🐛 修复日程未注入系统提示词的遗漏问题**

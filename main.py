@@ -119,7 +119,7 @@ class DayflowPlugin(Star):
         except Exception as e:
             logger.warning(f"[dayflow] on_llm_request 注入失败: {e}")
 
-    async def _generate_for_event(self, event: AstrMessageEvent, persona_name: str, persona_desc: str, store_key: str, force_regenerate: bool = False):
+    async def _generate_for_event(self, event: AstrMessageEvent, persona_name: str, persona_desc: str, store_key: str, force_regenerate: bool = False, extra_requirement: str | None = None):
         if not self.service.is_persona_configured(persona_name):
             yield event.plain_result(f"当前人格未在 Dayflow 中启用：{persona_name}")
             return
@@ -165,16 +165,22 @@ class DayflowPlugin(Star):
                 )
                 return
 
-            if force_regenerate:
+            if extra_requirement:
+                yield event.plain_result(f"🪄 正在为 {persona_name} 定制今日日程，请稍候...")
+            elif force_regenerate:
                 yield event.plain_result(f"🪄 正在为 {persona_name} 强制重生成今日日程，请稍候...")
             else:
                 yield event.plain_result(f"🪄 正在为 {persona_name} 生成今日日程，请稍候...")
-            data = await self.service.generate_schedule(event=event, persona_name=store_key, persona_desc=persona_desc, target_date=today, auto_retry=True)
+            data = await self.service.generate_schedule(event=event, persona_name=store_key, persona_desc=persona_desc, target_date=today, auto_retry=True, extra_requirement=extra_requirement)
             if data.get("meta", {}).get("error"):
                 yield event.plain_result(f"⚠️ 生成失败：{data.get('memo', '未知错误')}")
                 return
             self.service.save_generated(store_key, data)
-            if force_regenerate:
+            if extra_requirement:
+                yield event.plain_result(
+                    f"✅ 已为 {persona_name} 定制今日日程\n{_render_schedule_display(data)}"
+                )
+            elif force_regenerate:
                 yield event.plain_result(
                     f"✅ 已强制重生成 {persona_name} 的今日日程\n{_render_schedule_display(data)}"
                 )
@@ -221,6 +227,33 @@ class DayflowPlugin(Star):
             return
         store_key = self.service.normalize_persona_key(persona_name, persona_ctx.get("persona_id"))
         async for result in self._generate_for_event(event, persona_name, persona_desc, store_key, force_regenerate=True):
+            yield result
+
+    @filter.command("定制日程", alias={"life_custom", "dayflow_custom"})
+    async def dayflow_custom(self, event: AstrMessageEvent):
+        message_str = str(getattr(event, "message_str", "") or "").strip()
+        extra_requirement = ""
+        for cmd in ("定制日程", "life_custom", "dayflow_custom"):
+            if message_str.startswith(cmd):
+                rest = message_str[len(cmd):].strip()
+                if rest:
+                    extra_requirement = rest
+                break
+        if not extra_requirement:
+            yield event.plain_result("请提供定制要求，例如：/定制日程 今天穿洛丽塔，下午约会")
+            return
+
+        persona_ctx = await self.service.resolve_persona_context(event=event)
+        persona_name = persona_ctx["persona_name"]
+        persona_desc = persona_ctx["persona_desc"]
+        if not self.service.is_persona_configured(persona_name, persona_ctx.get("persona_id")):
+            yield event.plain_result(f"当前人格未在 Dayflow 中启用：{persona_name}")
+            return
+        store_key = self.service.normalize_persona_key(persona_name, persona_ctx.get("persona_id"))
+        async for result in self._generate_for_event(
+            event, persona_name, persona_desc, store_key,
+            force_regenerate=True, extra_requirement=extra_requirement,
+        ):
             yield result
 
     @filter.command("查看人格日程", alias={"life_personas", "dayflow_personas"})

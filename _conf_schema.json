@@ -41,6 +41,16 @@
     "editor_language": "markdown",
     "editor_theme": "vs-dark"
   },
+  "custom_schedule_intent_append": {
+    "description": "定制日程意图解析追加模板",
+    "type": "text",
+    "default": "\n\n## 定制日程意图解析（附加任务）\n\n用户定制要求：{extra_requirement}\n\n可用池：\n- 穿搭风格池：{outfit_styles_pool}\n- 主线类型池：{schedule_main_types_pool}\n- 事件驱动池：{core_event_drivers_pool}\n\n请在 JSON 输出中额外包含 intent_overrides 字段：\n\n### intent_overrides 填写规则\n\n1. **outfit_style**（string | null）\n   - 用户指定了穿搭风格/单品 → 填写风格大类\n   - 优先使用池中相近值（如\"洛丽塔\"→\"甜系洛丽塔风格\"，\"杏花微雨\"→\"甜系洛丽塔风格\"）\n   - 池中确实无匹配 → 用用户原文\n   - 用户只是调整当前风格（如\"穿暴露点\"）→ null，调整写到 outfit_adjustments\n   - 与穿搭无关 → null\n\n2. **outfit_item**（string | null）\n   - 用户指定了具体单品（如\"杏花微雨\"）→ 填写单品名\n   - 用户只说了风格大类（如\"洛丽塔\"）→ null\n   - 与穿搭无关 → null\n\n3. **schedule_main_type**（string | null）\n   - 用户要求影响日程整体走向 → 填写覆盖值\n   - 否则 → null\n\n4. **core_event_driver**（string | null）\n   - 用户要求涉及事件核心动机 → 填写覆盖值\n   - 否则 → null\n\n5. **outfit_adjustments**（string | null）\n   - 用户对穿搭有非整体换风格的调整 → 原文转述\n   - 例：\"第二套下身换裤子\" → \"午后换装下半身改为裤子\"\n   - 无调整 → null\n\n### 重要提示\n- outfit_style 和 outfit_item 可同时存在：style 是风格大类，item 是具体单品\n- 如果用户指定了新风格，请基于该风格进行风格研究\n- 如果 outfit_adjustments 非 null，请在 morning_look/afternoon_look 中体现调整",
+    "hint": "当用户使用 /定制日程 命令时，此模板会追加到 Grok 风格研究的 system prompt 后面，用于解析用户意图。模板必须保留 {extra_requirement}、{outfit_styles_pool}、{schedule_main_types_pool}、{core_event_drivers_pool} 占位符。",
+    "editor_mode": true,
+    "editor_mode_fullscreen": true,
+    "editor_language": "markdown",
+    "editor_theme": "vs-dark"
+  },
   "personas": {
     "description": "人格配置",
     "type": "template_list",

@@ -142,17 +142,25 @@ def validate_payload(payload: dict | None, persona: dict[str, Any]) -> tuple[boo
         return False, "未解析出 JSON 对象"
 
     required_style = str(persona.get("outfit_style") or "").strip()
+    user_specified_style = str(persona.get("user_specified_outfit_style") or "").strip()
     outfit_style = str(payload.get("outfit_style") or "").strip()
     outfit = str(payload.get("outfit") or "").strip()
 
     if not outfit:
         return False, "outfit 不能为空"
     if required_style and outfit_style != required_style:
-        return False, f'outfit_style 必须严格等于 "{required_style}"'
+        if user_specified_style and outfit_style == user_specified_style:
+            pass
+        else:
+            return False, f'outfit_style 必须严格等于 "{required_style}"'
     if required_style:
         first_line = (outfit.splitlines()[0] if outfit.splitlines() else "").strip()
-        if first_line != f"风格：{required_style}":
-            return False, f'outfit 第一行必须为 "风格：{required_style}"'
+        expected_first_line = f"风格：{required_style}"
+        if first_line != expected_first_line:
+            if user_specified_style and first_line == f"风格：{user_specified_style}":
+                pass
+            else:
+                return False, f'outfit 第一行必须为 "风格：{required_style}"'
 
     timeline = payload.get("timeline")
     schedule = str(payload.get("schedule") or "").strip()
