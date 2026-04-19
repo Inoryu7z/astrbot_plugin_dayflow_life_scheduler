@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.2.3 - 2026-04-19
+
+**✨ 新增明日日程定制功能**
+
+**1. 🎯 新增 `/明日日程` 命令**
+
+* 用户可提前设置明天的定制日程要求。
+* 例如：`/明日日程 穿洛丽塔，下午约会`。
+* 明天自动生成时会自动应用该要求。
+
+**2. 🎯 新增 `/取消明日日程` 命令**
+
+* 取消已设置的明日定制日程要求。
+* 取消后明天将正常随机生成。
+
+**3. 💾 新增 pending_custom_requests 存储**
+
+* 定制要求持久化存储，重启后仍有效。
+* 每个人格独立存储。
+* 自动清理过期数据。
+
+**4. 📝 日志精简**
+
+* `on_llm_request` 注入日程时的日志精简为：`[dayflow] 已注入日程: YYYY-MM-DD`
+
+**5. 🔧 代码变更**
+
+* `store.py`：新增 `pending_custom_requests` 存储及相关方法。
+* `service.py`：新增 `set_tomorrow_custom_request`、`clear_tomorrow_custom_request`、`consume_pending_custom_request` 方法；自动调度时读取 pending_custom_requests。
+* `main.py`：新增 `/明日日程` 和 `/取消明日日程` 命令。
+
+---
+
 ## v1.2.2 - 2026-04-19
 
 **✨ 新增定制日程功能**

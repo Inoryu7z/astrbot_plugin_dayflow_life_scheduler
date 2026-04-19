@@ -112,10 +112,7 @@ class DayflowPlugin(Star):
             injection = _build_injection_text(data)
             if injection:
                 req.system_prompt += f"\n\n{injection}"
-                logger.info(
-                    f"[dayflow] 已注入今日日程到系统提示词: session={session_id}, "
-                    f"persona={str((data.get('meta') or {}).get('persona_name') or '')}, date={today}"
-                )
+                logger.info(f"[dayflow] 已注入日程: {today}")
         except Exception as e:
             logger.warning(f"[dayflow] on_llm_request 注入失败: {e}")
 
@@ -255,6 +252,43 @@ class DayflowPlugin(Star):
             force_regenerate=True, extra_requirement=extra_requirement,
         ):
             yield result
+
+    @filter.command("明日日程", alias={"life_tomorrow", "dayflow_tomorrow"})
+    async def dayflow_tomorrow(self, event: AstrMessageEvent):
+        message_str = str(getattr(event, "message_str", "") or "").strip()
+        requirement = ""
+        for cmd in ("明日日程", "life_tomorrow", "dayflow_tomorrow"):
+            if message_str.startswith(cmd):
+                rest = message_str[len(cmd):].strip()
+                if rest:
+                    requirement = rest
+                break
+        if not requirement:
+            yield event.plain_result("请提供定制要求，例如：/明日日程 穿洛丽塔，下午约会")
+            return
+
+        persona_ctx = await self.service.resolve_persona_context(event=event)
+        persona_name = persona_ctx["persona_name"]
+        if not self.service.is_persona_configured(persona_name, persona_ctx.get("persona_id")):
+            yield event.plain_result(f"当前人格未在 Dayflow 中启用：{persona_name}")
+            return
+        store_key = self.service.normalize_persona_key(persona_name, persona_ctx.get("persona_id"))
+        self.service.set_tomorrow_custom_request(store_key, requirement)
+        tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        yield event.plain_result(f"✅ 已为 {persona_name} 设置明日（{tomorrow}）定制日程要求：{requirement}")
+
+    @filter.command("取消明日日程", alias={"life_cancel_tomorrow", "dayflow_cancel_tomorrow"})
+    async def dayflow_cancel_tomorrow(self, event: AstrMessageEvent):
+        persona_ctx = await self.service.resolve_persona_context(event=event)
+        persona_name = persona_ctx["persona_name"]
+        if not self.service.is_persona_configured(persona_name, persona_ctx.get("persona_id")):
+            yield event.plain_result(f"当前人格未在 Dayflow 中启用：{persona_name}")
+            return
+        store_key = self.service.normalize_persona_key(persona_name, persona_ctx.get("persona_id"))
+        if self.service.clear_tomorrow_custom_request(store_key):
+            yield event.plain_result(f"✅ 已取消 {persona_name} 的明日定制日程要求")
+        else:
+            yield event.plain_result(f"ℹ️ {persona_name} 没有设置明日定制日程要求")
 
     @filter.command("查看人格日程", alias={"life_personas", "dayflow_personas"})
     async def dayflow_personas(self, event: AstrMessageEvent):

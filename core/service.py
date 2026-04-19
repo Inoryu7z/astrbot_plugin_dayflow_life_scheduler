@@ -165,6 +165,21 @@ class DayflowService:
     def is_persona_configured(self, persona_name: str | None = None, persona_id: str | None = None) -> bool:
         return self.get_persona_config(persona_name, persona_id) is not None
 
+    def set_tomorrow_custom_request(self, persona_key: str, requirement: str):
+        tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        self.store.set_pending_custom_request(tomorrow, persona_key, requirement)
+
+    def get_tomorrow_custom_request(self, persona_key: str) -> str | None:
+        tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        return self.store.get_pending_custom_request(tomorrow, persona_key)
+
+    def clear_tomorrow_custom_request(self, persona_key: str) -> bool:
+        tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        return self.store.clear_pending_custom_request(tomorrow, persona_key)
+
+    def consume_pending_custom_request(self, target_date: str, persona_key: str) -> str | None:
+        return self.store.consume_pending_custom_request(target_date, persona_key)
+
     def _get_auto_retry_limit(self, persona: dict[str, Any] | None) -> int:
         try:
             return max(int((persona or {}).get("retry_count", 2) or 0), 0)
@@ -603,6 +618,7 @@ class DayflowService:
             try:
                 persona_ctx = await self._resolve_persona_context_internal(persona_name=configured_persona_name)
                 auto_session_id = await self._get_recent_session_id_for_persona(configured_persona_name, persona_ctx.get("persona_id"))
+                pending_requirement = self.consume_pending_custom_request(today, store_key)
                 data = await self.generate_schedule(
                     event=None,
                     persona_name=configured_persona_name,
@@ -610,6 +626,7 @@ class DayflowService:
                     session_id=auto_session_id,
                     target_date=today,
                     auto_retry=False,
+                    extra_requirement=pending_requirement,
                 )
                 if not data.get("meta", {}).get("error"):
                     self.save_generated(store_key, data)
