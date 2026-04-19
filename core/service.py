@@ -51,6 +51,52 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰风格研究助手。你的�
 
 STYLE_RESEARCH_QUERY_TEMPLATE = """「{style_name}」穿搭风格 搭配要点 单品推荐 常见误区"""
 
+CUSTOM_SCHEDULE_INTENT_APPEND = """
+
+## 定制日程意图解析（附加任务）
+
+用户定制要求：{extra_requirement}
+
+可用池：
+- 穿搭风格池：{outfit_styles_pool}
+- 主线类型池：{schedule_main_types_pool}
+- 事件驱动池：{core_event_drivers_pool}
+
+请在 JSON 输出中额外包含 intent_overrides 字段：
+
+### intent_overrides 填写规则
+
+1. **outfit_style**（string | null）
+   - 用户指定了穿搭风格/单品 → 填写风格大类
+   - 优先使用池中相近值（如"洛丽塔"→"甜系洛丽塔风格"，"杏花微雨"→"甜系洛丽塔风格"）
+   - 池中确实无匹配 → 用用户原文
+   - 用户只是调整当前风格（如"穿暴露点"）→ null，调整写到 outfit_adjustments
+   - 与穿搭无关 → null
+
+2. **outfit_item**（string | null）
+   - 用户指定了具体单品（如"杏花微雨"）→ 填写单品名
+   - 用户只说了风格大类（如"洛丽塔"）→ null
+   - 与穿搭无关 → null
+
+3. **schedule_main_type**（string | null）
+   - 用户要求影响日程整体走向 → 填写覆盖值
+   - 否则 → null
+
+4. **core_event_driver**（string | null）
+   - 用户要求涉及事件核心动机 → 填写覆盖值
+   - 否则 → null
+
+5. **outfit_adjustments**（string | null）
+   - 用户对穿搭有非整体换风格的调整 → 原文转述
+   - 例："第二套下身换裤子" → "午后换装下半身改为裤子"
+   - 无调整 → null
+
+### 重要提示
+- outfit_style 和 outfit_item 可同时存在：style 是风格大类，item 是具体单品
+- 如果用户指定了新风格，请基于该风格进行风格研究
+- 如果 outfit_adjustments 非 null，请在 morning_look/afternoon_look 中体现调整
+"""
+
 
 class DayflowService:
     PLUGIN_NAME = "astrbot_plugin_dayflow_life_scheduler"
@@ -101,6 +147,10 @@ class DayflowService:
     def _style_research_query_template(self) -> str:
         value = str(self.config.get("style_research_query_template") or "").strip()
         return value or STYLE_RESEARCH_QUERY_TEMPLATE
+
+    def _custom_schedule_intent_append(self) -> str:
+        value = str(self.config.get("custom_schedule_intent_append") or "").strip()
+        return value or CUSTOM_SCHEDULE_INTENT_APPEND
 
     def normalize_persona_key(self, persona_name: str | None = None, persona_id: str | None = None) -> str:
         return self.cfg.resolve_store_key(persona_name, persona_id)
@@ -335,10 +385,10 @@ class DayflowService:
             logger.warning(f"[dayflow] invalid style research query template, fallback to default: {e}")
             return STYLE_RESEARCH_QUERY_TEMPLATE.format(style_name=style_name)
 
-    async def _research_style_reference(self, style_name: str) -> tuple[str, dict[str, Any], list[dict[str, str]]]:
+    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None]:
         style_name = str(style_name or "").strip()
         if not style_name:
-            return "", {}, []
+            return "", {}, [], None
         cache_key = self._normalize_style_key(style_name)
         cached = self._style_research_cache.get(cache_key)
         if self._is_style_cache_entry_valid(cached):
@@ -354,15 +404,29 @@ class DayflowService:
                 "style_research_sources_preview": self._render_sources_preview(sources),
             })
             logger.info(f"[dayflow-style-research] cache hit | style={style_name}")
-            return summary, payload, sources
+            return summary, payload, sources, None
 
         grok = self._find_grok_plugin()
         if grok is None:
             logger.warning(f"[dayflow] grok plugin not found, skip style research: style={style_name}")
-            return "", {}, []
+            return "", {}, [], None
 
         query = self._build_style_research_query(style_name)
         system_prompt = self._style_research_system_prompt()
+
+        intent_overrides = None
+        if extra_requirement and pool_options:
+            query += f" | 用户定制要求：{extra_requirement}"
+            try:
+                system_prompt += self._custom_schedule_intent_append().format(
+                    extra_requirement=extra_requirement,
+                    outfit_styles_pool=json.dumps(pool_options.get("outfit_styles", []), ensure_ascii=False),
+                    schedule_main_types_pool=json.dumps(pool_options.get("schedule_main_types", []), ensure_ascii=False),
+                    core_event_drivers_pool=json.dumps(pool_options.get("core_event_drivers", []), ensure_ascii=False),
+                )
+            except Exception as e:
+                logger.warning(f"[dayflow] custom schedule intent append format failed: {e}")
+
         logger.info(f"[dayflow-style-research] query | style={style_name} | query={query}")
         retries = self._style_research_retry_count()
         last_reason = ""
@@ -387,6 +451,9 @@ class DayflowService:
         sources = list((result or {}).get("sources") or [])
 
         if parsed_payload:
+            if extra_requirement and isinstance(parsed_payload.get("intent_overrides"), dict):
+                intent_overrides = parsed_payload.pop("intent_overrides")
+                logger.info(f"[dayflow-style-research] intent_overrides | style={style_name} | overrides={json.dumps(intent_overrides, ensure_ascii=False)}")
             summary = self._render_style_reference(style_name, parsed_payload, sources)
             self._style_research_cache[cache_key] = {
                 "style_name": style_name,
@@ -409,7 +476,7 @@ class DayflowService:
                 "style_research_sources_preview": self._render_sources_preview(sources),
             })
             logger.info(f"[dayflow] style research success(json): style={style_name}, sources={len(sources)}")
-            return summary, parsed_payload, sources
+            return summary, parsed_payload, sources, intent_overrides
 
         if raw_text:
             summary = self._render_style_reference_from_plain_text(style_name, raw_text, sources)
@@ -433,7 +500,7 @@ class DayflowService:
             logger.info(f"[dayflow-style-research] fallback_plain_text | style={style_name} | summary={self._preview_text(summary, limit=1600)}")
             logger.info(f"[dayflow-style-research] sources | style={style_name} | sources={self._render_sources_preview(sources)}")
             logger.warning(f"[dayflow] style research downgraded to plain text: style={style_name}, reason={last_reason or '非 JSON 输出'}")
-            return summary, {}, sources
+            return summary, {}, sources, intent_overrides
 
         if last_reason:
             logger.warning(f"[dayflow] style research unavailable: style={style_name}, reason={last_reason}")
@@ -445,7 +512,7 @@ class DayflowService:
             "style_research_payload_preview": "",
             "style_research_sources_preview": self._render_sources_preview(sources),
         })
-        return "", {}, sources
+        return "", {}, sources, intent_overrides
 
     async def initialize(self):
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -1162,7 +1229,7 @@ class DayflowService:
         core_event_driver = core_event_drivers_pool[0] if core_event_drivers_pool else ""
         configured_variation = persona.get("schedule_variation_level", DEFAULT_VARIATION_LEVEL)
         effective_variation = self._effective_variation_level(configured_variation)
-        style_reference, _, _ = await self._research_style_reference(outfit_style)
+        style_reference, _, _, _ = await self._research_style_reference(outfit_style)
         replacements = {
             "date": date_str,
             "date_str": date_str,
@@ -1209,7 +1276,7 @@ class DayflowService:
             "recent_diaries_preview": replacements["recent_diaries"][:500],
         }
 
-    async def generate_schedule(self, event, persona_name: str, persona_desc: str = "", session_id: str | None = None, target_date: str | None = None, auto_retry: bool = False) -> dict:
+    async def generate_schedule(self, event, persona_name: str, persona_desc: str = "", session_id: str | None = None, target_date: str | None = None, auto_retry: bool = False, extra_requirement: str | None = None) -> dict:
         persona_ctx = await self._resolve_persona_context_internal(event=event, persona_name=persona_name, session_id=session_id)
         matched_persona = self.get_persona_config(persona_ctx.get("persona_name"), persona_ctx.get("persona_id"))
         effective_date = str(target_date or datetime.datetime.now().strftime("%Y-%m-%d")).strip() or datetime.datetime.now().strftime("%Y-%m-%d")
@@ -1243,7 +1310,49 @@ class DayflowService:
         core_event_driver = random.choice(core_event_drivers_pool) if core_event_drivers_pool else "任务驱动"
         configured_variation = persona.get("schedule_variation_level", DEFAULT_VARIATION_LEVEL)
         effective_variation = self._effective_variation_level(configured_variation)
-        style_reference, style_payload, style_sources = await self._research_style_reference(outfit_style)
+
+        pool_options = None
+        if extra_requirement:
+            pool_options = {
+                "outfit_styles": outfit_styles_pool,
+                "schedule_main_types": schedule_main_types_pool,
+                "core_event_drivers": core_event_drivers_pool,
+            }
+
+        style_reference, style_payload, style_sources, intent_overrides = await self._research_style_reference(
+            outfit_style, extra_requirement=extra_requirement, pool_options=pool_options,
+        )
+
+        user_specified_outfit_style = None
+        user_specified_outfit_item = None
+        outfit_adjustments = None
+        if intent_overrides:
+            override_style = intent_overrides.get("outfit_style")
+            if override_style and override_style != outfit_style:
+                style_reference, style_payload, style_sources, _ = await self._research_style_reference(override_style)
+                outfit_style = override_style
+                user_specified_outfit_style = override_style
+            elif override_style:
+                outfit_style = override_style
+                user_specified_outfit_style = override_style
+            override_item = intent_overrides.get("outfit_item")
+            if override_item:
+                user_specified_outfit_item = override_item
+            override_main_type = intent_overrides.get("schedule_main_type")
+            if override_main_type:
+                schedule_main_type = override_main_type
+            override_driver = intent_overrides.get("core_event_driver")
+            if override_driver:
+                core_event_driver = override_driver
+            override_adjustments = intent_overrides.get("outfit_adjustments")
+            if override_adjustments:
+                outfit_adjustments = override_adjustments
+            logger.info(
+                f"[dayflow] intent overrides applied: persona={normalized_persona_name}, "
+                f"outfit_style={outfit_style}, outfit_item={user_specified_outfit_item}, "
+                f"main_type={schedule_main_type}, driver={core_event_driver}, adjustments={outfit_adjustments}"
+            )
+
         replacements = {
             "date": date_str,
             "date_str": date_str,
@@ -1267,11 +1376,22 @@ class DayflowService:
         }
         prompt_template = persona.get("prompt_template") or self.cfg.find_persona(normalized_persona_name).get("prompt_template")
         prompt = render_prompt(prompt_template, replacements)
+
+        if extra_requirement:
+            prompt += f"\n\n---\n【用户定制要求】\n{extra_requirement}\n\n请严格遵循以上要求生成日程。"
+            if user_specified_outfit_style:
+                prompt += f"\n- 穿搭风格：{outfit_style}"
+            if user_specified_outfit_item:
+                prompt += f"\n- 具体单品：{user_specified_outfit_item}（属于 {outfit_style} 风格）"
+            if outfit_adjustments:
+                prompt += f"\n- 穿搭调整：{outfit_adjustments}"
+
         prompt += build_format_priority_append_prompt(validate_persona := {
             "outfit_style": outfit_style,
             "schedule_main_type": schedule_main_type,
             "core_event_driver": core_event_driver,
             "today_weather": today_weather,
+            "user_specified_outfit_style": user_specified_outfit_style,
         })
         self._last_debug_payload.update({
             "persona_name": normalized_persona_name,
