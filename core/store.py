@@ -17,6 +17,7 @@ class DayflowStore:
         self.history_store: dict[str, list[dict[str, Any]]] = {}
         self.auto_generation_state: dict[str, list[str]] = {}
         self.auto_generation_failures: dict[str, dict[str, int]] = {}
+        self.pending_custom_requests: dict[str, str] = {}
         self._gen_lock = asyncio.Lock()
         self.generating_personas: set[str] = set()
         self.retention_days = self._normalize_retention_days(retention_days)
@@ -181,6 +182,29 @@ class DayflowStore:
             self.prune_expired()
             self._save_state()
 
+    def set_pending_custom_request(self, target_date: str, persona_key: str, requirement: str):
+        key = f"{target_date}|{persona_key}"
+        self.pending_custom_requests[key] = requirement
+        self._save_state()
+
+    def get_pending_custom_request(self, target_date: str, persona_key: str) -> str | None:
+        key = f"{target_date}|{persona_key}"
+        return self.pending_custom_requests.get(key)
+
+    def clear_pending_custom_request(self, target_date: str, persona_key: str) -> bool:
+        key = f"{target_date}|{persona_key}"
+        if key in self.pending_custom_requests:
+            del self.pending_custom_requests[key]
+            self._save_state()
+            return True
+        return False
+
+    def consume_pending_custom_request(self, target_date: str, persona_key: str) -> str | None:
+        requirement = self.get_pending_custom_request(target_date, persona_key)
+        if requirement:
+            self.clear_pending_custom_request(target_date, persona_key)
+        return requirement
+
     def prune_expired(self):
         if self.retention_days == -1:
             return
@@ -236,6 +260,18 @@ class DayflowStore:
                 new_auto_failures[persona_name] = valid
         self.auto_generation_failures = new_auto_failures
 
+        new_pending: dict[str, str] = {}
+        for key, requirement in self.pending_custom_requests.items():
+            if not requirement:
+                continue
+            parts = str(key).split("|", 1)
+            if len(parts) != 2:
+                continue
+            date_part = parts[0]
+            if self._date_kept(date_part, cutoff):
+                new_pending[str(key)] = str(requirement)
+        self.pending_custom_requests = new_pending
+
     def _date_kept(self, date_str: str | None, cutoff: datetime.date) -> bool:
         if not date_str:
             return False
@@ -254,6 +290,7 @@ class DayflowStore:
             history_store = payload.get("history_store", {}) or {}
             auto_generation_state = payload.get("auto_generation_state", {}) or {}
             auto_generation_failures = payload.get("auto_generation_failures", {}) or {}
+            pending_custom_requests = payload.get("pending_custom_requests", {}) or {}
             if isinstance(memory_store, dict):
                 self.memory_store = memory_store
             if isinstance(history_store, dict):
@@ -280,6 +317,12 @@ class DayflowStore:
                     if persona_map:
                         normalized_failures[str(persona_name)] = persona_map
                 self.auto_generation_failures = normalized_failures
+            if isinstance(pending_custom_requests, dict):
+                normalized_pending: dict[str, str] = {}
+                for k, v in pending_custom_requests.items():
+                    if str(v).strip():
+                        normalized_pending[str(k)] = str(v)
+                self.pending_custom_requests = normalized_pending
             saved_retention = payload.get("retention_days")
             if saved_retention is not None:
                 self.retention_days = self._normalize_retention_days(saved_retention)
@@ -296,6 +339,7 @@ class DayflowStore:
                 "history_store": self.history_store,
                 "auto_generation_state": self.auto_generation_state,
                 "auto_generation_failures": self.auto_generation_failures,
+                "pending_custom_requests": self.pending_custom_requests,
             }
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
