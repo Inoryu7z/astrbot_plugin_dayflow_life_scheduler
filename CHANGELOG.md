@@ -23,7 +23,13 @@
 * `save_generated()` 保存成功日程时会自动清除对应的冻结随机值。
 * 确保第二天生成时不会误用前一天的冻结值。
 
-**4. 🔧 代码变更**
+**4. 🗄️ 启用风格研究缓存**
+
+* `STYLE_RESEARCH_CACHE_DAYS` 从 `0` 改为 `1`，启用同一天内相同风格的缓存。
+* 之前缓存天数设为 0 导致缓存永远无效，即使冻结了随机值保证同一风格，重试时仍会重新请求 Grok 搜索。
+* 现在同一天内相同风格只会请求一次 Grok，后续直接命中缓存。
+
+**5. 🔧 代码变更**
 
 * `service.py`：新增 `_frozen_randoms` 字典、`_frozen_randoms_key()`、`_get_or_freeze_randoms()`、`clear_frozen_randoms()` 方法；`generate_schedule()` 新增 `force_regenerate` 参数；`save_generated()` 新增清除冻结值逻辑。
 * `main.py`：`_generate_for_event()` 将 `force_regenerate` 传递给 `generate_schedule()`。
