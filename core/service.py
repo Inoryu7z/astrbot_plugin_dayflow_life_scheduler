@@ -118,6 +118,7 @@ class DayflowService:
         self._last_debug_payload: dict[str, Any] = {}
         self._style_cache_path = self.data_dir / "style_research_cache.json"
         self._style_research_cache: dict[str, Any] = {}
+        self._frozen_randoms: dict[str, dict[str, str]] = {}
 
     def _schedule_retention_days(self) -> int:
         try:
@@ -219,6 +220,45 @@ class DayflowService:
 
     def _variation_definition(self, level: str) -> str:
         return VARIATION_LEVEL_DEFINITIONS.get(level, VARIATION_LEVEL_DEFINITIONS["中"])
+
+    def _frozen_randoms_key(self, store_key: str, target_date: str) -> str:
+        return f"{store_key}|{target_date}"
+
+    def _get_or_freeze_randoms(
+        self,
+        store_key: str,
+        target_date: str,
+        today_weather_pool: list[str],
+        outfit_styles_pool: list[str],
+        schedule_main_types_pool: list[str],
+        core_event_drivers_pool: list[str],
+        configured_variation: str,
+    ) -> dict[str, str]:
+        cache_key = self._frozen_randoms_key(store_key, target_date)
+        if cache_key in self._frozen_randoms:
+            logger.info(f"[dayflow] reusing frozen randoms: key={cache_key}, values={self._frozen_randoms[cache_key]}")
+            return self._frozen_randoms[cache_key]
+        today_weather = random.choice(today_weather_pool) if today_weather_pool else "晴，微风，18~26℃"
+        outfit_style = random.choice(outfit_styles_pool) if outfit_styles_pool else "自然风"
+        schedule_main_type = random.choice(schedule_main_types_pool) if schedule_main_types_pool else "日常常规型"
+        core_event_driver = random.choice(core_event_drivers_pool) if core_event_drivers_pool else "任务驱动"
+        effective_variation = self._effective_variation_level(configured_variation)
+        frozen = {
+            "today_weather": today_weather,
+            "outfit_style": outfit_style,
+            "schedule_main_type": schedule_main_type,
+            "core_event_driver": core_event_driver,
+            "effective_variation": effective_variation,
+        }
+        self._frozen_randoms[cache_key] = frozen
+        logger.info(f"[dayflow] frozen randoms: key={cache_key}, values={frozen}")
+        return frozen
+
+    def clear_frozen_randoms(self, store_key: str, target_date: str):
+        cache_key = self._frozen_randoms_key(store_key, target_date)
+        if cache_key in self._frozen_randoms:
+            logger.info(f"[dayflow] cleared frozen randoms: key={cache_key}")
+            del self._frozen_randoms[cache_key]
 
     def _load_style_research_cache(self):
         try:
@@ -890,6 +930,9 @@ class DayflowService:
             logger.warning(f"[dayflow] skip saving error result for persona={requested_store_key}")
             return
 
+        saved_date = str((data.get("meta") or {}).get("date") or datetime.datetime.now().strftime("%Y-%m-%d"))
+        self.clear_frozen_randoms(requested_store_key, saved_date)
+
         data = dict(data)
         meta = dict(data.get("meta") or {})
         meta_persona_name = str(meta.get("persona_name") or "").strip()
@@ -1293,7 +1336,7 @@ class DayflowService:
             "recent_diaries_preview": replacements["recent_diaries"][:500],
         }
 
-    async def generate_schedule(self, event, persona_name: str, persona_desc: str = "", session_id: str | None = None, target_date: str | None = None, auto_retry: bool = False, extra_requirement: str | None = None) -> dict:
+    async def generate_schedule(self, event, persona_name: str, persona_desc: str = "", session_id: str | None = None, target_date: str | None = None, auto_retry: bool = False, extra_requirement: str | None = None, force_regenerate: bool = False) -> dict:
         persona_ctx = await self._resolve_persona_context_internal(event=event, persona_name=persona_name, session_id=session_id)
         matched_persona = self.get_persona_config(persona_ctx.get("persona_name"), persona_ctx.get("persona_id"))
         effective_date = str(target_date or datetime.datetime.now().strftime("%Y-%m-%d")).strip() or datetime.datetime.now().strftime("%Y-%m-%d")
@@ -1321,12 +1364,25 @@ class DayflowService:
         outfit_styles_pool = pool.get("outfit_styles") or []
         schedule_main_types_pool = pool.get("schedule_main_types") or []
         core_event_drivers_pool = pool.get("core_event_drivers") or []
-        today_weather = random.choice(today_weather_pool) if today_weather_pool else "晴，微风，18~26℃"
-        outfit_style = random.choice(outfit_styles_pool) if outfit_styles_pool else "自然风"
-        schedule_main_type = random.choice(schedule_main_types_pool) if schedule_main_types_pool else "日常常规型"
-        core_event_driver = random.choice(core_event_drivers_pool) if core_event_drivers_pool else "任务驱动"
         configured_variation = persona.get("schedule_variation_level", DEFAULT_VARIATION_LEVEL)
-        effective_variation = self._effective_variation_level(configured_variation)
+
+        if force_regenerate:
+            self.clear_frozen_randoms(normalized_persona_name, date_str)
+
+        frozen = self._get_or_freeze_randoms(
+            store_key=normalized_persona_name,
+            target_date=date_str,
+            today_weather_pool=today_weather_pool,
+            outfit_styles_pool=outfit_styles_pool,
+            schedule_main_types_pool=schedule_main_types_pool,
+            core_event_drivers_pool=core_event_drivers_pool,
+            configured_variation=configured_variation,
+        )
+        today_weather = frozen["today_weather"]
+        outfit_style = frozen["outfit_style"]
+        schedule_main_type = frozen["schedule_main_type"]
+        core_event_driver = frozen["core_event_driver"]
+        effective_variation = frozen["effective_variation"]
 
         pool_options = None
         if extra_requirement:

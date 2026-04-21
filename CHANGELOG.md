@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.2.4 - 2026-04-22
+
+**🐛 修复生成失败重试时随机值重复 roll 的问题**
+
+**1. 🧊 新增随机值冻结机制**
+
+* 之前每次调用 `generate_schedule()` 都会重新 `random.choice()` 选择穿搭风格、主线类型、事件驱动、天气和变化等级。
+* 当 LLM 提供商失败后，调度器自动重试时会重新 roll 所有随机值，导致：
+  - 新的风格触发新的 Grok 联网搜索，产生不必要的 API 消耗
+  - 每次重试的 prompt 完全不同，降低了修复重试的意义
+* 现在随机值在首次生成时"冻结"，以 `(persona_key, target_date)` 为键缓存，后续重试直接复用，直到生成成功后才清除。
+
+**2. 🔄 强制重新生成时清除冻结值**
+
+* `generate_schedule()` 新增 `force_regenerate` 参数。
+* 当用户使用 `/生成日程` 或 `/定制日程` 时，会先清除冻结值再重新 roll，确保用户主动操作能获得全新的随机结果。
+* 自动调度重试时不清除冻结值，复用已有的随机选择。
+
+**3. ✅ 生成成功后自动清除冻结值**
+
+* `save_generated()` 保存成功日程时会自动清除对应的冻结随机值。
+* 确保第二天生成时不会误用前一天的冻结值。
+
+**4. 🔧 代码变更**
+
+* `service.py`：新增 `_frozen_randoms` 字典、`_frozen_randoms_key()`、`_get_or_freeze_randoms()`、`clear_frozen_randoms()` 方法；`generate_schedule()` 新增 `force_regenerate` 参数；`save_generated()` 新增清除冻结值逻辑。
+* `main.py`：`_generate_for_event()` 将 `force_regenerate` 传递给 `generate_schedule()`。
+
+---
+
 ## v1.2.3 - 2026-04-19
 
 **✨ 新增明日日程定制功能**
