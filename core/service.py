@@ -102,7 +102,7 @@ class DayflowService:
     PLUGIN_NAME = "astrbot_plugin_dayflow_life_scheduler"
     GROK_PLUGIN_NAME = "astrbot_plugin_grok_web_search"
     LLM_RETRY_DELAY_SECONDS = 2.0
-    STYLE_RESEARCH_CACHE_DAYS = 0
+    STYLE_RESEARCH_CACHE_DAYS = 1
     STYLE_RESEARCH_MAX_CHARS = 1200
 
     def __init__(self, context, config=None):
