@@ -1106,10 +1106,12 @@ class DayflowService:
             return f"（读取 DayMind 近日日记失败：{e}）"
 
     async def call_llm_once(self, prompt: str, provider_id: str | None) -> str:
-        if provider_id:
-            llm_resp = await self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt)
-        else:
-            llm_resp = await self.context.llm_generate(prompt=prompt)
+        effective_id = provider_id
+        if not effective_id:
+            effective_id = await self._get_default_provider_id()
+        if not effective_id:
+            raise RuntimeError("[dayflow] no provider available for llm_generate")
+        llm_resp = await self.context.llm_generate(chat_provider_id=effective_id, prompt=prompt)
         return (getattr(llm_resp, "completion_text", "") or "").strip()
 
     async def call_llm_with_retries(self, prompt: str, provider_id: str | None, retry_count: int = 0) -> str:
@@ -1144,18 +1146,35 @@ class DayflowService:
             logger.warning(f"[dayflow] get_current_chat_provider_id failed: {e}")
             return None
 
+    def _get_provider_id_from_instance(self, provider) -> str | None:
+        if provider is None:
+            return None
+        try:
+            meta = provider.meta()
+            if meta and getattr(meta, "id", None):
+                return str(meta.id).strip() or None
+        except Exception:
+            pass
+        for attr in ("id", "provider_id"):
+            val = getattr(provider, attr, None)
+            if val and str(val).strip():
+                return str(val).strip()
+        return None
+
     async def _get_default_provider_id(self) -> str | None:
         try:
             if hasattr(self.context, "get_using_provider"):
                 provider = self.context.get_using_provider()
-                if provider:
-                    return getattr(provider, "id", None) or getattr(provider, "provider_id", None)
+                pid = self._get_provider_id_from_instance(provider)
+                if pid:
+                    return pid
             if hasattr(self.context, "provider_manager"):
                 pm = self.context.provider_manager
                 if hasattr(pm, "get_using_provider"):
                     provider = pm.get_using_provider()
-                    if provider:
-                        return getattr(provider, "id", None) or getattr(provider, "provider_id", None)
+                    pid = self._get_provider_id_from_instance(provider)
+                    if pid:
+                        return pid
                 if hasattr(pm, "selected_provider_id"):
                     return pm.selected_provider_id or None
         except Exception as e:
@@ -1183,7 +1202,11 @@ class DayflowService:
         last_text = ""
         primary_failed = False
 
-        if primary_provider_id is not None or fallback_provider_id is None:
+        should_try_primary = True
+        if primary_provider_id is None and fallback_provider_id is not None:
+            should_try_primary = False
+
+        if should_try_primary:
             try:
                 text = await self.call_llm_with_retries(prompt, primary_provider_id, retry_count=retry_count)
                 if text:
@@ -1201,7 +1224,7 @@ class DayflowService:
                     f"provider={primary_provider_id or 'session_default'}, error={e}"
                 )
 
-        if fallback_provider_id is not None and primary_failed:
+        if fallback_provider_id is not None and (primary_failed or not should_try_primary):
             try:
                 text = await self.call_llm_with_retries(prompt, fallback_provider_id, retry_count=retry_count)
                 if text:
