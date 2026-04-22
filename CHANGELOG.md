@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.2.5 - 2026-04-23
+
+**🐛 修复 Fallback 提供商始终不生效的问题**
+
+**1. 🔧 修复 `_get_default_provider_id` 无法获取 Provider ID**
+
+* 之前使用 `getattr(provider, "id", None)` 获取 Provider ID，但 AstrBot 的 `Provider` 对象没有 `id` 属性，应使用 `provider.meta().id`。
+* 这导致 `default_provider_id` 始终返回 `None`，fallback 候选列表永远为空，primary 提供商失败后无法切换到备用提供商。
+* 新增 `_get_provider_id_from_instance()` 方法，优先使用 `provider.meta().id`，兼容 fallback 到 `getattr`。
+
+**2. 🔧 修复 `call_llm_once` 在 `provider_id=None` 时崩溃**
+
+* 之前当 `provider_id=None` 时调用 `self.context.llm_generate(prompt=prompt)`，但 AstrBot 的 `llm_generate` 的 `chat_provider_id` 是必填参数，会直接抛出 `TypeError`。
+* 现在当 `provider_id` 为空时，先通过 `_get_default_provider_id()` 获取默认 Provider ID，确保总是传入有效的 `chat_provider_id`。
+
+**3. 🔧 修复 `call_llm_with_provider_fallback` 条件判断逻辑缺陷**
+
+* 之前的条件 `if primary_provider_id is not None or fallback_provider_id is None` 在 `primary=None, fallback≠None` 时，两个分支都不会执行，fallback 被完全跳过。
+* 改为显式的 `should_try_primary` 逻辑，当 primary 为 None 且 fallback 存在时，直接使用 fallback。
+
+**4. 🔧 代码变更**
+
+* `service.py`：新增 `_get_provider_id_from_instance()` 方法；`_get_default_provider_id()` 改用新方法获取 Provider ID；`call_llm_once()` 在 `provider_id=None` 时获取默认 Provider；`call_llm_with_provider_fallback()` 条件判断逻辑修复。
+
+---
+
 ## v1.2.4 - 2026-04-22
 
 **🐛 修复生成失败重试时随机值重复 roll 的问题**
