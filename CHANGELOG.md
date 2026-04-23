@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.2.7 - 2026-04-24
+
+**🌤️ 天气覆盖：Grok 联网研究顺便获取真实天气**
+
+**1. 🌟 新增 `location` 配置项**
+
+* 每个 persona 可配置 `location` 字段（如 `"上海宝山"`），填了就查真实天气，不填就用池随机天气
+* 异世界人设不受影响——`location` 为空时完全回退到池随机天气
+
+**2. 🌐 天气查询搭风格研究便车**
+
+* 在同一次 Grok 联网请求中追加天气查询，零额外 API 调用
+* `STYLE_RESEARCH_SYSTEM_PROMPT` 新增 `weather` 字段定义，要求 Grok 返回指定地点的真实天气
+* `_build_style_research_query` 支持 `location` 参数，自动追加天气查询语句
+
+**3. 📦 天气缓存与降级**
+
+* 真实天气随风格研究一起缓存（有效期1天），缓存命中时直接读取
+* 降级路径完整：无 location → 池随机；无 Grok → 池随机；Grok 返回 weather 为 null → 池随机
+* `_research_style_reference` 返回值从 4 元素扩展为 5 元素（增加 `real_weather`）
+
+**4. 🔧 调试信息增强**
+
+* `/dayflow_debug` 命令新增 `location` 和 `style_research_weather` 输出
+
+---
+
 ## v1.2.6 - 2026-04-24
 
 **✨ 新增存在感注入机制（DayFlow Presence Injection）**

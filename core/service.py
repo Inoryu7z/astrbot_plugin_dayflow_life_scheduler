@@ -38,6 +38,7 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰风格研究助手。你的�
 - difference: string[]，两套穿搭之间的关键差异点，3-5条（须具体：如"晨间浅粉系轻盈搭配，午后深酒红系沉稳搭配"，而非"风格场景化变化"）
 - avoid: string[]，常见误判与禁区，3-6条
 - notes: string，补充说明
+- weather: string | null，当查询中包含地点信息时，返回该地点今日真实天气，格式为"天气状况，温度范围，风力等细节"（如"多云转晴，18~26℃，东南风3级"）；无地点信息时为 null
 
 ## 两套穿搭的要求
 1. 必须属于同一风格体系，但必须在视觉上呈现明显差异——不是换件上衣就完事，而是从单品选择、配色深浅、层次搭配、版型轮廓等多维度拉开差距
@@ -508,41 +509,46 @@ class DayflowService:
                 return star
         return None
 
-    def _build_style_research_query(self, style_name: str) -> str:
+    def _build_style_research_query(self, style_name: str, location: str | None = None) -> str:
         template = self._style_research_query_template()
         try:
-            return template.format(style_name=style_name)
+            query = template.format(style_name=style_name)
         except Exception as e:
             logger.warning(f"[dayflow] invalid style research query template, fallback to default: {e}")
-            return STYLE_RESEARCH_QUERY_TEMPLATE.format(style_name=style_name)
+            query = STYLE_RESEARCH_QUERY_TEMPLATE.format(style_name=style_name)
+        if location and str(location).strip():
+            query += f" | 同时查询{str(location).strip()}今日真实天气"
+        return query
 
-    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None]:
+    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
         style_name = str(style_name or "").strip()
         if not style_name:
-            return "", {}, [], None
+            return "", {}, [], None, None
         cache_key = self._normalize_style_key(style_name)
         cached = self._style_research_cache.get(cache_key)
         if self._is_style_cache_entry_valid(cached):
             payload = dict(cached.get("payload") or {})
             sources = list(cached.get("sources") or [])
             summary = str(cached.get("summary") or "")
+            cached_weather = str(cached.get("weather") or "").strip() or None
             self._last_debug_payload.update({
                 "style_research_cache_hit": True,
-                "style_research_query_preview": self._preview_text(self._build_style_research_query(style_name), limit=1200),
+                "style_research_query_preview": self._preview_text(self._build_style_research_query(style_name, location=location), limit=1200),
                 "style_research_system_prompt_preview": self._preview_text(self._style_research_system_prompt(), limit=1200),
                 "style_research_raw_response_preview": self._preview_text(cached.get("raw_response") or "", limit=1600),
                 "style_research_payload_preview": self._preview_text(json.dumps(payload, ensure_ascii=False, indent=2), limit=1600) if payload else "",
                 "style_research_sources_preview": self._render_sources_preview(sources),
+                "style_research_weather": cached_weather,
             })
-            logger.info(f"[dayflow-style-research] cache hit | style={style_name}")
-            return summary, payload, sources, None
+            logger.info(f"[dayflow-style-research] cache hit | style={style_name} | weather={cached_weather}")
+            return summary, payload, sources, None, cached_weather
 
         grok = self._find_grok_plugin()
         if grok is None:
             logger.warning(f"[dayflow] grok plugin not found, skip style research: style={style_name}")
-            return "", {}, [], None
+            return "", {}, [], None, None
 
-        query = self._build_style_research_query(style_name)
+        query = self._build_style_research_query(style_name, location=location)
         system_prompt = self._style_research_system_prompt()
 
         intent_overrides = None
@@ -558,7 +564,7 @@ class DayflowService:
             except Exception as e:
                 logger.warning(f"[dayflow] custom schedule intent append format failed: {e}")
 
-        logger.info(f"[dayflow-style-research] query | style={style_name} | query={query}")
+        logger.info(f"[dayflow-style-research] query | style={style_name} | location={location} | query={query}")
         retries = self._style_research_retry_count()
         last_reason = ""
         result = None
@@ -580,11 +586,16 @@ class DayflowService:
             logger.warning(f"[dayflow] style research parse failed: style={style_name}, attempt={attempt}, reason={last_reason}")
 
         sources = list((result or {}).get("sources") or [])
+        real_weather = None
 
         if parsed_payload:
             if extra_requirement and isinstance(parsed_payload.get("intent_overrides"), dict):
                 intent_overrides = parsed_payload.pop("intent_overrides")
                 logger.info(f"[dayflow-style-research] intent_overrides | style={style_name} | overrides={json.dumps(intent_overrides, ensure_ascii=False)}")
+            weather_value = parsed_payload.pop("weather", None)
+            if isinstance(weather_value, str) and weather_value.strip():
+                real_weather = weather_value.strip()
+                logger.info(f"[dayflow-style-research] weather | style={style_name} | location={location} | weather={real_weather}")
             summary = self._render_style_reference(style_name, parsed_payload, sources)
             self._style_research_cache[cache_key] = {
                 "style_name": style_name,
@@ -593,6 +604,7 @@ class DayflowService:
                 "summary": summary,
                 "sources": sources,
                 "raw_response": raw_text,
+                "weather": real_weather or "",
             }
             self._save_style_research_cache()
             payload_preview = json.dumps(parsed_payload, ensure_ascii=False, indent=2)
@@ -605,9 +617,10 @@ class DayflowService:
                 "style_research_raw_response_preview": self._preview_text(raw_text, limit=1600),
                 "style_research_payload_preview": self._preview_text(payload_preview, limit=1600),
                 "style_research_sources_preview": self._render_sources_preview(sources),
+                "style_research_weather": real_weather,
             })
-            logger.info(f"[dayflow] style research success(json): style={style_name}, sources={len(sources)}")
-            return summary, parsed_payload, sources, intent_overrides
+            logger.info(f"[dayflow] style research success(json): style={style_name}, sources={len(sources)}, weather={real_weather}")
+            return summary, parsed_payload, sources, intent_overrides, real_weather
 
         if raw_text:
             summary = self._render_style_reference_from_plain_text(style_name, raw_text, sources)
@@ -618,6 +631,7 @@ class DayflowService:
                 "summary": summary,
                 "sources": sources,
                 "raw_response": raw_text,
+                "weather": "",
             }
             self._save_style_research_cache()
             self._last_debug_payload.update({
@@ -627,11 +641,12 @@ class DayflowService:
                 "style_research_raw_response_preview": self._preview_text(raw_text, limit=1600),
                 "style_research_payload_preview": "（JSON 解析失败，已降级使用纯文本研究结果）",
                 "style_research_sources_preview": self._render_sources_preview(sources),
+                "style_research_weather": None,
             })
             logger.info(f"[dayflow-style-research] fallback_plain_text | style={style_name} | summary={self._preview_text(summary, limit=1600)}")
             logger.info(f"[dayflow-style-research] sources | style={style_name} | sources={self._render_sources_preview(sources)}")
             logger.warning(f"[dayflow] style research downgraded to plain text: style={style_name}, reason={last_reason or '非 JSON 输出'}")
-            return summary, {}, sources, intent_overrides
+            return summary, {}, sources, intent_overrides, None
 
         if last_reason:
             logger.warning(f"[dayflow] style research unavailable: style={style_name}, reason={last_reason}")
@@ -642,8 +657,9 @@ class DayflowService:
             "style_research_raw_response_preview": "",
             "style_research_payload_preview": "",
             "style_research_sources_preview": self._render_sources_preview(sources),
+            "style_research_weather": None,
         })
-        return "", {}, sources, intent_overrides
+        return "", {}, sources, intent_overrides, None
 
     async def initialize(self):
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -1332,6 +1348,7 @@ class DayflowService:
                 "schedule_main_types_pool": [],
                 "core_event_drivers_pool": [],
                 "today_weather_pool": [],
+                "location": "",
                 "variation_configured": "",
                 "variation_effective": "",
                 "variation_definition": "",
@@ -1341,6 +1358,7 @@ class DayflowService:
                 "style_research_raw_response_preview": "",
                 "style_research_payload_preview": "",
                 "style_research_sources_preview": "",
+                "style_research_weather": "",
                 "rendered_prompt_preview": f"人格未在 Dayflow 中启用：{persona_ctx.get('persona_name', '')}",
                 "recent_chats_preview": "",
                 "recent_diaries_preview": "",
@@ -1362,6 +1380,7 @@ class DayflowService:
                 "schedule_main_types_pool": schedule_main_types_pool,
                 "core_event_drivers_pool": core_event_drivers_pool,
                 "today_weather_pool": today_weather_pool,
+                "location": persona.get("location", ""),
                 "variation_configured": last_payload.get("variation_configured", ""),
                 "variation_effective": last_payload.get("variation_effective", ""),
                 "variation_definition": last_payload.get("variation_definition", ""),
@@ -1371,6 +1390,7 @@ class DayflowService:
                 "style_research_raw_response_preview": last_payload.get("style_research_raw_response_preview", ""),
                 "style_research_payload_preview": last_payload.get("style_research_payload_preview", ""),
                 "style_research_sources_preview": last_payload.get("style_research_sources_preview", ""),
+                "style_research_weather": last_payload.get("style_research_weather", ""),
                 "rendered_prompt_preview": last_payload.get("rendered_prompt_preview", "")[:2200],
                 "recent_chats_preview": last_payload.get("recent_chats_preview", "")[:500],
                 "recent_diaries_preview": last_payload.get("recent_diaries_preview", "")[:500],
@@ -1388,7 +1408,7 @@ class DayflowService:
         core_event_driver = core_event_drivers_pool[0] if core_event_drivers_pool else ""
         configured_variation = persona.get("schedule_variation_level", DEFAULT_VARIATION_LEVEL)
         effective_variation = self._effective_variation_level(configured_variation)
-        style_reference, _, _, _ = await self._research_style_reference(outfit_style)
+        style_reference, _, _, _, _ = await self._research_style_reference(outfit_style)
         replacements = {
             "date": date_str,
             "date_str": date_str,
@@ -1421,6 +1441,7 @@ class DayflowService:
             "schedule_main_types_pool": schedule_main_types_pool,
             "core_event_drivers_pool": core_event_drivers_pool,
             "today_weather_pool": today_weather_pool,
+            "location": persona.get("location", ""),
             "variation_configured": configured_variation,
             "variation_effective": effective_variation,
             "variation_definition": self._variation_definition(effective_variation),
@@ -1430,6 +1451,7 @@ class DayflowService:
             "style_research_raw_response_preview": self._last_debug_payload.get("style_research_raw_response_preview", ""),
             "style_research_payload_preview": self._last_debug_payload.get("style_research_payload_preview", ""),
             "style_research_sources_preview": self._last_debug_payload.get("style_research_sources_preview", ""),
+            "style_research_weather": self._last_debug_payload.get("style_research_weather", ""),
             "rendered_prompt_preview": prompt[:2200],
             "recent_chats_preview": replacements["recent_chats"][:500],
             "recent_diaries_preview": replacements["recent_diaries"][:500],
@@ -1491,9 +1513,14 @@ class DayflowService:
                 "core_event_drivers": core_event_drivers_pool,
             }
 
-        style_reference, style_payload, style_sources, intent_overrides = await self._research_style_reference(
-            outfit_style, extra_requirement=extra_requirement, pool_options=pool_options,
+        persona_location = str(persona.get("location") or "").strip()
+        style_reference, style_payload, style_sources, intent_overrides, real_weather = await self._research_style_reference(
+            outfit_style, extra_requirement=extra_requirement, pool_options=pool_options, location=persona_location or None,
         )
+
+        if real_weather:
+            today_weather = real_weather
+            logger.info(f"[dayflow] real weather override: persona={normalized_persona_name}, location={persona_location}, weather={today_weather}")
 
         user_specified_outfit_style = None
         user_specified_outfit_item = None
@@ -1501,7 +1528,11 @@ class DayflowService:
         if intent_overrides:
             override_style = intent_overrides.get("outfit_style")
             if override_style and override_style != outfit_style:
-                style_reference, style_payload, style_sources, _ = await self._research_style_reference(override_style)
+                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, location=persona_location or None)
+                if override_weather:
+                    real_weather = override_weather
+                    today_weather = override_weather
+                    logger.info(f"[dayflow] real weather override (intent override): persona={normalized_persona_name}, location={persona_location}, weather={today_weather}")
                 outfit_style = override_style
                 user_specified_outfit_style = override_style
             elif override_style:
