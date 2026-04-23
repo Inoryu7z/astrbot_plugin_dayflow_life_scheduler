@@ -15,6 +15,13 @@ _INJECTION_PATTERN = re.compile(
     flags=re.DOTALL,
 )
 
+PRESENCE_INJECTION_HEADER = "<DayFlow-Presence>"
+PRESENCE_INJECTION_FOOTER = "</DayFlow-Presence>"
+_PRESENCE_PATTERN = re.compile(
+    re.escape(PRESENCE_INJECTION_HEADER) + r".*?" + re.escape(PRESENCE_INJECTION_FOOTER),
+    flags=re.DOTALL,
+)
+
 
 def _render_schedule_display(data: dict) -> str:
     outfit = str(data.get("outfit") or "").strip()
@@ -76,6 +83,18 @@ def _remove_dayflow_injection(system_prompt: str | None) -> tuple[str, bool]:
     return cleaned, cleaned != system_prompt
 
 
+def _build_presence_injection_text(body: str) -> str:
+    return f"{PRESENCE_INJECTION_HEADER}\n{body}\n{PRESENCE_INJECTION_FOOTER}"
+
+
+def _remove_presence_injection(system_prompt: str | None) -> tuple[str, bool]:
+    if not system_prompt:
+        return system_prompt or "", False
+    cleaned = _PRESENCE_PATTERN.sub("", system_prompt)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, cleaned != system_prompt
+
+
 class DayflowPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -106,6 +125,13 @@ class DayflowPlugin(Star):
             if removed:
                 logger.debug(f"[dayflow] 已清理上次日程注入: session={session_id}")
 
+            presence_body = self.service.build_presence_injection(session_id)
+            if presence_body is not None:
+                req.system_prompt, _ = _remove_presence_injection(req.system_prompt)
+                presence_injection = _build_presence_injection_text(presence_body)
+                req.system_prompt += f"\n\n{presence_injection}"
+                logger.info(f"[dayflow] 已注入存在感: session={session_id}")
+
             today = datetime.datetime.now().strftime("%Y-%m-%d")
             data = await self.service.get_life_context(session_id=session_id, target_date=today)
 
@@ -115,6 +141,15 @@ class DayflowPlugin(Star):
                 logger.info(f"[dayflow] 已注入日程: {today}")
         except Exception as e:
             logger.warning(f"[dayflow] on_llm_request 注入失败: {e}")
+
+    @filter.on_llm_response()
+    async def on_llm_response(self, event: AstrMessageEvent, resp):
+        try:
+            session_id = getattr(event, "unified_msg_origin", None)
+            if session_id and resp and getattr(resp, "completion_text", None):
+                self.service.record_interaction(session_id)
+        except Exception as e:
+            logger.debug(f"[dayflow] on_llm_response 处理失败: {e}")
 
     async def _generate_for_event(self, event: AstrMessageEvent, persona_name: str, persona_desc: str, store_key: str, force_regenerate: bool = False, extra_requirement: str | None = None):
         if not self.service.is_persona_configured(persona_name):
