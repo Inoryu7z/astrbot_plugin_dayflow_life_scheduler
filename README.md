@@ -184,6 +184,8 @@ DayFlow 会把已生成的日程保存到本地目录，重启后仍可读取。
 
 - `default_prompt_template`：默认生成模板
 - `schedule_retention_days`：日程本地保留天数，默认 `3`，填 `-1` 表示不限天数
+- `presence_injection_level`：存在感注入等级（1=关闭 / 2=仅时间 / 3=引导分享日程 / 4=引导分享日程+心情），默认 `2`
+- `presence_min_interval_minutes`：存在感注入最小间隔（分钟），默认 `0`（始终注入）
 - `style_research_retry_count`：风格研究失败时的额外重试次数
 - `style_research_system_prompt`：发送给 Grok 的 system prompt，可自定义风格研究输出结构
 - `style_research_query_template`：发送给 Grok 的查询模板，需保留 `{style_name}` 占位符
@@ -192,6 +194,7 @@ DayFlow 会把已生成的日程保存到本地目录，重启后仍可读取。
 
 - `select_persona`：绑定的人格名
 - `enabled`：是否启用该人格配置
+- `location`：所在地点（如 `"北京市海淀区"`），填写后 Grok 联网研究时会顺便查询该地点当日真实天气并覆盖天气池的随机值；留空则使用天气池随机抽取，适合异世界等虚构人设
 - `provider_id`：该人格使用的模型提供商（失败时可回退到会话 provider）
 - `generate_time`：该人格自动生成日程的时间，如 `07:00`
 - `retry_count`：生成失败后的修复重试次数
@@ -208,7 +211,7 @@ DayFlow 会把已生成的日程保存到本地目录，重启后仍可读取。
 
 DayFlow 会从以下池中取值注入 Prompt：
 
-- `pool.today_weather`：今日天气池
+- `pool.today_weather`：今日天气池（若配置了 `location`，Grok 联网研究时获取的真实天气会覆盖此池的随机值）
 - `pool.outfit_styles`：穿搭风格池
 - `pool.schedule_main_types`：日程主线类型池
 - `pool.core_event_drivers`：核心事件驱动池
@@ -220,13 +223,14 @@ DayFlow 会从以下池中取值注入 Prompt：
 1. 若 persona 未配置 `provider_id`，会优先尝试使用当前会话模型。
 2. 若检测到 DayMind，DayFlow 会优先读取该人格的近日日记与消息缓存作为参考。
 3. 若检测到 `astrbot_plugin_grok_web_search`，DayFlow 会优先对当前穿搭风格做联网研究，再把研究结果作为风格约束注入生成 Prompt。
-4. 若未检测到 DayMind 或对应接口不可用，DayFlow 会自动回退到仅基于当前触发消息和自身历史日程生成。
-5. 若未检测到 Grok 搜索插件，DayFlow 仍可正常运行，只是不会启用联网风格研究。
-6. 高级用户可通过 schema 自定义 Grok 风格研究使用的 system prompt 与 query 模板；**注意：写坏模板会直接影响联网研究质量。**
-7. `/生成日程` 会强制重生成当日日程，忽略已有缓存；`/查看日程` 则会在有缓存时直接返回。
-8. 自动生成与手动生成都会写入本地持久化存储。
-9. 同一人格在生成期间会加锁，避免重复并发生成。
-10. 只有已配置且启用的人格才会生成日程，未配置人格会被拒绝。
+4. 若人格配置了 `location`，Grok 联网研究时会顺便查询该地点当日真实天气，覆盖天气池的随机值；真实天气随风格研究一起缓存（有效期1天），不会额外发起 API 请求。
+5. 若未检测到 DayMind 或对应接口不可用，DayFlow 会自动回退到仅基于当前触发消息和自身历史日程生成。
+6. 若未检测到 Grok 搜索插件，DayFlow 仍可正常运行，只是不会启用联网风格研究和真实天气查询。
+7. 高级用户可通过 schema 自定义 Grok 风格研究使用的 system prompt 与 query 模板；**注意：写坏模板会直接影响联网研究质量。**
+8. `/生成日程` 会强制重生成当日日程，忽略已有缓存；`/查看日程` 则会在有缓存时直接返回。
+9. 自动生成与手动生成都会写入本地持久化存储。
+10. 同一人格在生成期间会加锁，避免重复并发生成。
+11. 只有已配置且启用的人格才会生成日程，未配置人格会被拒绝。
 
 ---
 
