@@ -75,6 +75,7 @@ class DayflowConfig:
                 "name": select_persona,
                 "enabled": True,
                 "aliases": dedup_aliases,
+                "location": str(item.get("location") or "").strip(),
                 "reference_schedule_days": self._to_int(item.get("reference_schedule_days"), 0),
                 "reference_diary_days": self._to_int(item.get("reference_diary_days"), 3),
                 "reference_recent_count": self._to_int(item.get("reference_recent_count"), 10),
