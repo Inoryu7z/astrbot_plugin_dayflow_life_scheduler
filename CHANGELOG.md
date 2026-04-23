@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.2.8 - 2026-04-24
+
+**👁️ 存在感注入从全局级下调为人格级**
+
+**1. 🔧 存在感配置人格级化**
+
+* `presence_injection_level` 和 `presence_min_interval_minutes` 从全局配置移至每个人格的独立配置
+* 不同人格可以有不同的存在感注入等级和间隔，例如一个角色等级4主动分享，另一个角色等级1完全关闭
+* 保留向后兼容：未配置时默认等级2、间隔0分钟
+
+**2. 📝 配置 schema 更新**
+
+* 全局配置中移除 `presence_injection_level` 和 `presence_min_interval_minutes`
+* persona 模板中新增这两个字段
+
+---
+
 ## v1.2.7 - 2026-04-24
 
 **🌤️ 天气覆盖：Grok 联网研究顺便获取真实天气**

@@ -125,12 +125,19 @@ class DayflowPlugin(Star):
             if removed:
                 logger.debug(f"[dayflow] 已清理上次日程注入: session={session_id}")
 
-            presence_body = self.service.build_presence_injection(session_id)
+            resolved_ctx = await self.service._resolve_persona_context_internal(session_id=session_id)
+            persona_cfg = self.service.get_persona_config(resolved_ctx.get("persona_name"), resolved_ctx.get("persona_id"))
+            presence_level = int(persona_cfg.get("presence_injection_level", 2)) if persona_cfg else 2
+            presence_interval = int(persona_cfg.get("presence_min_interval_minutes", 0)) if persona_cfg else 0
+
+            presence_body = self.service.build_presence_injection(
+                session_id, level=presence_level, min_interval=presence_interval,
+            )
             if presence_body is not None:
                 req.system_prompt, _ = _remove_presence_injection(req.system_prompt)
                 presence_injection = _build_presence_injection_text(presence_body)
                 req.system_prompt += f"\n\n{presence_injection}"
-                logger.info(f"[dayflow] 已注入存在感: session={session_id}")
+                logger.info(f"[dayflow] 已注入存在感: session={session_id}, level={presence_level}")
 
             today = datetime.datetime.now().strftime("%Y-%m-%d")
             data = await self.service.get_life_context(session_id=session_id, target_date=today)

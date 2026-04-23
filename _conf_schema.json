@@ -15,18 +15,6 @@
     "type": "int",
     "default": 3
   },
-  "presence_injection_level": {
-    "description": "存在感注入等级",
-    "type": "int",
-    "default": 2,
-    "hint": "1=关闭，不注入任何内容；2=仅注入当前时间、上次互动时间与时间差；3=额外引导考虑分享今天的日程；4=额外引导考虑分享今天的日程、现在的心情或最近的思考。等级3和4的引导语气较弱，不会导致角色每次都主动分享。"
-  },
-  "presence_min_interval_minutes": {
-    "description": "存在感注入最小间隔（分钟）",
-    "type": "int",
-    "default": 0,
-    "hint": "距离上次互动不足此时间时不注入存在感提示，设为0则始终注入。间隔越低该功能越明显，建议设为0让Bot始终感知时间流逝。"
-  },
   "style_research_retry_count": {
     "description": "风格研究重试次数",
     "type": "int",
@@ -81,6 +69,18 @@
             "description": "所在地点",
             "default": "",
             "hint": "填写真实地点后，Grok 联网研究时会顺便查询该地点当日真实天气并覆盖天气池的随机值，让日程生成基于实际天气。留空则使用天气池随机抽取，适合异世界等虚构人设。"
+          },
+          "presence_injection_level": {
+            "type": "int",
+            "description": "存在感注入等级",
+            "default": 2,
+            "hint": "1=关闭，不注入任何内容；2=仅注入当前时间、上次互动时间与时间差；3=额外引导考虑分享今天的日程；4=额外引导考虑分享今天的日程、现在的心情或最近的思考。等级3和4的引导语气较弱，不会导致角色每次都主动分享。"
+          },
+          "presence_min_interval_minutes": {
+            "type": "int",
+            "description": "存在感注入最小间隔（分钟）",
+            "default": 0,
+            "hint": "距离上次互动不足此时间时不注入存在感提示，设为0则始终注入。间隔越低该功能越明显，建议设为0让Bot始终感知时间流逝。"
           },
           "enabled": {
             "type": "bool",
