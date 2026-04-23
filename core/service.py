@@ -119,6 +119,82 @@ class DayflowService:
         self._style_cache_path = self.data_dir / "style_research_cache.json"
         self._style_research_cache: dict[str, Any] = {}
         self._frozen_randoms: dict[str, dict[str, str]] = {}
+        self._last_interaction_times: dict[str, str] = {}
+
+    def record_interaction(self, session_id: str):
+        session_key = str(session_id or "").strip()
+        if session_key:
+            self._last_interaction_times[session_key] = datetime.datetime.now().isoformat()
+
+    def get_last_interaction_time(self, session_id: str) -> str | None:
+        session_key = str(session_id or "").strip()
+        if not session_key:
+            return None
+        return self._last_interaction_times.get(session_key)
+
+    def _presence_injection_level(self) -> int:
+        try:
+            return max(0, min(4, int(self.config.get("presence_injection_level", 2) or 0)))
+        except Exception:
+            return 2
+
+    def _presence_min_interval_minutes(self) -> int:
+        try:
+            return max(0, int(self.config.get("presence_min_interval_minutes", 0) or 0))
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _format_time_gap(delta: datetime.timedelta) -> str:
+        total_minutes = int(delta.total_seconds() / 60)
+        if total_minutes < 1:
+            return "不到1分钟"
+        if total_minutes < 60:
+            return f"约{total_minutes}分钟"
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        if hours < 24:
+            if minutes == 0:
+                return f"约{hours}小时"
+            return f"约{hours}小时{minutes}分钟"
+        days = hours // 24
+        remaining_hours = hours % 24
+        if remaining_hours == 0:
+            return f"约{days}天"
+        return f"约{days}天{remaining_hours}小时"
+
+    def build_presence_injection(self, session_id: str) -> str | None:
+        level = self._presence_injection_level()
+        if level < 2:
+            return None
+
+        last_iso = self.get_last_interaction_time(session_id)
+        if not last_iso:
+            return None
+
+        try:
+            last_dt = datetime.datetime.fromisoformat(last_iso)
+        except Exception:
+            return None
+
+        now = datetime.datetime.now()
+        delta = now - last_dt
+        min_interval = self._presence_min_interval_minutes()
+        if min_interval > 0 and delta.total_seconds() < min_interval * 60:
+            return None
+
+        current_time = now.strftime("%H:%M")
+        last_time = last_dt.strftime("%H:%M")
+        time_gap = self._format_time_gap(delta)
+
+        lines = [f"现在是 {current_time}，你上一次与用户互动是在 {last_time}（{time_gap}前）。"]
+
+        if level >= 3:
+            lines.append("你可以考虑是否要主动与用户分享今天的日程，但不必刻意。")
+        if level >= 4:
+            lines[-1] = "你可以考虑是否要主动与用户分享今天的日程、现在的心情或最近的思考，但不必刻意。"
+
+        return "\n".join(lines)
 
     def _schedule_retention_days(self) -> int:
         try:
