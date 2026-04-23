@@ -76,6 +76,8 @@ class DayflowConfig:
                 "enabled": True,
                 "aliases": dedup_aliases,
                 "location": str(item.get("location") or "").strip(),
+                "presence_injection_level": self._to_int(item.get("presence_injection_level"), 2),
+                "presence_min_interval_minutes": self._to_int(item.get("presence_min_interval_minutes"), 0),
                 "reference_schedule_days": self._to_int(item.get("reference_schedule_days"), 0),
                 "reference_diary_days": self._to_int(item.get("reference_diary_days"), 3),
                 "reference_recent_count": self._to_int(item.get("reference_recent_count"), 10),

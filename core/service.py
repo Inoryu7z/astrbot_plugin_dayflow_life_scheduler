@@ -164,9 +164,9 @@ class DayflowService:
             return f"约{days}天"
         return f"约{days}天{remaining_hours}小时"
 
-    def build_presence_injection(self, session_id: str) -> str | None:
-        level = self._presence_injection_level()
-        if level < 2:
+    def build_presence_injection(self, session_id: str, level: int | None = None, min_interval: int | None = None) -> str | None:
+        effective_level = level if level is not None else self._presence_injection_level()
+        if effective_level < 2:
             return None
 
         last_iso = self.get_last_interaction_time(session_id)
@@ -180,8 +180,8 @@ class DayflowService:
 
         now = datetime.datetime.now()
         delta = now - last_dt
-        min_interval = self._presence_min_interval_minutes()
-        if min_interval > 0 and delta.total_seconds() < min_interval * 60:
+        effective_min_interval = min_interval if min_interval is not None else self._presence_min_interval_minutes()
+        if effective_min_interval > 0 and delta.total_seconds() < effective_min_interval * 60:
             return None
 
         current_time = now.strftime("%H:%M")
@@ -190,9 +190,9 @@ class DayflowService:
 
         lines = [f"现在是 {current_time}，你上一次与用户互动是在 {last_time}（{time_gap}前）。"]
 
-        if level >= 3:
+        if effective_level >= 3:
             lines.append("你可以考虑是否要主动与用户分享今天的日程，但不必刻意。")
-        if level >= 4:
+        if effective_level >= 4:
             lines[-1] = "你可以考虑是否要主动与用户分享今天的日程、现在的心情或最近的思考，但不必刻意。"
 
         return "\n".join(lines)

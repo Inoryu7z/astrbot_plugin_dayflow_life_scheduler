@@ -184,8 +184,6 @@ DayFlow 会把已生成的日程保存到本地目录，重启后仍可读取。
 
 - `default_prompt_template`：默认生成模板
 - `schedule_retention_days`：日程本地保留天数，默认 `3`，填 `-1` 表示不限天数
-- `presence_injection_level`：存在感注入等级（1=关闭 / 2=仅时间 / 3=引导分享日程 / 4=引导分享日程+心情），默认 `2`
-- `presence_min_interval_minutes`：存在感注入最小间隔（分钟），默认 `0`（始终注入）
 - `style_research_retry_count`：风格研究失败时的额外重试次数
 - `style_research_system_prompt`：发送给 Grok 的 system prompt，可自定义风格研究输出结构
 - `style_research_query_template`：发送给 Grok 的查询模板，需保留 `{style_name}` 占位符
@@ -195,6 +193,8 @@ DayFlow 会把已生成的日程保存到本地目录，重启后仍可读取。
 - `select_persona`：绑定的人格名
 - `enabled`：是否启用该人格配置
 - `location`：所在地点（如 `"北京市海淀区"`），填写后 Grok 联网研究时会顺便查询该地点当日真实天气并覆盖天气池的随机值；留空则使用天气池随机抽取，适合异世界等虚构人设
+- `presence_injection_level`：存在感注入等级（1=关闭 / 2=仅时间 / 3=引导分享日程 / 4=引导分享日程+心情），默认 `2`
+- `presence_min_interval_minutes`：存在感注入最小间隔（分钟），默认 `0`（始终注入）
 - `provider_id`：该人格使用的模型提供商（失败时可回退到会话 provider）
 - `generate_time`：该人格自动生成日程的时间，如 `07:00`
 - `retry_count`：生成失败后的修复重试次数
