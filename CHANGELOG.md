@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.2.9 - 2026-04-25
+
+**🐛 修复 Grok 搜索 429 重试失效问题**
+
+**1. 🔧 启用 Grok 插件内置重试机制**
+
+* `_research_style_reference` 调用 `_do_search` 时将 `use_retry=False` 改为 `use_retry=True`
+* 之前 `use_retry=False` 导致 grok 插件内部 `max_retries=0`，遇到 429 直接放弃当前 provider，不等待 Retry-After
+* dayflow 自身的重试循环没有延迟，立刻重试又 429，形成无效重试循环
+* 现在由 grok 插件自行处理 429 重试（解析 Retry-After 头、线性退避），dayflow 不再介入
+
+---
+
 ## v1.2.8 - 2026-04-24
 
 **👁️ 存在感注入从全局级下调为人格级**
