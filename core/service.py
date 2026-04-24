@@ -571,7 +571,7 @@ class DayflowService:
         parsed_payload = None
         raw_text = ""
         for attempt in range(1, retries + 2):
-            result = await grok._do_search(query=query, system_prompt=system_prompt, use_retry=False)
+            result = await grok._do_search(query=query, system_prompt=system_prompt, use_retry=True)
             if not result.get("ok"):
                 last_reason = str(result.get("error") or "grok search failed")
                 logger.warning(f"[dayflow] style research search failed: style={style_name}, attempt={attempt}, reason={last_reason}")
