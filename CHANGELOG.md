@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.3.4 - 2026-04-25
+
+**🔧 审查修复：循环导入消除 + error 字段统一 + 内存泄漏清理**
+
+**1. ♻️ 消除循环导入风险**
+
+* `render_schedule_display` 和 `is_schedule_valid` 从 main.py 移至 `core/generator.py`
+* service.py 的 `_render_push_content` 不再通过 `from ..main import` 延迟导入
+* 彻底消除 main.py ↔ service.py 的循环依赖隐患
+
+**2. 🐛 统一 error 字段**
+
+* `get_life_context` 和 `_build_missing_today_context` 返回的无效日程数据增加 `"error": True`
+* 与 `_build_persona_not_enabled_data` 保持一致，确保所有依赖 `meta.get("error")` 的代码路径行为统一
+
+**3. 🧹 内存泄漏清理**
+
+* 新增 `_cleanup_stale_caches()` 方法：清理非当天的 `_frozen_randoms` 和 7 天前的 `_last_interaction_times`
+* 启动时清理一次，调度循环中每小时清理一次
+
+**4. 🔒 Store 封装改进**
+
+* DayflowStore 新增 `get_history_count()` 和 `get_memory_date()` 访问器方法
+* `save_generated` 日志不再直接访问 Store 内部字典
+
+**5. ♻️ 消除验证逻辑重复**
+
+* `_build_injection_text` 不再重复校验逻辑，改为调用 `is_schedule_valid()`
+
+**6. 🛡️ 推送防御性校验**
+
+* `push_schedule_to_targets` 开头增加 `is_schedule_valid()` 检查，无效日程不推送
+
+---
+
 ## v1.3.3 - 2026-04-25
 
 **🔧 审计修复：fallback 语义冲突 + 死代码清理 + 异步化**

@@ -6,6 +6,56 @@ from typing import Any
 from astrbot.api import logger
 
 
+def render_schedule_display(data: dict) -> str:
+    outfit = str(data.get("outfit") or "").strip()
+    summary = str(data.get("summary") or "").strip()
+    timeline = data.get("timeline")
+
+    header = f"👕 今日穿搭：{outfit}"
+    if summary:
+        header += f"\n💬 {summary}"
+
+    if isinstance(timeline, list) and timeline:
+        parts = []
+        for i, item in enumerate(timeline, 1):
+            if not isinstance(item, dict):
+                continue
+            time_start = str(item.get("time_start") or "").strip()
+            time_end = str(item.get("time_end") or "").strip()
+            title = str(item.get("title") or "").strip()
+            detail = str(item.get("detail") or "").strip()
+            outfit_change = str(item.get("outfit_change") or "").strip()
+            time_range = f"{time_start}-{time_end}" if time_start and time_end else ""
+            block = f"── 第 {i} 项 ──\n🕐 {time_range}"
+            if title:
+                block += f"\n📌 {title}"
+            if detail:
+                block += f"\n📄 {detail}"
+            if outfit_change:
+                block += f"\n👗 换装：{outfit_change}"
+            parts.append(block)
+        schedule_text = "\n\n".join(parts)
+    else:
+        schedule_text = str(data.get("schedule") or "").strip()
+
+    return f"{header}\n📝 日程安排：\n{schedule_text}"
+
+
+def is_schedule_valid(data: dict) -> bool:
+    if not data:
+        return False
+    meta = data.get("meta") or {}
+    if meta.get("error"):
+        return False
+    outfit = str(data.get("outfit") or "").strip()
+    schedule = str(data.get("schedule") or "").strip()
+    if not outfit and not schedule:
+        return False
+    if outfit == "尚未生成" or "尚未生成成功" in schedule:
+        return False
+    return True
+
+
 FORMAT_PRIORITY_APPEND_PROMPT = """
 
 ---

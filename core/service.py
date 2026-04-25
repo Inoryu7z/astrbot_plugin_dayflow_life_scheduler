@@ -18,8 +18,10 @@ from .generator import (
     build_generation_error_data,
     build_repair_prompt,
     extract_timeline,
+    is_schedule_valid,
     normalize_payload,
     render_prompt,
+    render_schedule_display,
     safe_json_loads,
     validate_payload,
 )
@@ -338,6 +340,24 @@ class DayflowService:
         if cache_key in self._frozen_randoms:
             logger.info(f"[dayflow] cleared frozen randoms: key={cache_key}")
             del self._frozen_randoms[cache_key]
+
+    def _cleanup_stale_caches(self):
+        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        stale_keys = [k for k in self._frozen_randoms if not k.endswith(today_str)]
+        for k in stale_keys:
+            del self._frozen_randoms[k]
+        if stale_keys:
+            logger.info(f"[dayflow] cleaned up {len(stale_keys)} stale frozen_randoms entries")
+
+        cutoff = datetime.datetime.now() - datetime.timedelta(days=7)
+        stale_sessions = [
+            sid for sid, iso in self._last_interaction_times.items()
+            if iso < cutoff.isoformat()
+        ]
+        for sid in stale_sessions:
+            del self._last_interaction_times[sid]
+        if stale_sessions:
+            logger.info(f"[dayflow] cleaned up {len(stale_sessions)} stale interaction time entries")
 
     def _load_style_research_cache(self):
         try:
@@ -671,6 +691,7 @@ class DayflowService:
         self.store.initialize()
         self.store.set_retention_days(self._schedule_retention_days())
         self._load_style_research_cache()
+        self._cleanup_stale_caches()
         logger.info("[dayflow] plugin initialized")
         logger.info(f"[dayflow] loaded personas: {[p.get('name') for p in self.cfg.personas()]}")
         await self.start_scheduler()
@@ -701,9 +722,13 @@ class DayflowService:
         logger.info("[dayflow] auto scheduler stopped")
 
     async def _scheduler_loop(self):
+        loop_count = 0
         while self._scheduler_running:
             try:
                 await self.run_due_generations()
+                loop_count += 1
+                if loop_count % 120 == 0:
+                    self._cleanup_stale_caches()
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
                 break
@@ -948,6 +973,7 @@ class DayflowService:
                 "fallback": True,
                 "fallback_reason": fallback_reason,
                 "latest_available_date": latest_date,
+                "error": True,
             },
             "timeline": [],
             "weather": "",
@@ -974,6 +1000,7 @@ class DayflowService:
                     "fallback": True,
                     "fallback_reason": reason,
                     "persona_not_enabled": True,
+                    "error": True,
                 },
                 "timeline": [],
                 "weather": "",
@@ -1047,15 +1074,16 @@ class DayflowService:
         await self.store.save_schedule(store_key, data)
         logger.info(
             f"[dayflow] schedule saved: store_key={store_key}, date={saved_date}, "
-            f"history_count={len(self.store.history_store.get(store_key, []))}, "
-            f"memory_current_date={str((self.store.memory_store.get(store_key) or {}).get('meta', {}).get('date') or '')}"
+            f"history_count={self.store.get_history_count(store_key)}, "
+            f"memory_current_date={self.store.get_memory_date(store_key)}"
         )
 
     def _render_push_content(self, data: dict) -> str:
-        from ..main import _render_schedule_display
-        return _render_schedule_display(data)
+        return render_schedule_display(data)
 
     async def push_schedule_to_targets(self, persona_name: str, data: dict):
+        if not is_schedule_valid(data):
+            return
         persona = self.get_persona_config(persona_name) or self.cfg.find_persona(persona_name)
         if not persona:
             return
