@@ -14,7 +14,11 @@ from astrbot.api import logger
 
 try:
     from PIL import Image, ImageDraw, ImageFont
-    HAS_PILLOW = True
+    import PIL
+    _PILLOW_VERSION = tuple(int(x) for x in PIL.__version__.split(".")[:2])
+    HAS_PILLOW = _PILLOW_VERSION >= (8, 2)
+    if not HAS_PILLOW:
+        logger.warning(f"[ScheduleRenderer] Pillow 版本过低 ({PIL.__version__})，需要 >= 8.2.0，图片渲染不可用")
 except ImportError:
     HAS_PILLOW = False
 
@@ -23,8 +27,9 @@ class ScheduleRenderer:
     """日程图片渲染器 — 清新自然风"""
 
     FONT_DOWNLOAD_URLS = [
-        "https://github.com/AkisAya/NotoSerifSC-Regular/raw/main/NotoSerifSC-Regular.ttf",
         "https://cdn.jsdelivr.net/gh/AkisAya/NotoSerifSC-Regular@main/NotoSerifSC-Regular.ttf",
+        "https://github.com/AkisAya/NotoSerifSC-Regular/raw/main/NotoSerifSC-Regular.ttf",
+        "https://mirror.ghproxy.com/https://github.com/AkisAya/NotoSerifSC-Regular/raw/main/NotoSerifSC-Regular.ttf",
     ]
     FONT_FILENAME = "NotoSerifSC-Regular.ttf"
 
@@ -242,7 +247,7 @@ class ScheduleRenderer:
                 current = {"time": f"{t1} - {t2}" if t2 else t1, "title": m2.group(3), "detail": "", "outfit_change": ""}
                 continue
             if line.startswith("👗") or line.startswith("换装"):
-                current["outfit_change"] = line.lstrip("👗换装：").strip()
+                current["outfit_change"] = re.sub(r'^👗\s*换装[：:]\s*', '', line).strip()
                 continue
             if current["title"] and not current["detail"]:
                 current["detail"] = line
@@ -275,7 +280,7 @@ class ScheduleRenderer:
         detail = item.get("detail") or ""
         if detail:
             if title:
-                height += 8
+                height += 4
             detail_lines = self._wrap_text(detail, content_width - card_padding * 2, self._body_font)
             height += len(detail_lines) * 24
 
@@ -291,12 +296,13 @@ class ScheduleRenderer:
         img = Image.new("RGB", (width, height), self.BG_TOP)
         draw = ImageDraw.Draw(img)
 
-        for y in range(height):
+        step = max(1, height // 64)
+        for y in range(0, height, step):
             ratio = y / height
             r = int(self.BG_TOP[0] * (1 - ratio) + self.BG_BOTTOM[0] * ratio)
             g = int(self.BG_TOP[1] * (1 - ratio) + self.BG_BOTTOM[1] * ratio)
             b = int(self.BG_TOP[2] * (1 - ratio) + self.BG_BOTTOM[2] * ratio)
-            draw.line([(0, y), (width, y)], fill=(r, g, b))
+            draw.rectangle([(0, y), (width, min(y + step, height) - 1)], fill=(r, g, b))
 
         return img
 
@@ -349,7 +355,12 @@ class ScheduleRenderer:
 
         time_text = item.get("time") or ""
         if time_text:
-            draw.text((padding_x, dot_y - 8), time_text, fill=self.TEXT_MUTED, font=self._time_font)
+            time_bbox = draw.textbbox((0, 0), time_text, font=self._time_font)
+            time_w = time_bbox[2] - time_bbox[0]
+            time_x = timeline_x - 12 - time_w
+            if time_x < padding_x:
+                time_x = padding_x
+            draw.text((time_x, dot_y - 8), time_text, fill=self.TEXT_MUTED, font=self._time_font)
 
         content_x = card_x + card_padding
         content_y = y + card_padding
@@ -401,7 +412,8 @@ class ScheduleRenderer:
                 bbox = font.getbbox(test_line)
                 w = bbox[2] - bbox[0]
             except Exception:
-                w = len(test_line) * 18
+                est = 18 if ord(char) > 127 else 10
+                w = len(current_line) * 14 + est
             if w > max_width:
                 if current_line:
                     result.append(current_line)
