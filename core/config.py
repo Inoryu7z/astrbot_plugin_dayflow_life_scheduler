@@ -82,6 +82,7 @@ class DayflowConfig:
                 "reference_diary_days": self._to_int(item.get("reference_diary_days"), 3),
                 "reference_recent_count": self._to_int(item.get("reference_recent_count"), 10),
                 "schedule_variation_level": self._normalize_variation_level(item.get("schedule_variation_level")),
+                "push_targets": self._to_list(item.get("push_targets"), []),
                 "pool": {
                     "today_weather": self._to_list(pool.get("today_weather"), DEFAULT_WEATHERS),
                     "outfit_styles": self._to_list(pool.get("outfit_styles"), DEFAULT_OUTFIT_STYLES),

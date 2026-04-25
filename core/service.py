@@ -2,10 +2,13 @@ import asyncio
 import datetime
 import json
 import random
+import threading
 from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
+from astrbot.api.event import MessageChain
+from astrbot.api.message_components import Plain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .config import DayflowConfig
@@ -117,10 +120,15 @@ class DayflowService:
         self.scheduler_task: asyncio.Task | None = None
         self._scheduler_running = False
         self._last_debug_payload: dict[str, Any] = {}
+        self._debug_payload_lock = threading.Lock()
         self._style_cache_path = self.data_dir / "style_research_cache.json"
         self._style_research_cache: dict[str, Any] = {}
         self._frozen_randoms: dict[str, dict[str, str]] = {}
         self._last_interaction_times: dict[str, str] = {}
+
+    def _update_debug_payload(self, updates: dict[str, Any]):
+        with self._debug_payload_lock:
+            self._last_debug_payload.update(updates)
 
     def record_interaction(self, session_id: str):
         session_key = str(session_id or "").strip()
@@ -531,7 +539,7 @@ class DayflowService:
             sources = list(cached.get("sources") or [])
             summary = str(cached.get("summary") or "")
             cached_weather = str(cached.get("weather") or "").strip() or None
-            self._last_debug_payload.update({
+            self._update_debug_payload({
                 "style_research_cache_hit": True,
                 "style_research_query_preview": self._preview_text(self._build_style_research_query(style_name, location=location), limit=1200),
                 "style_research_system_prompt_preview": self._preview_text(self._style_research_system_prompt(), limit=1200),
@@ -613,7 +621,7 @@ class DayflowService:
             payload_preview = json.dumps(parsed_payload, ensure_ascii=False, indent=2)
             logger.info(f"[dayflow-style-research] parsed_payload | style={style_name} | payload={self._preview_text(payload_preview, limit=1600)}")
             logger.info(f"[dayflow-style-research] sources | style={style_name} | sources={self._render_sources_preview(sources)}")
-            self._last_debug_payload.update({
+            self._update_debug_payload({
                 "style_research_cache_hit": False,
                 "style_research_query_preview": self._preview_text(query, limit=1200),
                 "style_research_system_prompt_preview": self._preview_text(system_prompt, limit=1200),
@@ -637,7 +645,7 @@ class DayflowService:
                 "weather": "",
             }
             self._save_style_research_cache()
-            self._last_debug_payload.update({
+            self._update_debug_payload({
                 "style_research_cache_hit": False,
                 "style_research_query_preview": self._preview_text(query, limit=1200),
                 "style_research_system_prompt_preview": self._preview_text(system_prompt, limit=1200),
@@ -653,7 +661,7 @@ class DayflowService:
 
         if last_reason:
             logger.warning(f"[dayflow] style research unavailable: style={style_name}, reason={last_reason}")
-        self._last_debug_payload.update({
+        self._update_debug_payload({
             "style_research_cache_hit": False,
             "style_research_query_preview": self._preview_text(query, limit=1200),
             "style_research_system_prompt_preview": self._preview_text(system_prompt, limit=1200),
@@ -675,8 +683,8 @@ class DayflowService:
 
     async def terminate(self):
         await self.stop_scheduler()
-        self.store.prune_expired()
-        self.store._save_state()
+        self.store.prune_expired(force=True)
+        await self.store.async_save_state()
         self._save_style_research_cache()
         logger.info("[dayflow] terminated")
 
@@ -764,7 +772,8 @@ class DayflowService:
                     extra_requirement=pending_requirement,
                 )
                 if not data.get("meta", {}).get("error"):
-                    self.save_generated(store_key, data)
+                    await self.save_generated(store_key, data)
+                    await self.push_schedule_to_targets(store_key, data)
                     self.store.clear_auto_generation_failure(store_key, trigger_key)
                     self.store.mark_auto_generation_consumed(store_key, trigger_key)
                     logger.info(
@@ -1019,7 +1028,7 @@ class DayflowService:
     async def exit_generation(self, persona_name: str):
         await self.store.exit_generation(self.normalize_persona_key(persona_name))
 
-    def save_generated(self, persona_name: str, data: dict):
+    async def save_generated(self, persona_name: str, data: dict):
         requested_store_key = self.normalize_persona_key(persona_name)
         if data.get("meta", {}).get("error"):
             logger.warning(f"[dayflow] skip saving error result for persona={requested_store_key}")
@@ -1041,19 +1050,69 @@ class DayflowService:
         store_key = requested_store_key
         meta["persona_name"] = store_key
         data["meta"] = meta
-        self.store.memory_store[store_key] = data
-        history = self.store.history_store.setdefault(store_key, [])
-        today = str(data.get("meta", {}).get("date") or datetime.datetime.now().strftime("%Y-%m-%d"))
-        history = [item for item in history if str((item.get('meta') or {}).get('date') or item.get('date') or '') != today]
-        history.append(dict(data))
-        self.store.history_store[store_key] = history
-        self.store.prune_expired()
-        self.store._save_state()
+        self.store.save_schedule(store_key, data)
         logger.info(
-            f"[dayflow] schedule saved: store_key={store_key}, date={today}, "
+            f"[dayflow] schedule saved: store_key={store_key}, date={saved_date}, "
             f"history_count={len(self.store.history_store.get(store_key, []))}, "
             f"memory_current_date={str((self.store.memory_store.get(store_key) or {}).get('meta', {}).get('date') or '')}"
         )
+
+    def _render_push_content(self, data: dict) -> str:
+        outfit = str(data.get("outfit") or "").strip()
+        summary = str(data.get("summary") or "").strip()
+        timeline = data.get("timeline")
+
+        header = f"👕 今日穿搭：{outfit}"
+        if summary:
+            header += f"\n💬 {summary}"
+
+        if isinstance(timeline, list) and timeline:
+            parts = []
+            for i, item in enumerate(timeline, 1):
+                if not isinstance(item, dict):
+                    continue
+                time_start = str(item.get("time_start") or "").strip()
+                time_end = str(item.get("time_end") or "").strip()
+                title = str(item.get("title") or "").strip()
+                detail = str(item.get("detail") or "").strip()
+                outfit_change = str(item.get("outfit_change") or "").strip()
+                time_range = f"{time_start}-{time_end}" if time_start and time_end else ""
+                block = f"── 第 {i} 项 ──\n🕐 {time_range}"
+                if title:
+                    block += f"\n📌 {title}"
+                if detail:
+                    block += f"\n📄 {detail}"
+                if outfit_change:
+                    block += f"\n👗 换装：{outfit_change}"
+                parts.append(block)
+            schedule_text = "\n\n".join(parts)
+        else:
+            schedule_text = str(data.get("schedule") or "").strip()
+
+        return f"{header}\n📝 日程安排：\n{schedule_text}"
+
+    async def push_schedule_to_targets(self, persona_name: str, data: dict):
+        persona = self.get_persona_config(persona_name) or self.cfg.find_persona(persona_name)
+        if not persona:
+            return
+        push_targets = persona.get("push_targets") or []
+        if not push_targets:
+            return
+
+        content = self._render_push_content(data)
+        if not content.strip():
+            return
+
+        chain = MessageChain([Plain(content)])
+        for target_umo in push_targets:
+            target_umo = str(target_umo or "").strip()
+            if not target_umo:
+                continue
+            try:
+                await self.context.send_message(target_umo, chain)
+                logger.info(f"[dayflow] schedule pushed to {target_umo} for persona={persona_name}")
+            except Exception as e:
+                logger.warning(f"[dayflow] push to {target_umo} failed for persona={persona_name}: {e}")
 
     def describe_personas(self) -> list[str]:
         retention = self._schedule_retention_days()
@@ -1336,7 +1395,8 @@ class DayflowService:
         return last_text, (fallback_provider_id if last_text and primary_failed and fallback_provider_id is not None else primary_provider_id)
 
     def get_last_debug_payload(self) -> dict[str, Any]:
-        return self._last_debug_payload or {}
+        with self._debug_payload_lock:
+            return dict(self._last_debug_payload)
 
     async def build_debug_snapshot(self, event=None, persona_name: str | None = None) -> dict[str, Any]:
         persona_ctx = await self.resolve_persona_context(event=event, persona_name=persona_name)
@@ -1448,13 +1508,13 @@ class DayflowService:
             "variation_configured": configured_variation,
             "variation_effective": effective_variation,
             "variation_definition": self._variation_definition(effective_variation),
-            "style_research_cache_hit": self._last_debug_payload.get("style_research_cache_hit", ""),
-            "style_research_query_preview": self._last_debug_payload.get("style_research_query_preview", ""),
-            "style_research_system_prompt_preview": self._last_debug_payload.get("style_research_system_prompt_preview", ""),
-            "style_research_raw_response_preview": self._last_debug_payload.get("style_research_raw_response_preview", ""),
-            "style_research_payload_preview": self._last_debug_payload.get("style_research_payload_preview", ""),
-            "style_research_sources_preview": self._last_debug_payload.get("style_research_sources_preview", ""),
-            "style_research_weather": self._last_debug_payload.get("style_research_weather", ""),
+            "style_research_cache_hit": self.get_last_debug_payload().get("style_research_cache_hit", ""),
+            "style_research_query_preview": self.get_last_debug_payload().get("style_research_query_preview", ""),
+            "style_research_system_prompt_preview": self.get_last_debug_payload().get("style_research_system_prompt_preview", ""),
+            "style_research_raw_response_preview": self.get_last_debug_payload().get("style_research_raw_response_preview", ""),
+            "style_research_payload_preview": self.get_last_debug_payload().get("style_research_payload_preview", ""),
+            "style_research_sources_preview": self.get_last_debug_payload().get("style_research_sources_preview", ""),
+            "style_research_weather": self.get_last_debug_payload().get("style_research_weather", ""),
             "rendered_prompt_preview": prompt[:2200],
             "recent_chats_preview": replacements["recent_chats"][:500],
             "recent_diaries_preview": replacements["recent_diaries"][:500],
@@ -1599,7 +1659,7 @@ class DayflowService:
             "today_weather": today_weather,
             "user_specified_outfit_style": user_specified_outfit_style,
         })
-        self._last_debug_payload.update({
+        self._update_debug_payload({
             "persona_name": normalized_persona_name,
             "persona_desc_preview": (replacements["persona_desc"] or "")[:1200],
             "outfit_style": outfit_style,

@@ -216,7 +216,8 @@ class DayflowPlugin(Star):
             if data.get("meta", {}).get("error"):
                 yield event.plain_result(f"⚠️ 生成失败：{data.get('memo', '未知错误')}")
                 return
-            self.service.save_generated(store_key, data)
+            await self.service.save_generated(store_key, data)
+            await self.service.push_schedule_to_targets(store_key, data)
             if extra_requirement:
                 yield event.plain_result(
                     f"✅ 已为 {persona_name} 定制今日日程\n{_render_schedule_display(data)}"

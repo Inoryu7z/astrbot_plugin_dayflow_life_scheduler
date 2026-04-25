@@ -224,6 +224,12 @@
             "description": "重试次数",
             "default": 2
           },
+          "push_targets": {
+            "type": "list",
+            "description": "日程推送目标",
+            "default": [],
+            "hint": "日程生成后自动推送到指定的聊天会话。填写完整的 UMO 字符串，格式为 platform_id:message_type:session_id，如 aiocqhttp:GroupMessage:123456。可填写多个目标。留空则不推送。"
+          },
           "prompt_template": {
             "description": "人格复写 Prompt 模板",
             "type": "text",
