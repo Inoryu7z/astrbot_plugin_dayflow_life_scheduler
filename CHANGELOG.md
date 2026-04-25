@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.3.5 - 2026-04-26
+
+**✨ 新增日程图片渲染功能**
+
+**1. 🎨 清新自然风日程图片**
+
+* 新增 `core/schedule_renderer.py` 日程图片渲染器
+* 采用清新自然风设计：柔和渐变背景（绿白过渡）、圆角卡片、垂直时间轴+卡片混合布局
+* 左侧时间节点圆点+时间文本，右侧为圆角卡片内容区（标题、详情、换装标签）
+* 顶部显示日期和人格名称，底部显示 Dayflow 品牌标识
+* 字体策略同 DayMind：优先使用系统字体，无则自动下载 NotoSerifSC-Regular
+* 支持从 timeline 数组或 schedule 纯文本解析日程条目
+* 图片宽度 640px，高度根据内容动态计算
+
+**2. ⚙️ 人格级图片推送开关**
+
+* persona 配置新增 `push_image_enabled` 字段（bool，默认 False）
+* 不同人格可独立开关图片推送/查看
+* 开启后，日程自动推送和命令查看均输出图片
+* 关闭时保持原有纯文本行为
+
+**3. 🛡️ 图片渲染失败自动降级**
+
+* 图片渲染失败时自动回退到纯文本推送
+* 记录 warning 日志便于排查
+
+**4. 🔧 代码变更**
+
+* `service.py`：新增 `_render_push_image()` 方法，`push_schedule_to_targets()` 支持图片/纯文本双模式
+* `main.py`：新增 `_should_send_image()` 和 `_send_schedule_result()`，所有日程输出命令统一走图片/文本分发
+* `config.py`：新增 `push_image_enabled` 字段解析
+* `_conf_schema.json`：新增 `push_image_enabled` 配置项
+
+---
+
 ## v1.3.4 - 2026-04-25
 
 **🔧 审查修复：循环导入消除 + error 字段统一 + 内存泄漏清理**
