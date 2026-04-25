@@ -84,6 +84,15 @@ class DayflowStore:
     def has_memory(self, persona_name: str) -> bool:
         return self.get_memory(persona_name) is not None
 
+    def get_history_count(self, persona_name: str) -> int:
+        return len(self.history_store.get(persona_name, []))
+
+    def get_memory_date(self, persona_name: str) -> str:
+        data = self.memory_store.get(persona_name)
+        if not data:
+            return ""
+        return str((data.get("meta") or {}).get("date") or "")
+
     def _history_item_to_schedule(self, persona_name: str, item: dict[str, Any]) -> dict | None:
         if not isinstance(item, dict):
             return None

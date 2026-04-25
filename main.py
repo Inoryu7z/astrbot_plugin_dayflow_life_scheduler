@@ -6,6 +6,10 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 from astrbot.core.provider.entities import ProviderRequest
 
+from .core.generator import (
+    is_schedule_valid,
+    render_schedule_display,
+)
 from .core.service import DayflowService
 
 DAYFLOW_INJECTION_HEADER = "<DayFlow-Schedule>"
@@ -23,66 +27,11 @@ _PRESENCE_PATTERN = re.compile(
 )
 
 
-def _render_schedule_display(data: dict) -> str:
-    outfit = str(data.get("outfit") or "").strip()
-    summary = str(data.get("summary") or "").strip()
-    timeline = data.get("timeline")
-
-    header = f"👕 今日穿搭：{outfit}"
-    if summary:
-        header += f"\n💬 {summary}"
-
-    if isinstance(timeline, list) and timeline:
-        parts = []
-        for i, item in enumerate(timeline, 1):
-            if not isinstance(item, dict):
-                continue
-            time_start = str(item.get("time_start") or "").strip()
-            time_end = str(item.get("time_end") or "").strip()
-            title = str(item.get("title") or "").strip()
-            detail = str(item.get("detail") or "").strip()
-            outfit_change = str(item.get("outfit_change") or "").strip()
-            time_range = f"{time_start}-{time_end}" if time_start and time_end else ""
-            block = f"── 第 {i} 项 ──\n🕐 {time_range}"
-            if title:
-                block += f"\n📌 {title}"
-            if detail:
-                block += f"\n📄 {detail}"
-            if outfit_change:
-                block += f"\n👗 换装：{outfit_change}"
-            parts.append(block)
-        schedule_text = "\n\n".join(parts)
-    else:
-        schedule_text = str(data.get("schedule") or "").strip()
-
-    return f"{header}\n📝 日程安排：\n{schedule_text}"
-
-
-def _is_schedule_valid(data: dict) -> bool:
-    if not data:
-        return False
-    meta = data.get("meta") or {}
-    if meta.get("error"):
-        return False
-    outfit = str(data.get("outfit") or "").strip()
-    schedule = str(data.get("schedule") or "").strip()
-    if not outfit and not schedule:
-        return False
-    if outfit == "尚未生成" or "尚未生成成功" in schedule:
-        return False
-    return True
-
-
 def _build_injection_text(data: dict) -> str | None:
-    meta = data.get("meta") or {}
-    if meta.get("error"):
+    if not is_schedule_valid(data):
         return None
     outfit = str(data.get("outfit") or "").strip()
     schedule = str(data.get("schedule") or "").strip()
-    if not outfit and not schedule:
-        return None
-    if outfit == "尚未生成" or "尚未生成成功" in schedule:
-        return None
     parts = []
     if outfit:
         parts.append(f"今日穿搭：{outfit}")
@@ -188,9 +137,9 @@ class DayflowPlugin(Star):
             persona_name=persona_name,
             target_date=today,
         )
-        if _is_schedule_valid(existing_before_lock) and not force_regenerate:
+        if is_schedule_valid(existing_before_lock) and not force_regenerate:
             yield event.plain_result(
-                f"🧠 人格：{persona_name}\n{_render_schedule_display(existing_before_lock)}"
+                f"🧠 人格：{persona_name}\n{render_schedule_display(existing_before_lock)}"
             )
             return
 
@@ -201,9 +150,9 @@ class DayflowPlugin(Star):
                 persona_name=persona_name,
                 target_date=today,
             )
-            if _is_schedule_valid(existing_while_busy) and not force_regenerate:
+            if is_schedule_valid(existing_while_busy) and not force_regenerate:
                 yield event.plain_result(
-                    f"🧠 人格：{persona_name}\n{_render_schedule_display(existing_while_busy)}"
+                    f"🧠 人格：{persona_name}\n{render_schedule_display(existing_while_busy)}"
                 )
             else:
                 yield event.plain_result(f"当前人格 {persona_name} 已有生成任务在进行中，请稍后再试。")
@@ -215,9 +164,9 @@ class DayflowPlugin(Star):
                 persona_name=persona_name,
                 target_date=today,
             )
-            if _is_schedule_valid(existing_after_lock) and not force_regenerate:
+            if is_schedule_valid(existing_after_lock) and not force_regenerate:
                 yield event.plain_result(
-                    f"🧠 人格：{persona_name}\n{_render_schedule_display(existing_after_lock)}"
+                    f"🧠 人格：{persona_name}\n{render_schedule_display(existing_after_lock)}"
                 )
                 return
 
@@ -235,15 +184,15 @@ class DayflowPlugin(Star):
             await self.service.push_schedule_to_targets(store_key, data)
             if extra_requirement:
                 yield event.plain_result(
-                    f"✅ 已为 {persona_name} 定制今日日程\n{_render_schedule_display(data)}"
+                    f"✅ 已为 {persona_name} 定制今日日程\n{render_schedule_display(data)}"
                 )
             elif force_regenerate:
                 yield event.plain_result(
-                    f"✅ 已强制重生成 {persona_name} 的今日日程\n{_render_schedule_display(data)}"
+                    f"✅ 已强制重生成 {persona_name} 的今日日程\n{render_schedule_display(data)}"
                 )
             else:
                 yield event.plain_result(
-                    f"✅ 已生成 {persona_name} 的今日日程\n{_render_schedule_display(data)}"
+                    f"✅ 已生成 {persona_name} 的今日日程\n{render_schedule_display(data)}"
                 )
         finally:
             await self.service.exit_generation(store_key)
@@ -265,9 +214,9 @@ class DayflowPlugin(Star):
             target_date=today,
         )
 
-        if _is_schedule_valid(today_schedule):
+        if is_schedule_valid(today_schedule):
             yield event.plain_result(
-                f"🧠 人格：{persona_name}\n{_render_schedule_display(today_schedule)}"
+                f"🧠 人格：{persona_name}\n{render_schedule_display(today_schedule)}"
             )
             return
 
