@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.3.0 - 2026-04-25
+
+**🐛 修复日程注入被错误阻止的问题**
+
+**1. 🔧 修复 `fallback` 字段语义冲突**
+
+* `_build_injection_text` 之前检查 `meta.get("fallback")` 来决定是否注入
+* 但 `fallback: true` 在 provider 切换场景下仅表示"使用了备用 provider"，日程内容是有效的
+* 这导致当配置的 provider 失败、切换到备用 provider 成功生成日程后，日程无法注入系统提示词
+
+**2. 📝 改进注入判断逻辑**
+
+* 移除对 `meta.get("fallback")` 的检查
+* 改为检查日程内容是否为占位符（`outfit == "尚未生成"` 或 `"尚未生成成功" in schedule`）
+* 现在只要日程内容有效，即使使用了备用 provider 也会正常注入
+
+---
+
 ## v1.2.9 - 2026-04-25
 
 **🐛 修复 Grok 搜索 429 重试失效问题**
