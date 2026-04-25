@@ -131,19 +131,16 @@ class DayflowPlugin(Star):
             persona = self.service.cfg.find_persona(persona_name)
         return bool(persona.get("push_image_enabled", False)) if persona else False
 
-    async def _send_schedule_result(self, event: AstrMessageEvent, persona_name: str, data: dict, prefix: str = ""):
+    async def _send_schedule_result(self, event: AstrMessageEvent, persona_name: str, data: dict):
+        text = render_schedule_display(data)
         if self._should_send_image(persona_name):
             image_bytes = await self.service._render_push_image(data, persona_name)
             if image_bytes is not None:
-                if prefix:
-                    yield event.plain_result(prefix)
-                yield event.image_result(ImageComponent.fromBytes(image_bytes))
+                logger.info(f"[dayflow] 图片渲染成功，同时输出文字日志: {persona_name}")
+                logger.info(f"[dayflow] 日程内容:\n{text}")
+                yield event.chain_result([ImageComponent.fromBytes(image_bytes)])
                 return
-        text = render_schedule_display(data)
-        if prefix:
-            yield event.plain_result(f"{prefix}\n{text}")
-        else:
-            yield event.plain_result(text)
+        yield event.plain_result(text)
 
     async def _generate_for_event(self, event: AstrMessageEvent, persona_name: str, persona_desc: str, store_key: str, force_regenerate: bool = False, extra_requirement: str | None = None):
         if not self.service.is_persona_configured(persona_name):
@@ -159,7 +156,7 @@ class DayflowPlugin(Star):
             target_date=today,
         )
         if is_schedule_valid(existing_before_lock) and not force_regenerate:
-            async for result in self._send_schedule_result(event, persona_name, existing_before_lock, prefix=f"🧠 人格：{persona_name}"):
+            async for result in self._send_schedule_result(event, persona_name, existing_before_lock):
                 yield result
             return
 
@@ -171,7 +168,7 @@ class DayflowPlugin(Star):
                 target_date=today,
             )
             if is_schedule_valid(existing_while_busy) and not force_regenerate:
-                async for result in self._send_schedule_result(event, persona_name, existing_while_busy, prefix=f"🧠 人格：{persona_name}"):
+                async for result in self._send_schedule_result(event, persona_name, existing_while_busy):
                     yield result
             else:
                 yield event.plain_result(f"当前人格 {persona_name} 已有生成任务在进行中，请稍后再试。")
@@ -184,7 +181,7 @@ class DayflowPlugin(Star):
                 target_date=today,
             )
             if is_schedule_valid(existing_after_lock) and not force_regenerate:
-                async for result in self._send_schedule_result(event, persona_name, existing_after_lock, prefix=f"🧠 人格：{persona_name}"):
+                async for result in self._send_schedule_result(event, persona_name, existing_after_lock):
                     yield result
                 return
 
@@ -199,28 +196,20 @@ class DayflowPlugin(Star):
                 yield event.plain_result(f"⚠️ 生成失败：{data.get('memo', '未知错误')}")
                 return
             await self.service.save_generated(store_key, data)
-            await self.service.push_schedule_to_targets(store_key, data)
-            if extra_requirement:
-                async for result in self._send_schedule_result(event, persona_name, data, prefix=f"✅ 已为 {persona_name} 定制今日日程"):
-                    yield result
-            elif force_regenerate:
-                async for result in self._send_schedule_result(event, persona_name, data, prefix=f"✅ 已强制重生成 {persona_name} 的今日日程"):
-                    yield result
-            else:
-                async for result in self._send_schedule_result(event, persona_name, data, prefix=f"✅ 已生成 {persona_name} 的今日日程"):
-                    yield result
+            current_session = getattr(event, "unified_msg_origin", None)
+            await self.service.push_schedule_to_targets(store_key, data, exclude_umo=current_session)
+            async for result in self._send_schedule_result(event, persona_name, data):
+                yield result
         finally:
             await self.service.exit_generation(store_key)
 
-    @filter.command("查看日程", alias={"life_show", "dayflow_show"})
-    async def dayflow_show(self, event: AstrMessageEvent):
+    @filter.command("今日日程", alias={"life_today", "dayflow_today"})
+    async def dayflow_today(self, event: AstrMessageEvent):
         persona_ctx = await self.service.resolve_persona_context(event=event)
         persona_name = persona_ctx["persona_name"]
-        persona_desc = persona_ctx["persona_desc"]
         if not self.service.is_persona_configured(persona_name, persona_ctx.get("persona_id")):
             yield event.plain_result(f"当前人格未在 Dayflow 中启用：{persona_name}")
             return
-        store_key = self.service.normalize_persona_key(persona_name, persona_ctx.get("persona_id"))
 
         today = datetime.datetime.now().strftime("%Y-%m-%d")
         today_schedule = await self.service.get_life_context(
@@ -230,12 +219,10 @@ class DayflowPlugin(Star):
         )
 
         if is_schedule_valid(today_schedule):
-            async for result in self._send_schedule_result(event, persona_name, today_schedule, prefix=f"🧠 人格：{persona_name}"):
+            async for result in self._send_schedule_result(event, persona_name, today_schedule):
                 yield result
-            return
-
-        async for result in self._generate_for_event(event, persona_name, persona_desc, store_key, force_regenerate=False):
-            yield result
+        else:
+            yield event.plain_result(f"📅 {persona_name} 今天还没有日程，可以使用 /生成日程 来生成。")
 
     @filter.command("生成日程", alias={"life_renew", "dayflow_gen"})
     async def dayflow_generate(self, event: AstrMessageEvent):
