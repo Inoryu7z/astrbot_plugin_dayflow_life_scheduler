@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,9 @@ class DayflowStore:
         self.generating_personas: set[str] = set()
         self.retention_days = self._normalize_retention_days(retention_days)
         self._initialized = False
+        self._last_prune_time: float = 0.0
+        self._prune_interval_seconds: float = 300.0
+        self._save_lock = threading.Lock()
 
     def _normalize_retention_days(self, value) -> int:
         try:
@@ -42,14 +46,14 @@ class DayflowStore:
 
     def set_retention_days(self, days: int):
         self.retention_days = self._normalize_retention_days(days)
-        self.prune_expired()
+        self.prune_expired(force=True)
         if self._initialized:
             self._save_state()
 
     def initialize(self):
         self._load_state()
         self._initialized = True
-        self.prune_expired()
+        self.prune_expired(force=True)
         self._save_state()
 
     async def enter_generation(self, persona_name: str) -> bool:
@@ -63,6 +67,16 @@ class DayflowStore:
         async with self._gen_lock:
             self.generating_personas.discard(persona_name)
 
+    def save_schedule(self, store_key: str, data: dict):
+        self.memory_store[store_key] = data
+        date_str = str((data.get("meta") or {}).get("date") or "")
+        history = self.history_store.setdefault(store_key, [])
+        history = [item for item in history if str((item.get("meta") or {}).get("date") or item.get("date") or "") != date_str]
+        history.append(dict(data))
+        self.history_store[store_key] = history
+        self.prune_expired()
+        self._save_state()
+
     def get_memory(self, persona_name: str) -> dict | None:
         self.prune_expired()
         return self.memory_store.get(persona_name)
@@ -70,7 +84,7 @@ class DayflowStore:
     def has_memory(self, persona_name: str) -> bool:
         return self.get_memory(persona_name) is not None
 
-    def _history_item_to_schedule(self, persona_name: str, item: dict[str, Any]) -> dict:
+    def _history_item_to_schedule(self, persona_name: str, item: dict[str, Any]) -> dict | None:
         if not isinstance(item, dict):
             return None
         if item.get("meta") or item.get("timeline") or item.get("weather") or item.get("long_term_memory"):
@@ -205,9 +219,15 @@ class DayflowStore:
             self.clear_pending_custom_request(target_date, persona_key)
         return requirement
 
-    def prune_expired(self):
+    def prune_expired(self, force: bool = False):
         if self.retention_days == -1:
             return
+
+        import time
+        now = time.monotonic()
+        if not force and (now - self._last_prune_time) < self._prune_interval_seconds:
+            return
+        self._last_prune_time = now
 
         cutoff = self._retention_cutoff_date()
 
@@ -331,20 +351,24 @@ class DayflowStore:
             logger.warning(f"[dayflow] load state failed: {e}")
 
     def _save_state(self):
-        try:
-            payload = {
-                "saved_at": datetime.datetime.now().isoformat(),
-                "retention_days": self.retention_days,
-                "memory_store": self.memory_store,
-                "history_store": self.history_store,
-                "auto_generation_state": self.auto_generation_state,
-                "auto_generation_failures": self.auto_generation_failures,
-                "pending_custom_requests": self.pending_custom_requests,
-            }
-            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        with self._save_lock:
+            try:
+                payload = {
+                    "saved_at": datetime.datetime.now().isoformat(),
+                    "retention_days": self.retention_days,
+                    "memory_store": self.memory_store,
+                    "history_store": self.history_store,
+                    "auto_generation_state": self.auto_generation_state,
+                    "auto_generation_failures": self.auto_generation_failures,
+                    "pending_custom_requests": self.pending_custom_requests,
+                }
+                self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
-            tmp_path = self.state_file.with_suffix(".tmp")
-            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp_path.replace(self.state_file)
-        except Exception as e:
-            logger.warning(f"[dayflow] save state failed: {e}")
+                tmp_path = self.state_file.with_suffix(".tmp")
+                tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                tmp_path.replace(self.state_file)
+            except Exception as e:
+                logger.warning(f"[dayflow] save state failed: {e}")
+
+    async def async_save_state(self):
+        await asyncio.to_thread(self._save_state)

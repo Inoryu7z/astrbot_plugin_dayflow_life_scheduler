@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.3.2 - 2026-04-26
+
+**🔧 代码质量修复 + 新增日程推送功能**
+
+**1. 🐛 代码瑕疵修复（P0）**
+
+* `_history_item_to_schedule` 返回类型从 `dict` 修正为 `dict | None`，与方法实际行为一致
+* `prune_expired()` 新增节流机制（300秒间隔），避免高频调用时反复遍历全部数据；关键调用点使用 `force=True`
+* `_save_state()` 新增 `threading.Lock` 防止并发写入文件
+* 新增 `async_save_state()` 方法，通过 `asyncio.to_thread()` 将同步文件 I/O 卸载到线程池
+* `save_generated()` 改为 `async def`，内部调用 `await self.store.async_save_state()`
+* `_last_debug_payload` 新增 `threading.Lock` 保护，新增 `_update_debug_payload()` 方法
+
+**2. 🔒 封装性修复（P1）**
+
+* 新增 `DayflowStore.save_schedule()` 方法，封装 memory_store 写入、history_store 去重追加、prune 和 save
+* `DayflowService.save_generated()` 不再直接操作 Store 内部字典
+
+**3. ✨ 日程推送功能**
+
+* persona 配置新增 `push_targets` 字段（UMO 字符串数组）
+* 日程生成后自动推送到配置的聊天会话
+* 推送内容不含"🧠 人格：xxx"前缀
+* 推送失败静默跳过并记录日志
+* 预留图片渲染接口（`_render_push_content()`）
+
+---
+
 ## v1.3.1 - 2026-04-25
 
 **🔧 风格研究调用重构与降级校验**
