@@ -58,6 +58,21 @@ def _render_schedule_display(data: dict) -> str:
     return f"{header}\n📝 日程安排：\n{schedule_text}"
 
 
+def _is_schedule_valid(data: dict) -> bool:
+    if not data:
+        return False
+    meta = data.get("meta") or {}
+    if meta.get("error"):
+        return False
+    outfit = str(data.get("outfit") or "").strip()
+    schedule = str(data.get("schedule") or "").strip()
+    if not outfit and not schedule:
+        return False
+    if outfit == "尚未生成" or "尚未生成成功" in schedule:
+        return False
+    return True
+
+
 def _build_injection_text(data: dict) -> str | None:
     meta = data.get("meta") or {}
     if meta.get("error"):
@@ -173,7 +188,7 @@ class DayflowPlugin(Star):
             persona_name=persona_name,
             target_date=today,
         )
-        if existing_before_lock and not existing_before_lock.get("meta", {}).get("error") and not existing_before_lock.get("meta", {}).get("fallback") and not force_regenerate:
+        if _is_schedule_valid(existing_before_lock) and not force_regenerate:
             yield event.plain_result(
                 f"🧠 人格：{persona_name}\n{_render_schedule_display(existing_before_lock)}"
             )
@@ -186,7 +201,7 @@ class DayflowPlugin(Star):
                 persona_name=persona_name,
                 target_date=today,
             )
-            if existing_while_busy and not existing_while_busy.get("meta", {}).get("error") and not existing_while_busy.get("meta", {}).get("fallback") and not force_regenerate:
+            if _is_schedule_valid(existing_while_busy) and not force_regenerate:
                 yield event.plain_result(
                     f"🧠 人格：{persona_name}\n{_render_schedule_display(existing_while_busy)}"
                 )
@@ -200,7 +215,7 @@ class DayflowPlugin(Star):
                 persona_name=persona_name,
                 target_date=today,
             )
-            if existing_after_lock and not existing_after_lock.get("meta", {}).get("error") and not existing_after_lock.get("meta", {}).get("fallback") and not force_regenerate:
+            if _is_schedule_valid(existing_after_lock) and not force_regenerate:
                 yield event.plain_result(
                     f"🧠 人格：{persona_name}\n{_render_schedule_display(existing_after_lock)}"
                 )
@@ -250,7 +265,7 @@ class DayflowPlugin(Star):
             target_date=today,
         )
 
-        if today_schedule and not today_schedule.get("meta", {}).get("error") and not today_schedule.get("meta", {}).get("fallback"):
+        if _is_schedule_valid(today_schedule):
             yield event.plain_result(
                 f"🧠 人格：{persona_name}\n{_render_schedule_display(today_schedule)}"
             )
