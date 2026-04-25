@@ -224,6 +224,12 @@
             "default": [],
             "hint": "日程生成后自动推送到指定的聊天会话。填写完整的 UMO 字符串，格式为 platform_id:message_type:session_id，如 aiocqhttp:GroupMessage:123456。可填写多个目标。留空则不推送。"
           },
+          "push_image_enabled": {
+            "type": "bool",
+            "description": "推送时渲染为图片",
+            "default": false,
+            "hint": "开启后，日程推送将渲染为清新自然风图片发送；关闭则发送纯文本。图片渲染失败时自动降级为纯文本。"
+          },
           "prompt_template": {
             "description": "人格复写 Prompt 模板",
             "type": "text",

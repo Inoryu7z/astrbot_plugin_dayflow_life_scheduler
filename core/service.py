@@ -8,7 +8,7 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import Image as ImageComponent, Plain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .config import DayflowConfig
@@ -25,6 +25,7 @@ from .generator import (
     safe_json_loads,
     validate_payload,
 )
+from .schedule_renderer import ScheduleRenderer
 from .store import DayflowStore
 
 
@@ -127,6 +128,7 @@ class DayflowService:
         self._style_research_cache: dict[str, Any] = {}
         self._frozen_randoms: dict[str, dict[str, str]] = {}
         self._last_interaction_times: dict[str, str] = {}
+        self._schedule_renderer = ScheduleRenderer(self.data_dir)
 
     def _update_debug_payload(self, updates: dict[str, Any]):
         with self._debug_payload_lock:
@@ -1081,6 +1083,10 @@ class DayflowService:
     def _render_push_content(self, data: dict) -> str:
         return render_schedule_display(data)
 
+    def _render_push_image(self, data: dict, persona_name: str) -> bytes | None:
+        date_str = str((data.get("meta") or {}).get("date") or "").strip()
+        return self._schedule_renderer.render(data, date_str=date_str, persona_name=persona_name)
+
     async def push_schedule_to_targets(self, persona_name: str, data: dict):
         if not is_schedule_valid(data):
             return
@@ -1091,18 +1097,31 @@ class DayflowService:
         if not push_targets:
             return
 
-        content = self._render_push_content(data)
-        if not content.strip():
-            return
+        push_image_enabled = bool(persona.get("push_image_enabled", False))
+        image_bytes: bytes | None = None
+        text_content: str | None = None
 
-        chain = MessageChain([Plain(content)])
+        if push_image_enabled:
+            image_bytes = self._render_push_image(data, persona_name)
+            if image_bytes is None:
+                logger.warning(f"[dayflow] image render failed for persona={persona_name}, fallback to plain text")
+                text_content = self._render_push_content(data)
+        else:
+            text_content = self._render_push_content(data)
+
         for target_umo in push_targets:
             target_umo = str(target_umo or "").strip()
             if not target_umo:
                 continue
             try:
+                if image_bytes is not None:
+                    chain = MessageChain([ImageComponent.fromBytes(image_bytes)])
+                elif text_content is not None:
+                    chain = MessageChain([Plain(text_content)])
+                else:
+                    continue
                 await self.context.send_message(target_umo, chain)
-                logger.info(f"[dayflow] schedule pushed to {target_umo} for persona={persona_name}")
+                logger.info(f"[dayflow] schedule pushed to {target_umo} for persona={persona_name} (image={image_bytes is not None})")
             except Exception as e:
                 logger.warning(f"[dayflow] push to {target_umo} failed for persona={persona_name}: {e}")
 
