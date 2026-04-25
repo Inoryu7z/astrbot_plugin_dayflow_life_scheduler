@@ -1091,7 +1091,7 @@ class DayflowService:
                 self._schedule_renderer.render, data, date_str, persona_name
             )
 
-    async def push_schedule_to_targets(self, persona_name: str, data: dict):
+    async def push_schedule_to_targets(self, persona_name: str, data: dict, exclude_umo: str | None = None):
         if not is_schedule_valid(data):
             return
         persona = self.get_persona_config(persona_name) or self.cfg.find_persona(persona_name)
@@ -1116,6 +1116,8 @@ class DayflowService:
         for target_umo in push_targets:
             target_umo = str(target_umo or "").strip()
             if not target_umo:
+                continue
+            if exclude_umo and target_umo == exclude_umo:
                 continue
             try:
                 if image_bytes is not None:
