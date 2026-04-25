@@ -60,11 +60,13 @@ def _render_schedule_display(data: dict) -> str:
 
 def _build_injection_text(data: dict) -> str | None:
     meta = data.get("meta") or {}
-    if meta.get("error") or meta.get("fallback"):
+    if meta.get("error"):
         return None
     outfit = str(data.get("outfit") or "").strip()
     schedule = str(data.get("schedule") or "").strip()
     if not outfit and not schedule:
+        return None
+    if outfit == "尚未生成" or "尚未生成成功" in schedule:
         return None
     parts = []
     if outfit:
