@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.3.1 - 2026-04-25
+
+**🔧 风格研究调用重构与降级校验**
+
+**1. 🔄 重试逻辑简化：完全交给 Grok 插件**
+
+* 删除 `_research_style_reference` 中的外层重试循环（之前 `for attempt in range(1, retries+2)`）
+* 改为只调一次 `grok._do_search(use_retry=True)`，重试完全由 Grok 插件内部处理
+* 消除了 dayflow 外层循环 + grok 内部重试的双重重试问题
+
+**2. 🛡️ ok=False 时 raw 降级**
+
+* 当 Grok 返回 `ok=False` 时，检查 `raw` 字段是否有内容
+* 有内容则降级使用纯文本（走已有的 `_render_style_reference_from_plain_text` 路径）
+* 之前 ok=False 时直接跳过，完全不考虑 raw 内容
+
+---
+
 ## v1.3.0 - 2026-04-25
 
 **🐛 修复日程注入被错误阻止的问题**
