@@ -565,28 +565,31 @@ class DayflowService:
                 logger.warning(f"[dayflow] custom schedule intent append format failed: {e}")
 
         logger.info(f"[dayflow-style-research] query | style={style_name} | location={location} | query={query}")
-        retries = self._style_research_retry_count()
-        last_reason = ""
-        result = None
-        parsed_payload = None
+        result = await grok._do_search(query=query, system_prompt=system_prompt, use_retry=True)
+
+        sources = list(result.get("sources") or [])
         raw_text = ""
-        for attempt in range(1, retries + 2):
-            result = await grok._do_search(query=query, system_prompt=system_prompt, use_retry=True)
-            if not result.get("ok"):
-                last_reason = str(result.get("error") or "grok search failed")
-                logger.warning(f"[dayflow] style research search failed: style={style_name}, attempt={attempt}, reason={last_reason}")
-                continue
+        parsed_payload = None
+        last_reason = ""
+        real_weather = None
+
+        if not result.get("ok"):
+            last_reason = str(result.get("error") or "grok search failed")
+            raw_from_error = str(result.get("raw") or "").strip()
+            if raw_from_error:
+                raw_text = raw_from_error
+                logger.warning(f"[dayflow] style research search failed but raw content available, degrading: style={style_name}, error={last_reason}")
+            else:
+                logger.warning(f"[dayflow] style research search failed: style={style_name}, reason={last_reason}")
+        else:
             raw_text = str(result.get("content") or "").strip()
             logger.info(f"[dayflow-style-research] raw_response | style={style_name} | content={self._preview_text(raw_text, limit=1600)}")
             parsed = safe_json_loads(raw_text)
             if isinstance(parsed, dict) and parsed.get("definition"):
                 parsed_payload = parsed
-                break
-            last_reason = "研究结果不是有效 JSON"
-            logger.warning(f"[dayflow] style research parse failed: style={style_name}, attempt={attempt}, reason={last_reason}")
-
-        sources = list((result or {}).get("sources") or [])
-        real_weather = None
+            else:
+                last_reason = "研究结果不是有效 JSON"
+                logger.warning(f"[dayflow] style research parse failed: style={style_name}, reason={last_reason}")
 
         if parsed_payload:
             if extra_requirement and isinstance(parsed_payload.get("intent_overrides"), dict):
