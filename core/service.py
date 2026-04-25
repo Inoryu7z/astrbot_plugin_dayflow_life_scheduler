@@ -129,6 +129,7 @@ class DayflowService:
         self._frozen_randoms: dict[str, dict[str, str]] = {}
         self._last_interaction_times: dict[str, str] = {}
         self._schedule_renderer = ScheduleRenderer(self.data_dir)
+        self._render_lock = asyncio.Lock()
 
     def _update_debug_payload(self, updates: dict[str, Any]):
         with self._debug_payload_lock:
@@ -1083,9 +1084,12 @@ class DayflowService:
     def _render_push_content(self, data: dict) -> str:
         return render_schedule_display(data)
 
-    def _render_push_image(self, data: dict, persona_name: str) -> bytes | None:
+    async def _render_push_image(self, data: dict, persona_name: str) -> bytes | None:
         date_str = str((data.get("meta") or {}).get("date") or "").strip()
-        return self._schedule_renderer.render(data, date_str=date_str, persona_name=persona_name)
+        async with self._render_lock:
+            return await asyncio.to_thread(
+                self._schedule_renderer.render, data, date_str, persona_name
+            )
 
     async def push_schedule_to_targets(self, persona_name: str, data: dict):
         if not is_schedule_valid(data):
@@ -1102,7 +1106,7 @@ class DayflowService:
         text_content: str | None = None
 
         if push_image_enabled:
-            image_bytes = self._render_push_image(data, persona_name)
+            image_bytes = await self._render_push_image(data, persona_name)
             if image_bytes is None:
                 logger.warning(f"[dayflow] image render failed for persona={persona_name}, fallback to plain text")
                 text_content = self._render_push_content(data)

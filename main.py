@@ -126,12 +126,14 @@ class DayflowPlugin(Star):
             logger.debug(f"[dayflow] on_llm_response 处理失败: {e}")
 
     def _should_send_image(self, persona_name: str) -> bool:
-        persona = self.service.get_persona_config(persona_name) or self.service.cfg.find_persona(persona_name)
+        persona = self.service.get_persona_config(persona_name)
+        if persona is None:
+            persona = self.service.cfg.find_persona(persona_name)
         return bool(persona.get("push_image_enabled", False)) if persona else False
 
     async def _send_schedule_result(self, event: AstrMessageEvent, persona_name: str, data: dict, prefix: str = ""):
         if self._should_send_image(persona_name):
-            image_bytes = self.service._render_push_image(data, persona_name)
+            image_bytes = await self.service._render_push_image(data, persona_name)
             if image_bytes is not None:
                 if prefix:
                     yield event.plain_result(prefix)
