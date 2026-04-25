@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.3.3 - 2026-04-25
+
+**🔧 审计修复：fallback 语义冲突 + 死代码清理 + 异步化**
+
+**1. 🐛 修复 `fallback` 字段语义冲突（显示/决策路径）**
+
+* 新增 `_is_schedule_valid(data)` 辅助函数，基于内容有效性判断日程是否有效
+* 替换 main.py 中 4 处 `not existing.get("meta", {}).get("fallback")` 检查
+* 之前只修了注入层面（v1.3.0），显示和决策路径仍会把备用 provider 生成的日程误判为无效
+* 现在备用 provider 成功生成的日程可正常展示和复用
+
+**2. ♻️ 消除渲染逻辑重复**
+
+* `_render_push_content()` 不再重复实现渲染逻辑，改为调用 `_render_schedule_display()`
+* 后续只需维护一处渲染代码
+
+**3. 🧹 清理死代码**
+
+* 删除 `_style_research_retry_count()` getter（外层重试循环已在 v1.3.1 删除，此配置无效）
+* 删除 `_conf_schema.json` 中对应的 `style_research_retry_count` 配置项
+
+**4. ⚡ `save_schedule()` 异步化**
+
+* `save_schedule()` 改为 `async def`，内部调用 `await async_save_state()` 替代同步 `_save_state()`
+* 不再阻塞事件循环
+
+**5. 📊 `describe_personas()` 增加推送目标显示**
+
+* 输出末尾追加 `| 推送:N个目标`
+
+---
+
 ## v1.3.2 - 2026-04-26
 
 **🔧 代码质量修复 + 新增日程推送功能**

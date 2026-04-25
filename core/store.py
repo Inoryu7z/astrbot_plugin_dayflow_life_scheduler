@@ -67,7 +67,7 @@ class DayflowStore:
         async with self._gen_lock:
             self.generating_personas.discard(persona_name)
 
-    def save_schedule(self, store_key: str, data: dict):
+    async def save_schedule(self, store_key: str, data: dict):
         self.memory_store[store_key] = data
         date_str = str((data.get("meta") or {}).get("date") or "")
         history = self.history_store.setdefault(store_key, [])
@@ -75,7 +75,7 @@ class DayflowStore:
         history.append(dict(data))
         self.history_store[store_key] = history
         self.prune_expired()
-        self._save_state()
+        await self.async_save_state()
 
     def get_memory(self, persona_name: str) -> dict | None:
         self.prune_expired()

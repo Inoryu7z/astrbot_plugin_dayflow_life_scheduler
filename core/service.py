@@ -220,12 +220,6 @@ class DayflowService:
     def _style_research_max_chars(self) -> int:
         return self.STYLE_RESEARCH_MAX_CHARS
 
-    def _style_research_retry_count(self) -> int:
-        try:
-            return max(int(self.config.get("style_research_retry_count", 1) or 1), 0)
-        except Exception:
-            return 1
-
     def _style_research_system_prompt(self) -> str:
         value = str(self.config.get("style_research_system_prompt") or "").strip()
         return value or STYLE_RESEARCH_SYSTEM_PROMPT
@@ -1050,7 +1044,7 @@ class DayflowService:
         store_key = requested_store_key
         meta["persona_name"] = store_key
         data["meta"] = meta
-        self.store.save_schedule(store_key, data)
+        await self.store.save_schedule(store_key, data)
         logger.info(
             f"[dayflow] schedule saved: store_key={store_key}, date={saved_date}, "
             f"history_count={len(self.store.history_store.get(store_key, []))}, "
@@ -1058,38 +1052,8 @@ class DayflowService:
         )
 
     def _render_push_content(self, data: dict) -> str:
-        outfit = str(data.get("outfit") or "").strip()
-        summary = str(data.get("summary") or "").strip()
-        timeline = data.get("timeline")
-
-        header = f"👕 今日穿搭：{outfit}"
-        if summary:
-            header += f"\n💬 {summary}"
-
-        if isinstance(timeline, list) and timeline:
-            parts = []
-            for i, item in enumerate(timeline, 1):
-                if not isinstance(item, dict):
-                    continue
-                time_start = str(item.get("time_start") or "").strip()
-                time_end = str(item.get("time_end") or "").strip()
-                title = str(item.get("title") or "").strip()
-                detail = str(item.get("detail") or "").strip()
-                outfit_change = str(item.get("outfit_change") or "").strip()
-                time_range = f"{time_start}-{time_end}" if time_start and time_end else ""
-                block = f"── 第 {i} 项 ──\n🕐 {time_range}"
-                if title:
-                    block += f"\n📌 {title}"
-                if detail:
-                    block += f"\n📄 {detail}"
-                if outfit_change:
-                    block += f"\n👗 换装：{outfit_change}"
-                parts.append(block)
-            schedule_text = "\n\n".join(parts)
-        else:
-            schedule_text = str(data.get("schedule") or "").strip()
-
-        return f"{header}\n📝 日程安排：\n{schedule_text}"
+        from ..main import _render_schedule_display
+        return _render_schedule_display(data)
 
     async def push_schedule_to_targets(self, persona_name: str, data: dict):
         persona = self.get_persona_config(persona_name) or self.cfg.find_persona(persona_name)
@@ -1118,7 +1082,7 @@ class DayflowService:
         retention = self._schedule_retention_days()
         retention_text = "无限制" if retention == -1 else f"{retention}天"
         return [
-            f"- {item['name']} @ {item.get('generate_time', '07:00')} ({item.get('provider_id') or 'current_provider'} -> session_fallback) | 重试:{item.get('retry_count', 2)} | 变化:{item.get('schedule_variation_level', DEFAULT_VARIATION_LEVEL)} | 持久化:{retention_text}"
+            f"- {item['name']} @ {item.get('generate_time', '07:00')} ({item.get('provider_id') or 'current_provider'} -> session_fallback) | 重试:{item.get('retry_count', 2)} | 变化:{item.get('schedule_variation_level', DEFAULT_VARIATION_LEVEL)} | 持久化:{retention_text} | 推送:{len(item.get('push_targets') or [])}个目标"
             for item in self.cfg.personas()
         ]
 

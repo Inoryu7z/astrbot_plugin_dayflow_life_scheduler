@@ -15,12 +15,6 @@
     "type": "int",
     "default": 3
   },
-  "style_research_retry_count": {
-    "description": "风格研究重试次数",
-    "type": "int",
-    "default": 1,
-    "hint": "grok 风格研究结果解析失败时的额外重试次数，不含首次请求。"
-  },
   "style_research_system_prompt": {
     "description": "Grok 风格研究系统提示词",
     "type": "text",
