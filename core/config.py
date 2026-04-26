@@ -92,6 +92,7 @@ class DayflowConfig:
                 },
                 "select_provider": str(item.get("select_provider") or item.get("provider_id") or "").strip(),
                 "provider_id": str(item.get("select_provider") or item.get("provider_id") or "").strip(),
+                "select_providers": self._parse_select_providers(item),
                 "generate_time": str(item.get("generate_time") or "07:00").strip() or "07:00",
                 "retry_count": self._to_int(item.get("retry_count"), 2),
                 "prompt_template_override": prompt_template_override,
@@ -104,6 +105,22 @@ class DayflowConfig:
             return max(0, int(value if value is not None else default))
         except Exception:
             return default
+
+    def _parse_select_providers(self, item: dict) -> list[str]:
+        raw = item.get("select_providers")
+        if isinstance(raw, list):
+            providers = []
+            for entry in raw:
+                if isinstance(entry, dict):
+                    pid = str(entry.get("provider") or entry.get("select_provider") or "").strip()
+                    if pid:
+                        providers.append(pid)
+                elif isinstance(entry, str) and entry.strip():
+                    providers.append(entry.strip())
+            if providers:
+                return providers
+        single = str(item.get("select_provider") or item.get("provider_id") or "").strip()
+        return [single] if single else []
 
     def _to_list(self, value, default: list[str]) -> list[str]:
         if isinstance(value, list):

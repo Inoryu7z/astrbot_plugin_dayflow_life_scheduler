@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.4.3 - 2026-04-27
+
+**🐛 修复生成锁未释放 + 🚀 提供商并行竞速**
+
+* 修复 async generator 中 yield 在 try-finally 内导致锁不释放的 bug：将 yield 移出 try-finally 块，确保 exit_generation 一定执行
+* generating_personas 从 set 改为 dict 记录时间戳，enter_generation 时自动清理超过 10 分钟的陈旧锁
+* 新增 select_providers 列表配置：支持为每个人格配置多个提供商，生成时并行竞速，谁先成功用谁的结果
+* 竞速模式下每个提供商独立重试（和串行模式逻辑一致），全部失败后回退对话模型
+* 向后兼容：未配置 select_providers 时走原来的串行逻辑，行为无变化
+* describe_personas 展示竞速提供商信息
+
+---
+
 ## v1.4.2 - 2026-04-26
 
 ** 修复多日程共存 bug + 调试日志增强**
