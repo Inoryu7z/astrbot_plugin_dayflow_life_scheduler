@@ -90,8 +90,6 @@ class DayflowConfig:
                     "schedule_main_types": self._to_list(raw_main_types, DEFAULT_SCHEDULE_MAIN_TYPES),
                     "core_event_drivers": self._to_list(pool.get("core_event_drivers"), DEFAULT_CORE_EVENT_DRIVERS),
                 },
-                "select_provider": str(item.get("select_provider") or item.get("provider_id") or "").strip(),
-                "provider_id": str(item.get("select_provider") or item.get("provider_id") or "").strip(),
                 "select_providers": self._parse_select_providers(item),
                 "generate_time": str(item.get("generate_time") or "07:00").strip() or "07:00",
                 "retry_count": self._to_int(item.get("retry_count"), 2),
@@ -110,7 +108,7 @@ class DayflowConfig:
         raw = item.get("select_providers")
         if isinstance(raw, dict):
             providers = []
-            for key in ("racing_provider_1", "racing_provider_2"):
+            for key in ("racing_provider_1", "racing_provider_2", "racing_provider_3"):
                 pid = str(raw.get(key) or "").strip()
                 if pid:
                     providers.append(pid)
@@ -127,8 +125,8 @@ class DayflowConfig:
                     providers.append(entry.strip())
             if providers:
                 return providers
-        single = str(item.get("select_provider") or item.get("provider_id") or "").strip()
-        return [single] if single else []
+        legacy = str(item.get("select_provider") or item.get("provider_id") or "").strip()
+        return [legacy] if legacy else []
 
     def _to_list(self, value, default: list[str]) -> list[str]:
         if isinstance(value, list):
