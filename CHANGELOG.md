@@ -11,6 +11,8 @@
 * 新增竞速调试信息：`_race_providers` 记录各提供商结果到 debug payload，包含 `racing_providers`、`racing_results`、`racing_winner` 等
 * 优化竞速配置体验：`select_providers` 从 template_list 改为固定两个下拉选择框（`racing_provider_1`、`racing_provider_2`），与主提供商选择体验一致
 * 修复 `describe_personas` 单提供商竞速展示不准确的问题
+* 修复竞速成功时 `fallback_used` 误判为 True 的问题：竞速赢家在 `select_providers` 列表中不算 fallback
+* 降级 `get_life_context missing target schedule` 日志从 warning 到 info（正常业务流程）
 
 ---
 

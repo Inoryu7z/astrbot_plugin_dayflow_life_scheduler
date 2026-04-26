@@ -1044,7 +1044,7 @@ class DayflowService:
                 break
 
         latest_date = str((latest or {}).get("meta", {}).get("date") or "")
-        logger.warning(
+        logger.info(
             f"[dayflow] get_life_context missing target schedule: session={session_id or ''}, "
             f"requested_persona={persona_name or ''}, resolved_persona={resolved_ctx.get('persona_name', '')}, "
             f"resolved_persona_id={resolved_ctx.get('persona_id', '')}, candidate_keys={candidate_keys}, "
@@ -1391,6 +1391,7 @@ class DayflowService:
         effective_variation: str,
         style_reference: str,
         validate_persona: dict,
+        racing_provider_ids: list[str] | None = None,
     ) -> dict:
         parsed_style = str(payload.get("outfit_style") or outfit_style).strip()
         outfit = str(payload.get("outfit") or "").strip()
@@ -1401,7 +1402,11 @@ class DayflowService:
             return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少 outfit 字段")
         if not schedule and not timeline_data:
             return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少 schedule 和 timeline 字段")
-        used_fallback = actual_provider_id != configured_provider_id and configured_provider_id is not None
+        used_fallback = (
+            actual_provider_id != configured_provider_id
+            and configured_provider_id is not None
+            and actual_provider_id not in (racing_provider_ids or [])
+        )
         logger.info(
             f"[dayflow] llm json schedule generated for persona={normalized_persona_name}, "
             f"provider_used={actual_provider_id or 'session_default'}, configured_provider={configured_provider_id or 'none'}, "
@@ -2084,4 +2089,5 @@ class DayflowService:
             effective_variation=effective_variation,
             style_reference=style_reference,
             validate_persona=validate_persona,
+            racing_provider_ids=deduped_providers,
         )
