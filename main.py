@@ -142,7 +142,7 @@ class DayflowPlugin(Star):
                 return
         yield event.plain_result(text)
 
-    async def _generate_for_event(self, event: AstrMessageEvent, persona_name: str, persona_desc: str, store_key: str, force_regenerate: bool = False, extra_requirement: str | None = None):
+    async def _generate_for_event(self, event: AstrMessageEvent, persona_name: str, persona_desc: str, store_key: str, force_regenerate: bool = False, extra_requirement: str | None = None, reset_randoms: bool = False):
         if not self.service.is_persona_configured(persona_name):
             yield event.plain_result(f"当前人格未在 Dayflow 中启用：{persona_name}")
             return
@@ -194,7 +194,7 @@ class DayflowPlugin(Star):
 
         collected: list = []
         try:
-            data = await self.service.generate_schedule(event=event, persona_name=store_key, persona_desc=persona_desc, target_date=today, auto_retry=True, extra_requirement=extra_requirement, force_regenerate=force_regenerate)
+            data = await self.service.generate_schedule(event=event, persona_name=store_key, persona_desc=persona_desc, target_date=today, auto_retry=True, extra_requirement=extra_requirement, force_regenerate=reset_randoms)
             if data.get("meta", {}).get("error"):
                 collected.append(event.plain_result(f"⚠️ 生成失败：{data.get('memo', '未知错误')}"))
             else:
@@ -239,7 +239,7 @@ class DayflowPlugin(Star):
             yield event.plain_result(f"当前人格未在 Dayflow 中启用：{persona_name}")
             return
         store_key = self.service.normalize_persona_key(persona_name, persona_ctx.get("persona_id"))
-        async for result in self._generate_for_event(event, persona_name, persona_desc, store_key, force_regenerate=True):
+        async for result in self._generate_for_event(event, persona_name, persona_desc, store_key, force_regenerate=True, reset_randoms=False):
             yield result
 
     @filter.command("定制日程", alias={"life_custom", "dayflow_custom"})
@@ -266,6 +266,7 @@ class DayflowPlugin(Star):
         async for result in self._generate_for_event(
             event, persona_name, persona_desc, store_key,
             force_regenerate=True, extra_requirement=extra_requirement,
+            reset_randoms=True,
         ):
             yield result
 
