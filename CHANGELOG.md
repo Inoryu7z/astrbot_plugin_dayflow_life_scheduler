@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.4.2 - 2026-04-26
+
+** 修复多日程共存 bug + 调试日志增强**
+
+* 修复 save_schedule 引用共享问题：memory_store 直接存储原始 dict 引用，history_store 浅拷贝但 meta 子字典仍共享，改为显式深拷贝 data 和 meta
+* save_schedule 新增旧条目移除计数日志，便于追踪同日覆盖情况
+* get_life_context 新增多 candidate_keys 查找调试日志，当存在多个候选 key 时记录每个 key 的命中/未命中状态
+
+---
+
 ## v1.4.1 - 2026-04-26
 
 **🎨 UI 全面优化 + Emoji 支持**
@@ -9,6 +19,7 @@
 * 标题加粗加深，与详情辨识度提升
 * 去掉所有消息前缀，输出更干净
 * 新增 Emoji 字体支持，正文内容可渲染彩色 Emoji
+* 修复定制日程图片发两次（推送排除当前会话）
 
 ---
 
