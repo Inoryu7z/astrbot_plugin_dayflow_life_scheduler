@@ -2,7 +2,7 @@
 
 ## v1.4.4 - 2026-04-27
 
-**🐛 竞速机制审查修复 + 配置体验优化**
+**🐛 竞速机制修复 + 配置体验优化**
 
 * 修复竞速/串行/fallback 三条路径中 `call_llm_with_provider_fallback` 的 `retry_count` 嵌套放大问题：将内部 `retry_count` 从 `repair_retries` 改为 `0`，重试完全由外层 repair 循环控制，避免 retry_count=3 时单提供商最多 16 次 LLM 调用（现降为 4 次）
 * 修复单提供商竞速丢失 fallback 行为：`select_providers` 只有 1 个提供商时走串行路径，保留 session/default fallback 链
