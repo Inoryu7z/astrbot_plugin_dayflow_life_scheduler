@@ -68,12 +68,19 @@ class DayflowStore:
             self.generating_personas.discard(persona_name)
 
     async def save_schedule(self, store_key: str, data: dict):
-        self.memory_store[store_key] = data
-        date_str = str((data.get("meta") or {}).get("date") or "")
+        data_copy = dict(data)
+        meta_copy = dict(data.get("meta") or {})
+        data_copy["meta"] = meta_copy
+        self.memory_store[store_key] = data_copy
+        date_str = str(meta_copy.get("date") or "")
         history = self.history_store.setdefault(store_key, [])
+        before_count = len(history)
         history = [item for item in history if str((item.get("meta") or {}).get("date") or item.get("date") or "") != date_str]
-        history.append(dict(data))
+        removed_count = before_count - len(history)
+        history.append(dict(data_copy))
         self.history_store[store_key] = history
+        if removed_count > 0:
+            logger.info(f"[dayflow] save_schedule: store_key={store_key}, date={date_str}, removed {removed_count} old entry/entries, history now has {len(history)} items")
         self.prune_expired()
         await self.async_save_state()
 

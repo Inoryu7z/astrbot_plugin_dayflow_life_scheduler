@@ -1012,6 +1012,16 @@ class DayflowService:
             }
 
         candidate_keys = self._candidate_store_keys(resolved_ctx=resolved_ctx, persona_name=persona_name)
+        if len(candidate_keys) > 1:
+            key_status = []
+            for ck in candidate_keys:
+                s = self.store.get_schedule_for_date(ck, effective_date)
+                key_status.append(f"{ck}={'hit' if s and not s.get('meta', {}).get('error') else 'miss'}")
+            logger.info(
+                f"[dayflow] get_life_context multi-key lookup: session={session_id or ''}, "
+                f"requested_persona={persona_name or ''}, candidate_keys={candidate_keys}, "
+                f"key_status=[{', '.join(key_status)}], date={effective_date}"
+            )
 
         for store_key in candidate_keys:
             exact_schedule = self.store.get_schedule_for_date(store_key, effective_date)
