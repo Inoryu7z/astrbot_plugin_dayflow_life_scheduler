@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.4.4 - 2026-04-27
+
+**🐛 竞速机制审查修复 + 配置体验优化**
+
+* 修复竞速/串行/fallback 三条路径中 `call_llm_with_provider_fallback` 的 `retry_count` 嵌套放大问题：将内部 `retry_count` 从 `repair_retries` 改为 `0`，重试完全由外层 repair 循环控制，避免 retry_count=3 时单提供商最多 16 次 LLM 调用（现降为 4 次）
+* 修复单提供商竞速丢失 fallback 行为：`select_providers` 只有 1 个提供商时走串行路径，保留 session/default fallback 链
+* 修复竞速全部失败后 fallback 使用原始 prompt 的问题：现在会利用竞速阶段的最佳部分结果构建 repair prompt，提高 fallback 成功率
+* 新增全局 LLM 并发控制：`asyncio.Semaphore(4)` 限制同时进行的 LLM 请求数不超过 4，防止竞速 + 多人格场景下并发过高
+* 新增竞速调试信息：`_race_providers` 记录各提供商结果到 debug payload，包含 `racing_providers`、`racing_results`、`racing_winner` 等
+* 优化竞速配置体验：`select_providers` 从 template_list 改为固定两个下拉选择框（`racing_provider_1`、`racing_provider_2`），与主提供商选择体验一致
+* 修复 `describe_personas` 单提供商竞速展示不准确的问题
+
+---
+
 ## v1.4.3 - 2026-04-27
 
 **🐛 修复生成锁未释放 + 🚀 提供商并行竞速**

@@ -108,6 +108,14 @@ class DayflowConfig:
 
     def _parse_select_providers(self, item: dict) -> list[str]:
         raw = item.get("select_providers")
+        if isinstance(raw, dict):
+            providers = []
+            for key in ("racing_provider_1", "racing_provider_2"):
+                pid = str(raw.get(key) or "").strip()
+                if pid:
+                    providers.append(pid)
+            if providers:
+                return providers
         if isinstance(raw, list):
             providers = []
             for entry in raw:
