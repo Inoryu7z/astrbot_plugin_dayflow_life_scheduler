@@ -130,6 +130,7 @@ class DayflowService:
         self._last_interaction_times: dict[str, str] = {}
         self._schedule_renderer = ScheduleRenderer(self.data_dir)
         self._render_lock = asyncio.Lock()
+        self._llm_concurrency_sem = asyncio.Semaphore(4)
 
     def _update_debug_payload(self, updates: dict[str, Any]):
         with self._debug_payload_lock:
@@ -1149,6 +1150,8 @@ class DayflowService:
             racing = item.get("select_providers") or []
             if len(racing) > 1:
                 provider_text = f"竞速:{'+'.join(racing)}"
+            elif len(racing) == 1:
+                provider_text = racing[0]
             else:
                 provider_text = item.get("provider_id") or "current_provider"
             lines.append(
@@ -1299,7 +1302,8 @@ class DayflowService:
             effective_id = await self._get_default_provider_id()
         if not effective_id:
             raise RuntimeError("[dayflow] no provider available for llm_generate")
-        llm_resp = await self.context.llm_generate(chat_provider_id=effective_id, prompt=prompt)
+        async with self._llm_concurrency_sem:
+            llm_resp = await self.context.llm_generate(chat_provider_id=effective_id, prompt=prompt)
         return (getattr(llm_resp, "completion_text", "") or "").strip()
 
     async def call_llm_with_retries(self, prompt: str, provider_id: str | None, retry_count: int = 0) -> str:
@@ -1440,12 +1444,16 @@ class DayflowService:
         validate_persona: dict,
         repair_retries: int,
     ) -> dict | None:
+        last_raw_text = ""
+        last_reason = ""
         try:
             raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
-                prompt, provider_id, None, retry_count=repair_retries,
+                prompt, provider_id, None, retry_count=0,
             )
+            last_raw_text = raw_text or ""
             payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
             ok, reason = validate_payload(payload, validate_persona)
+            last_reason = reason
             for attempt in range(1, repair_retries + 1):
                 if ok and payload:
                     break
@@ -1455,10 +1463,12 @@ class DayflowService:
                 )
                 repair_prompt = build_repair_prompt(prompt, raw_text, reason, validate_persona, retry_index=attempt)
                 raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
-                    repair_prompt, provider_id, None, retry_count=repair_retries,
+                    repair_prompt, provider_id, None, retry_count=0,
                 )
+                last_raw_text = raw_text or ""
                 payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
                 ok, reason = validate_payload(payload, validate_persona)
+                last_reason = reason
             if ok and payload:
                 outfit = str(payload.get("outfit") or "").strip()
                 schedule = str(payload.get("schedule") or "").strip()
@@ -1471,10 +1481,10 @@ class DayflowService:
             logger.warning(
                 f"[dayflow] racing: provider={provider_id} failed validation for persona={normalized_persona_name}, reason={reason}"
             )
-            return None
+            return {"payload": None, "provider_id": provider_id, "raw_text": last_raw_text, "reason": last_reason}
         except Exception as e:
             logger.warning(f"[dayflow] racing: provider={provider_id} exception for persona={normalized_persona_name}: {e}")
-            return None
+            return {"payload": None, "provider_id": provider_id, "raw_text": last_raw_text, "reason": str(e)}
 
     async def _race_providers(
         self,
@@ -1483,11 +1493,14 @@ class DayflowService:
         normalized_persona_name: str,
         validate_persona: dict,
         repair_retries: int,
-    ) -> dict | None:
+    ) -> tuple[dict | None, dict | None]:
         if len(providers) == 1:
-            return await self._generate_with_single_provider(
+            result = await self._generate_with_single_provider(
                 prompt, providers[0], normalized_persona_name, validate_persona, repair_retries,
             )
+            if result and result.get("payload") is not None:
+                return result, None
+            return None, result
 
         tasks: dict[asyncio.Task, str] = {}
         for pid in providers:
@@ -1499,20 +1512,37 @@ class DayflowService:
 
         pending: set[asyncio.Task] = set(tasks.keys())
         winner: dict | None = None
+        best_partial: dict | None = None
+        provider_results: dict[str, str] = {}
         try:
             while pending:
                 done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
-                    result = task.result()
-                    if result is not None:
+                    pid = tasks[task]
+                    try:
+                        result = task.result()
+                    except Exception as exc:
+                        result = None
+                        provider_results[pid] = f"exception: {exc}"
+                    if result is not None and result.get("payload") is not None:
                         winner = result
+                        provider_results[pid] = "success"
                         break
+                    if result is not None:
+                        provider_results[pid] = f"failed: {result.get('reason', 'unknown')}"
+                        if result.get("raw_text") and best_partial is None:
+                            best_partial = result
+                    elif pid not in provider_results:
+                        provider_results[pid] = "no_result"
                 if winner is not None:
                     break
         finally:
             for task in list(tasks.keys()):
+                pid = tasks[task]
                 if not task.done():
                     task.cancel()
+                elif pid not in provider_results:
+                    provider_results[pid] = "cancelled"
             for task in list(tasks.keys()):
                 if not task.done():
                     try:
@@ -1524,12 +1554,23 @@ class DayflowService:
             winner_pid = winner["provider_id"]
             logger.info(
                 f"[dayflow] racing: winner={winner_pid} for persona={normalized_persona_name}, "
-                f"cancelled={[tasks[t] for t in tasks if not t.done() or t.cancelled()]}"
+                f"results={provider_results}"
             )
         else:
-            logger.warning(f"[dayflow] racing: all providers failed for persona={normalized_persona_name}")
+            logger.warning(
+                f"[dayflow] racing: all providers failed for persona={normalized_persona_name}, "
+                f"results={provider_results}"
+            )
 
-        return winner
+        self._update_debug_payload({
+            "racing_providers": providers,
+            "racing_results": provider_results,
+            "racing_winner": winner["provider_id"] if winner else None,
+            "racing_best_partial_provider": best_partial.get("provider_id") if best_partial else None,
+            "racing_best_partial_reason": best_partial.get("reason") if best_partial else None,
+        })
+
+        return winner, best_partial
 
     async def call_llm_with_provider_fallback(
         self,
@@ -1883,7 +1924,9 @@ class DayflowService:
         default_provider_id = await self._get_default_provider_id()
 
         racing_provider_ids = persona.get("select_providers") or []
-        if not racing_provider_ids:
+        if len(racing_provider_ids) <= 1:
+            if len(racing_provider_ids) == 1:
+                configured_provider_id = racing_provider_ids[0]
             primary_provider_id = configured_provider_id or session_provider_id or default_provider_id
             fallback_candidates = []
             if configured_provider_id:
@@ -1903,7 +1946,7 @@ class DayflowService:
                     prompt,
                     primary_provider_id,
                     fallback_provider_id,
-                    retry_count=repair_retries,
+                    retry_count=0,
                 )
                 payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
                 ok, reason = validate_payload(payload, validate_persona)
@@ -1916,7 +1959,7 @@ class DayflowService:
                         repair_prompt,
                         primary_provider_id,
                         fallback_provider_id,
-                        retry_count=repair_retries,
+                        retry_count=0,
                     )
                     payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
                     ok, reason = validate_payload(payload, validate_persona)
@@ -1962,7 +2005,7 @@ class DayflowService:
             f"providers={deduped_providers}, target_date={date_str}"
         )
 
-        result = await self._race_providers(
+        result, best_partial = await self._race_providers(
             prompt=prompt,
             providers=deduped_providers,
             normalized_persona_name=normalized_persona_name,
@@ -1975,17 +2018,27 @@ class DayflowService:
             fallback_provider_id = session_provider_id or default_provider_id
             if fallback_provider_id:
                 try:
+                    fallback_prompt = prompt
+                    if best_partial and best_partial.get("raw_text") and best_partial.get("reason"):
+                        fallback_prompt = build_repair_prompt(
+                            prompt, best_partial["raw_text"], best_partial["reason"],
+                            validate_persona, retry_index=1,
+                        )
+                        logger.info(
+                            f"[dayflow] fallback using repair prompt from racing partial result, "
+                            f"source_provider={best_partial.get('provider_id')}, reason={best_partial.get('reason')}"
+                        )
                     raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
-                        prompt, fallback_provider_id, None, retry_count=repair_retries,
+                        fallback_prompt, fallback_provider_id, None, retry_count=0,
                     )
                     payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
                     ok, reason = validate_payload(payload, validate_persona)
                     for attempt in range(1, repair_retries + 1):
                         if ok and payload:
                             break
-                        repair_prompt = build_repair_prompt(prompt, raw_text, reason, validate_persona, retry_index=attempt)
+                        repair_prompt = build_repair_prompt(fallback_prompt, raw_text, reason, validate_persona, retry_index=attempt)
                         raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
-                            repair_prompt, fallback_provider_id, None, retry_count=repair_retries,
+                            repair_prompt, fallback_provider_id, None, retry_count=0,
                         )
                         payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
                         ok, reason = validate_payload(payload, validate_persona)
