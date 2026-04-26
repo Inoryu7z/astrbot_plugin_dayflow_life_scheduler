@@ -20,7 +20,8 @@ class DayflowStore:
         self.auto_generation_failures: dict[str, dict[str, int]] = {}
         self.pending_custom_requests: dict[str, str] = {}
         self._gen_lock = asyncio.Lock()
-        self.generating_personas: set[str] = set()
+        self.generating_personas: dict[str, float] = {}
+        self._generation_stale_timeout: float = 600.0
         self.retention_days = self._normalize_retention_days(retention_days)
         self._initialized = False
         self._last_prune_time: float = 0.0
@@ -57,15 +58,24 @@ class DayflowStore:
         self._save_state()
 
     async def enter_generation(self, persona_name: str) -> bool:
+        import time
         async with self._gen_lock:
+            now = time.monotonic()
+            stale = [
+                k for k, ts in self.generating_personas.items()
+                if now - ts > self._generation_stale_timeout
+            ]
+            for k in stale:
+                logger.warning(f"[dayflow] clearing stale generation lock for persona={k}, held for {now - self.generating_personas[k]:.0f}s")
+                del self.generating_personas[k]
             if persona_name in self.generating_personas:
                 return False
-            self.generating_personas.add(persona_name)
+            self.generating_personas[persona_name] = now
             return True
 
     async def exit_generation(self, persona_name: str):
         async with self._gen_lock:
-            self.generating_personas.discard(persona_name)
+            self.generating_personas.pop(persona_name, None)
 
     async def save_schedule(self, store_key: str, data: dict):
         data_copy = dict(data)

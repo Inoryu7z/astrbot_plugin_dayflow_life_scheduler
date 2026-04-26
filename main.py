@@ -174,34 +174,40 @@ class DayflowPlugin(Star):
                 yield event.plain_result(f"当前人格 {persona_name} 已有生成任务在进行中，请稍后再试。")
             return
 
-        try:
-            existing_after_lock = await self.service.get_life_context(
-                session_id=session_id,
-                persona_name=persona_name,
-                target_date=today,
-            )
-            if is_schedule_valid(existing_after_lock) and not force_regenerate:
-                async for result in self._send_schedule_result(event, persona_name, existing_after_lock):
-                    yield result
-                return
+        existing_after_lock = await self.service.get_life_context(
+            session_id=session_id,
+            persona_name=persona_name,
+            target_date=today,
+        )
+        if is_schedule_valid(existing_after_lock) and not force_regenerate:
+            await self.service.exit_generation(store_key)
+            async for result in self._send_schedule_result(event, persona_name, existing_after_lock):
+                yield result
+            return
 
-            if extra_requirement:
-                yield event.plain_result(f"🪄 正在为 {persona_name} 定制今日日程，请稍候...")
-            elif force_regenerate:
-                yield event.plain_result(f"🪄 正在为 {persona_name} 强制重生成今日日程，请稍候...")
-            else:
-                yield event.plain_result(f"🪄 正在为 {persona_name} 生成今日日程，请稍候...")
+        if extra_requirement:
+            yield event.plain_result(f"🪄 正在为 {persona_name} 定制今日日程，请稍候...")
+        elif force_regenerate:
+            yield event.plain_result(f"🪄 正在为 {persona_name} 强制重生成今日日程，请稍候...")
+        else:
+            yield event.plain_result(f"🪄 正在为 {persona_name} 生成今日日程，请稍候...")
+
+        collected: list = []
+        try:
             data = await self.service.generate_schedule(event=event, persona_name=store_key, persona_desc=persona_desc, target_date=today, auto_retry=True, extra_requirement=extra_requirement, force_regenerate=force_regenerate)
             if data.get("meta", {}).get("error"):
-                yield event.plain_result(f"⚠️ 生成失败：{data.get('memo', '未知错误')}")
-                return
-            await self.service.save_generated(store_key, data)
-            current_session = getattr(event, "unified_msg_origin", None)
-            await self.service.push_schedule_to_targets(store_key, data, exclude_umo=current_session)
-            async for result in self._send_schedule_result(event, persona_name, data):
-                yield result
+                collected.append(event.plain_result(f"⚠️ 生成失败：{data.get('memo', '未知错误')}"))
+            else:
+                await self.service.save_generated(store_key, data)
+                current_session = getattr(event, "unified_msg_origin", None)
+                await self.service.push_schedule_to_targets(store_key, data, exclude_umo=current_session)
+                async for result in self._send_schedule_result(event, persona_name, data):
+                    collected.append(result)
         finally:
             await self.service.exit_generation(store_key)
+
+        for result in collected:
+            yield result
 
     @filter.command("今日日程", alias={"life_today", "dayflow_today"})
     async def dayflow_today(self, event: AstrMessageEvent):

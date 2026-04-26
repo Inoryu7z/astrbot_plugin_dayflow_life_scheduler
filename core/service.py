@@ -1144,10 +1144,17 @@ class DayflowService:
     def describe_personas(self) -> list[str]:
         retention = self._schedule_retention_days()
         retention_text = "无限制" if retention == -1 else f"{retention}天"
-        return [
-            f"- {item['name']} @ {item.get('generate_time', '07:00')} ({item.get('provider_id') or 'current_provider'} -> session_fallback) | 重试:{item.get('retry_count', 2)} | 变化:{item.get('schedule_variation_level', DEFAULT_VARIATION_LEVEL)} | 持久化:{retention_text} | 推送:{len(item.get('push_targets') or [])}个目标"
-            for item in self.cfg.personas()
-        ]
+        lines = []
+        for item in self.cfg.personas():
+            racing = item.get("select_providers") or []
+            if len(racing) > 1:
+                provider_text = f"竞速:{'+'.join(racing)}"
+            else:
+                provider_text = item.get("provider_id") or "current_provider"
+            lines.append(
+                f"- {item['name']} @ {item.get('generate_time', '07:00')} ({provider_text} -> session_fallback) | 重试:{item.get('retry_count', 2)} | 变化:{item.get('schedule_variation_level', DEFAULT_VARIATION_LEVEL)} | 持久化:{retention_text} | 推送:{len(item.get('push_targets') or [])}个目标"
+            )
+        return lines
 
     def _iter_loaded_stars(self):
         try:
@@ -1361,6 +1368,168 @@ class DayflowService:
         except Exception as e:
             logger.debug(f"[dayflow] get_default_provider_id failed: {e}")
         return None
+
+    def _build_schedule_result(
+        self,
+        payload: dict,
+        normalized_persona_name: str,
+        outfit_style: str,
+        schedule_main_type: str,
+        core_event_driver: str,
+        date_str: str,
+        actual_provider_id: str | None,
+        configured_provider_id: str | None,
+        session_provider_id: str | None,
+        default_provider_id: str | None,
+        effective_session_id: str | None,
+        today_weather: str,
+        configured_variation: str,
+        effective_variation: str,
+        style_reference: str,
+        validate_persona: dict,
+    ) -> dict:
+        parsed_style = str(payload.get("outfit_style") or outfit_style).strip()
+        outfit = str(payload.get("outfit") or "").strip()
+        schedule = str(payload.get("schedule") or "").strip()
+        summary = str(payload.get("summary") or "").strip()
+        timeline_data = payload.get("timeline")
+        if not outfit:
+            return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少 outfit 字段")
+        if not schedule and not timeline_data:
+            return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少 schedule 和 timeline 字段")
+        used_fallback = actual_provider_id != configured_provider_id and configured_provider_id is not None
+        logger.info(
+            f"[dayflow] llm json schedule generated for persona={normalized_persona_name}, "
+            f"provider_used={actual_provider_id or 'session_default'}, configured_provider={configured_provider_id or 'none'}, "
+            f"session_provider={session_provider_id or 'none'}, default_provider={default_provider_id or 'none'}, "
+            f"fallback_used={used_fallback}, session={effective_session_id or 'none'}, target_date={date_str}"
+        )
+        return {
+            "outfit": outfit,
+            "schedule": schedule,
+            "summary": summary,
+            "meta": {
+                "style": parsed_style,
+                "schedule_main_type": schedule_main_type,
+                "core_event_driver": core_event_driver,
+                "persona_name": normalized_persona_name,
+                "date": date_str,
+                "provider_id": actual_provider_id or "",
+                "configured_provider_id": configured_provider_id or "",
+                "session_provider_id": session_provider_id or "",
+                "default_provider_id": default_provider_id or "",
+                "source_session_id": effective_session_id or "",
+                "weather": today_weather,
+                "prompt_template_version": "persona_full_template_v9_timeline_struct",
+                "fallback": used_fallback,
+                "variation_configured": configured_variation,
+                "variation_effective": effective_variation,
+                "style_reference": style_reference,
+            },
+            "timeline": timeline_data if isinstance(timeline_data, list) and timeline_data else extract_timeline(schedule),
+            "weather": today_weather,
+            "memo": "",
+            "long_term_memory": [],
+        }
+
+    async def _generate_with_single_provider(
+        self,
+        prompt: str,
+        provider_id: str | None,
+        normalized_persona_name: str,
+        validate_persona: dict,
+        repair_retries: int,
+    ) -> dict | None:
+        try:
+            raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
+                prompt, provider_id, None, retry_count=repair_retries,
+            )
+            payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
+            ok, reason = validate_payload(payload, validate_persona)
+            for attempt in range(1, repair_retries + 1):
+                if ok and payload:
+                    break
+                logger.warning(
+                    f"[dayflow] racing: payload validation failed for persona={normalized_persona_name}, "
+                    f"provider={provider_id}, attempt={attempt}, reason={reason}"
+                )
+                repair_prompt = build_repair_prompt(prompt, raw_text, reason, validate_persona, retry_index=attempt)
+                raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
+                    repair_prompt, provider_id, None, retry_count=repair_retries,
+                )
+                payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
+                ok, reason = validate_payload(payload, validate_persona)
+            if ok and payload:
+                outfit = str(payload.get("outfit") or "").strip()
+                schedule = str(payload.get("schedule") or "").strip()
+                timeline_data = payload.get("timeline")
+                if outfit and (schedule or timeline_data):
+                    logger.info(
+                        f"[dayflow] racing: provider={actual_provider_id or provider_id} succeeded for persona={normalized_persona_name}"
+                    )
+                    return {"payload": payload, "provider_id": actual_provider_id or provider_id}
+            logger.warning(
+                f"[dayflow] racing: provider={provider_id} failed validation for persona={normalized_persona_name}, reason={reason}"
+            )
+            return None
+        except Exception as e:
+            logger.warning(f"[dayflow] racing: provider={provider_id} exception for persona={normalized_persona_name}: {e}")
+            return None
+
+    async def _race_providers(
+        self,
+        prompt: str,
+        providers: list[str],
+        normalized_persona_name: str,
+        validate_persona: dict,
+        repair_retries: int,
+    ) -> dict | None:
+        if len(providers) == 1:
+            return await self._generate_with_single_provider(
+                prompt, providers[0], normalized_persona_name, validate_persona, repair_retries,
+            )
+
+        tasks: dict[asyncio.Task, str] = {}
+        for pid in providers:
+            coro = self._generate_with_single_provider(
+                prompt, pid, normalized_persona_name, validate_persona, repair_retries,
+            )
+            task = asyncio.create_task(coro)
+            tasks[task] = pid
+
+        pending: set[asyncio.Task] = set(tasks.keys())
+        winner: dict | None = None
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    result = task.result()
+                    if result is not None:
+                        winner = result
+                        break
+                if winner is not None:
+                    break
+        finally:
+            for task in list(tasks.keys()):
+                if not task.done():
+                    task.cancel()
+            for task in list(tasks.keys()):
+                if not task.done():
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+        if winner is not None:
+            winner_pid = winner["provider_id"]
+            logger.info(
+                f"[dayflow] racing: winner={winner_pid} for persona={normalized_persona_name}, "
+                f"cancelled={[tasks[t] for t in tasks if not t.done() or t.cancelled()]}"
+            )
+        else:
+            logger.warning(f"[dayflow] racing: all providers failed for persona={normalized_persona_name}")
+
+        return winner
 
     async def call_llm_with_provider_fallback(
         self,
@@ -1713,90 +1882,153 @@ class DayflowService:
         session_provider_id = await self._resolve_session_provider_id(event)
         default_provider_id = await self._get_default_provider_id()
 
-        primary_provider_id = configured_provider_id or session_provider_id or default_provider_id
-        fallback_candidates = []
-        if configured_provider_id:
-            if session_provider_id and session_provider_id != configured_provider_id:
-                fallback_candidates.append(session_provider_id)
-            if default_provider_id and default_provider_id != configured_provider_id and default_provider_id != session_provider_id:
-                fallback_candidates.append(default_provider_id)
-        elif session_provider_id:
-            if default_provider_id and default_provider_id != session_provider_id:
-                fallback_candidates.append(default_provider_id)
-        fallback_provider_id = fallback_candidates[0] if fallback_candidates else None
+        racing_provider_ids = persona.get("select_providers") or []
+        if not racing_provider_ids:
+            primary_provider_id = configured_provider_id or session_provider_id or default_provider_id
+            fallback_candidates = []
+            if configured_provider_id:
+                if session_provider_id and session_provider_id != configured_provider_id:
+                    fallback_candidates.append(session_provider_id)
+                if default_provider_id and default_provider_id != configured_provider_id and default_provider_id != session_provider_id:
+                    fallback_candidates.append(default_provider_id)
+            elif session_provider_id:
+                if default_provider_id and default_provider_id != session_provider_id:
+                    fallback_candidates.append(default_provider_id)
+            fallback_provider_id = fallback_candidates[0] if fallback_candidates else None
 
-        repair_retries = int(persona.get("retry_count", 2) or 2) if auto_retry else 0
-        actual_provider_id = primary_provider_id
-        try:
-            raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
-                prompt,
-                primary_provider_id,
-                fallback_provider_id,
-                retry_count=repair_retries,
-            )
-            payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
-            ok, reason = validate_payload(payload, validate_persona)
-            for attempt in range(1, repair_retries + 1):
-                if ok and payload:
-                    break
-                logger.warning(f"[dayflow] payload validation failed for persona={normalized_persona_name}, attempt={attempt}, reason={reason}")
-                repair_prompt = build_repair_prompt(prompt, raw_text, reason, validate_persona, retry_index=attempt)
+            repair_retries = int(persona.get("retry_count", 2) or 2) if auto_retry else 0
+            actual_provider_id = primary_provider_id
+            try:
                 raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
-                    repair_prompt,
+                    prompt,
                     primary_provider_id,
                     fallback_provider_id,
                     retry_count=repair_retries,
                 )
                 payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
                 ok, reason = validate_payload(payload, validate_persona)
-            if not ok or not payload:
-                return build_generation_error_data(normalized_persona_name, validate_persona, reason or "模型输出未通过校验")
-            parsed_style = str(payload.get("outfit_style") or outfit_style).strip()
-            outfit = str(payload.get("outfit") or "").strip()
-            schedule = str(payload.get("schedule") or "").strip()
-            summary = str(payload.get("summary") or "").strip()
-            timeline_data = payload.get("timeline")
-            if not outfit:
-                return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少 outfit 字段")
-            if not schedule and not timeline_data:
-                return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少 schedule 和 timeline 字段")
-            used_fallback = actual_provider_id != configured_provider_id and configured_provider_id is not None
-            logger.info(
-                f"[dayflow] llm json schedule generated for persona={normalized_persona_name}, "
-                f"provider_used={actual_provider_id or 'session_default'}, configured_provider={configured_provider_id or 'none'}, "
-                f"session_provider={session_provider_id or 'none'}, default_provider={default_provider_id or 'none'}, "
-                f"fallback_used={used_fallback}, session={effective_session_id or 'none'}, target_date={date_str}"
-            )
-            return {
-                "outfit": outfit,
-                "schedule": schedule,
-                "summary": summary,
-                "meta": {
-                    "style": parsed_style,
-                    "schedule_main_type": schedule_main_type,
-                    "core_event_driver": core_event_driver,
-                    "persona_name": normalized_persona_name,
-                    "date": date_str,
-                    "provider_id": actual_provider_id or "",
-                    "configured_provider_id": configured_provider_id or "",
-                    "session_provider_id": session_provider_id or "",
-                    "default_provider_id": default_provider_id or "",
-                    "source_session_id": effective_session_id or "",
-                    "weather": today_weather,
-                    "prompt_template_version": "persona_full_template_v9_timeline_struct",
-                    "fallback": used_fallback,
-                    "variation_configured": configured_variation,
-                    "variation_effective": effective_variation,
-                    "style_reference": style_reference,
-                },
-                "timeline": timeline_data if isinstance(timeline_data, list) and timeline_data else extract_timeline(schedule),
-                "weather": today_weather,
-                "memo": "",
-                "long_term_memory": [],
-            }
-        except Exception as e:
-            logger.warning(
-                f"[dayflow] llm generation failed for persona={normalized_persona_name}: {e}, "
-                f"configured_provider={configured_provider_id or 'none'}, session_provider={session_provider_id or 'none'}, target_date={date_str}"
-            )
-            return build_generation_error_data(normalized_persona_name, validate_persona, f"LLM 调用失败: {e}")
+                for attempt in range(1, repair_retries + 1):
+                    if ok and payload:
+                        break
+                    logger.warning(f"[dayflow] payload validation failed for persona={normalized_persona_name}, attempt={attempt}, reason={reason}")
+                    repair_prompt = build_repair_prompt(prompt, raw_text, reason, validate_persona, retry_index=attempt)
+                    raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
+                        repair_prompt,
+                        primary_provider_id,
+                        fallback_provider_id,
+                        retry_count=repair_retries,
+                    )
+                    payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
+                    ok, reason = validate_payload(payload, validate_persona)
+                if not ok or not payload:
+                    return build_generation_error_data(normalized_persona_name, validate_persona, reason or "模型输出未通过校验")
+                return self._build_schedule_result(
+                    payload=payload,
+                    normalized_persona_name=normalized_persona_name,
+                    outfit_style=outfit_style,
+                    schedule_main_type=schedule_main_type,
+                    core_event_driver=core_event_driver,
+                    date_str=date_str,
+                    actual_provider_id=actual_provider_id,
+                    configured_provider_id=configured_provider_id,
+                    session_provider_id=session_provider_id,
+                    default_provider_id=default_provider_id,
+                    effective_session_id=effective_session_id,
+                    today_weather=today_weather,
+                    configured_variation=configured_variation,
+                    effective_variation=effective_variation,
+                    style_reference=style_reference,
+                    validate_persona=validate_persona,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[dayflow] llm generation failed for persona={normalized_persona_name}: {e}, "
+                    f"configured_provider={configured_provider_id or 'none'}, session_provider={session_provider_id or 'none'}, target_date={date_str}"
+                )
+                return build_generation_error_data(normalized_persona_name, validate_persona, f"LLM 调用失败: {e}")
+
+        seen = set()
+        deduped_providers = []
+        for pid in racing_provider_ids:
+            if pid and pid not in seen:
+                seen.add(pid)
+                deduped_providers.append(pid)
+        if not deduped_providers:
+            return build_generation_error_data(normalized_persona_name, validate_persona, "未配置任何日程生成提供商")
+
+        repair_retries = int(persona.get("retry_count", 2) or 2) if auto_retry else 0
+        logger.info(
+            f"[dayflow] racing generation for persona={normalized_persona_name}, "
+            f"providers={deduped_providers}, target_date={date_str}"
+        )
+
+        result = await self._race_providers(
+            prompt=prompt,
+            providers=deduped_providers,
+            normalized_persona_name=normalized_persona_name,
+            validate_persona=validate_persona,
+            repair_retries=repair_retries,
+        )
+
+        if result is None:
+            logger.warning(f"[dayflow] all racing providers failed for persona={normalized_persona_name}, falling back to session/default provider")
+            fallback_provider_id = session_provider_id or default_provider_id
+            if fallback_provider_id:
+                try:
+                    raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
+                        prompt, fallback_provider_id, None, retry_count=repair_retries,
+                    )
+                    payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
+                    ok, reason = validate_payload(payload, validate_persona)
+                    for attempt in range(1, repair_retries + 1):
+                        if ok and payload:
+                            break
+                        repair_prompt = build_repair_prompt(prompt, raw_text, reason, validate_persona, retry_index=attempt)
+                        raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
+                            repair_prompt, fallback_provider_id, None, retry_count=repair_retries,
+                        )
+                        payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
+                        ok, reason = validate_payload(payload, validate_persona)
+                    if not ok or not payload:
+                        return build_generation_error_data(normalized_persona_name, validate_persona, reason or "所有提供商均失败，对话模型也未通过校验")
+                    return self._build_schedule_result(
+                        payload=payload,
+                        normalized_persona_name=normalized_persona_name,
+                        outfit_style=outfit_style,
+                        schedule_main_type=schedule_main_type,
+                        core_event_driver=core_event_driver,
+                        date_str=date_str,
+                        actual_provider_id=actual_provider_id,
+                        configured_provider_id=configured_provider_id,
+                        session_provider_id=session_provider_id,
+                        default_provider_id=default_provider_id,
+                        effective_session_id=effective_session_id,
+                        today_weather=today_weather,
+                        configured_variation=configured_variation,
+                        effective_variation=effective_variation,
+                        style_reference=style_reference,
+                        validate_persona=validate_persona,
+                    )
+                except Exception as e:
+                    logger.warning(f"[dayflow] fallback provider also failed for persona={normalized_persona_name}: {e}")
+                    return build_generation_error_data(normalized_persona_name, validate_persona, f"所有提供商均失败，对话模型也失败: {e}")
+            return build_generation_error_data(normalized_persona_name, validate_persona, "所有提供商均失败，无对话模型可用")
+
+        return self._build_schedule_result(
+            payload=result["payload"],
+            normalized_persona_name=normalized_persona_name,
+            outfit_style=outfit_style,
+            schedule_main_type=schedule_main_type,
+            core_event_driver=core_event_driver,
+            date_str=date_str,
+            actual_provider_id=result["provider_id"],
+            configured_provider_id=configured_provider_id,
+            session_provider_id=session_provider_id,
+            default_provider_id=default_provider_id,
+            effective_session_id=effective_session_id,
+            today_weather=today_weather,
+            configured_variation=configured_variation,
+            effective_variation=effective_variation,
+            style_reference=style_reference,
+            validate_persona=validate_persona,
+        )
