@@ -1153,7 +1153,7 @@ class DayflowService:
             elif len(racing) == 1:
                 provider_text = racing[0]
             else:
-                provider_text = item.get("provider_id") or "current_provider"
+                provider_text = "current_provider"
             lines.append(
                 f"- {item['name']} @ {item.get('generate_time', '07:00')} ({provider_text} -> session_fallback) | 重试:{item.get('retry_count', 2)} | 变化:{item.get('schedule_variation_level', DEFAULT_VARIATION_LEVEL)} | 持久化:{retention_text} | 推送:{len(item.get('push_targets') or [])}个目标"
             )
@@ -1924,7 +1924,7 @@ class DayflowService:
             f"desc_len={len(replacements['persona_desc'] or '')}, session={effective_session_id or 'none'}, target_date={date_str}"
         )
 
-        configured_provider_id = persona.get("provider_id") or None
+        configured_provider_id = (persona.get("select_providers") or [None])[0]
         session_provider_id = await self._resolve_session_provider_id(event)
         default_provider_id = await self._get_default_provider_id()
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.4.5 - 2026-04-27
+
+**🔧 提供商配置重构**
+
+* 移除旧的 `select_provider` 单选字段，统一使用 `select_providers` 配置提供商
+* `select_providers` 扩展为 3 个下拉选择框（`racing_provider_1`/`racing_provider_2`/`racing_provider_3`），留空不参与竞速
+* 兼容旧配置格式：如果用户仍使用旧的 `select_provider` 或 list 格式的 `select_providers`，解析时会自动迁移
+
+---
+
 ## v1.4.4 - 2026-04-27
 
 **🐛 竞速机制修复 + 配置体验优化**

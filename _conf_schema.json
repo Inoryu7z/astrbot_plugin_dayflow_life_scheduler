@@ -202,26 +202,26 @@
               }
             }
           },
-          "select_provider": {
-            "type": "string",
-            "description": "模型提供商",
-            "default": "",
-            "_special": "select_provider"
-          },
           "select_providers": {
-            "description": "日程生成提供商（并行竞速）",
+            "description": "日程生成提供商",
             "type": "object",
-            "hint": "配置两个提供商后，生成日程时会并行调用，谁先成功就用谁的结果。留空则使用上方的单个「模型提供商」串行生成。",
+            "hint": "配置多个提供商后，生成日程时会并行竞速调用，谁先成功就用谁的结果。只填一个则串行生成。",
             "items": {
               "racing_provider_1": {
                 "type": "string",
-                "description": "竞速提供商 1",
+                "description": "提供商 1",
                 "default": "",
                 "_special": "select_provider"
               },
               "racing_provider_2": {
                 "type": "string",
-                "description": "竞速提供商 2",
+                "description": "提供商 2（竞速）",
+                "default": "",
+                "_special": "select_provider"
+              },
+              "racing_provider_3": {
+                "type": "string",
+                "description": "提供商 3（竞速）",
                 "default": "",
                 "_special": "select_provider"
               }
