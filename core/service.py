@@ -1304,7 +1304,16 @@ class DayflowService:
             raise RuntimeError("[dayflow] no provider available for llm_generate")
         async with self._llm_concurrency_sem:
             llm_resp = await self.context.llm_generate(chat_provider_id=effective_id, prompt=prompt)
-        return (getattr(llm_resp, "completion_text", "") or "").strip()
+        text = (getattr(llm_resp, "completion_text", "") or "").strip()
+        if not text and llm_resp is not None:
+            chain = getattr(llm_resp, "result_chain", None)
+            if chain:
+                for comp in getattr(chain, "chain", []):
+                    comp_text = getattr(comp, "text", None) or getattr(comp, "data", None)
+                    if comp_text and isinstance(comp_text, str) and comp_text.strip():
+                        text = comp_text.strip()
+                        break
+        return text
 
     async def call_llm_with_retries(self, prompt: str, provider_id: str | None, retry_count: int = 0) -> str:
         attempts = max(int(retry_count), 0) + 1
