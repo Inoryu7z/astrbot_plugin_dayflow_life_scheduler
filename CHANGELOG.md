@@ -6,6 +6,7 @@
 
 * 增强 `safe_json_loads`：支持尾随逗号、行内注释、截断 JSON 补全等容错解析
 * 截断 JSON 补全：LLM 输出被截断时，逐步剥离不完整部分并补全闭合括号，尽可能提取已有字段
+* 修复 `call_llm_once` 对部分提供商（如 GLM-5.1）返回空文本的问题：当 `completion_text` 为空时，尝试从 `result_chain` 的组件中提取文本
 
 ---
 
