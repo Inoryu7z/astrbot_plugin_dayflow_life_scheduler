@@ -1310,12 +1310,9 @@ class DayflowService:
         if not effective_id:
             raise RuntimeError("[dayflow] no provider available for llm_generate")
         prov = self.context.get_provider_by_id(effective_id)
-        original_timeout = None
         original_client_timeout = None
         timeout_seconds = self._llm_timeout_seconds()
-        if prov and hasattr(prov, "timeout") and timeout_seconds > 0:
-            original_timeout = prov.timeout
-            prov.timeout = timeout_seconds
+        if prov and timeout_seconds > 0:
             client = getattr(prov, "client", None)
             if client and hasattr(client, "timeout"):
                 original_client_timeout = client.timeout
@@ -1324,10 +1321,9 @@ class DayflowService:
             async with self._llm_concurrency_sem:
                 llm_resp = await self.context.llm_generate(chat_provider_id=effective_id, prompt=prompt)
         finally:
-            if original_timeout is not None and prov and hasattr(prov, "timeout"):
-                prov.timeout = original_timeout
-                client = getattr(prov, "client", None)
-                if client and hasattr(client, "timeout") and original_client_timeout is not None:
+            if original_client_timeout is not None:
+                client = getattr(prov, "client", None) if prov else None
+                if client and hasattr(client, "timeout"):
                     client.timeout = original_client_timeout
         text = (getattr(llm_resp, "completion_text", "") or "").strip()
         if not text and llm_resp is not None:
