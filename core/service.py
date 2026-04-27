@@ -211,6 +211,13 @@ class DayflowService:
 
         return "\n".join(lines)
 
+    def _llm_timeout_seconds(self) -> int:
+        try:
+            value = int(self.config.get("llm_timeout_seconds", 900) or 0)
+            return max(0, value)
+        except Exception:
+            return 900
+
     def _schedule_retention_days(self) -> int:
         try:
             value = int(self.config.get("schedule_retention_days", 3))
@@ -1304,13 +1311,15 @@ class DayflowService:
             raise RuntimeError("[dayflow] no provider available for llm_generate")
         prov = self.context.get_provider_by_id(effective_id)
         original_timeout = None
-        if prov and hasattr(prov, "timeout"):
+        original_client_timeout = None
+        timeout_seconds = self._llm_timeout_seconds()
+        if prov and hasattr(prov, "timeout") and timeout_seconds > 0:
             original_timeout = prov.timeout
-            prov.timeout = 900
+            prov.timeout = timeout_seconds
             client = getattr(prov, "client", None)
             if client and hasattr(client, "timeout"):
                 original_client_timeout = client.timeout
-                client.timeout = 900
+                client.timeout = timeout_seconds
         try:
             async with self._llm_concurrency_sem:
                 llm_resp = await self.context.llm_generate(chat_provider_id=effective_id, prompt=prompt)
@@ -1318,7 +1327,7 @@ class DayflowService:
             if original_timeout is not None and prov and hasattr(prov, "timeout"):
                 prov.timeout = original_timeout
                 client = getattr(prov, "client", None)
-                if client and hasattr(client, "timeout"):
+                if client and hasattr(client, "timeout") and original_client_timeout is not None:
                     client.timeout = original_client_timeout
         text = (getattr(llm_resp, "completion_text", "") or "").strip()
         if not text and llm_resp is not None:

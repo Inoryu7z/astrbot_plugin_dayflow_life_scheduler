@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.4.9 - 2026-04-28
+
+**⚙️ LLM 超时时间可配置化**
+
+* 新增全局配置项 `llm_timeout_seconds`，默认 900 秒（与之前硬编码值相同）
+* 设为 0 时跳过超时覆盖，使用 AstrBot 框架默认超时（约 120 秒）
+* 修复 `call_llm_once` 中 `original_client_timeout` 未初始化的潜在 NameError
+
+---
+
 ## v1.4.8 - 2026-04-28
 
 **⏱️ 插件接管 LLM 超时时间**
