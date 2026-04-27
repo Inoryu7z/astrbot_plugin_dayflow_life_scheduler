@@ -1302,8 +1302,24 @@ class DayflowService:
             effective_id = await self._get_default_provider_id()
         if not effective_id:
             raise RuntimeError("[dayflow] no provider available for llm_generate")
-        async with self._llm_concurrency_sem:
-            llm_resp = await self.context.llm_generate(chat_provider_id=effective_id, prompt=prompt)
+        prov = self.context.get_provider_by_id(effective_id)
+        original_timeout = None
+        if prov and hasattr(prov, "timeout"):
+            original_timeout = prov.timeout
+            prov.timeout = 900
+            client = getattr(prov, "client", None)
+            if client and hasattr(client, "timeout"):
+                original_client_timeout = client.timeout
+                client.timeout = 900
+        try:
+            async with self._llm_concurrency_sem:
+                llm_resp = await self.context.llm_generate(chat_provider_id=effective_id, prompt=prompt)
+        finally:
+            if original_timeout is not None and prov and hasattr(prov, "timeout"):
+                prov.timeout = original_timeout
+                client = getattr(prov, "client", None)
+                if client and hasattr(client, "timeout"):
+                    client.timeout = original_client_timeout
         text = (getattr(llm_resp, "completion_text", "") or "").strip()
         if not text and llm_resp is not None:
             chain = getattr(llm_resp, "result_chain", None)
