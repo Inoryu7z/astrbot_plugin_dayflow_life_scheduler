@@ -87,6 +87,39 @@ def strip_code_fence(text: str) -> str:
     return text.strip()
 
 
+def _strip_json_comments(text: str) -> str:
+    text = re.sub(r"//[^\n]*", "", text)
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return text
+
+
+def _fix_trailing_commas(text: str) -> str:
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    return text
+
+
+def _try_repair_truncated_json(text: str) -> dict | None:
+    match = re.search(r"\{", text)
+    if not match:
+        return None
+    fragment = text[match.start():]
+    for _ in range(10):
+        try:
+            obj = json.loads(fragment)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            pass
+        fragment = re.sub(r'"[^"]*$', "", fragment)
+        fragment = re.sub(r",\s*$", "", fragment)
+        fragment = re.sub(r"\[[^\]]*$", "", fragment)
+        fragment += "}"
+    try:
+        obj = json.loads(fragment)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
 def safe_json_loads(text: str) -> dict | None:
     text = strip_code_fence(text)
     try:
@@ -96,11 +129,33 @@ def safe_json_loads(text: str) -> dict | None:
         pass
     match = re.search(r"\{.*\}", text, flags=re.S)
     if match:
+        candidate = match.group(0)
         try:
-            obj = json.loads(match.group(0))
+            obj = json.loads(candidate)
             return obj if isinstance(obj, dict) else None
         except Exception:
-            return None
+            pass
+        repaired = _fix_trailing_commas(candidate)
+        try:
+            obj = json.loads(repaired)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            pass
+        repaired = _strip_json_comments(candidate)
+        try:
+            obj = json.loads(repaired)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            pass
+        repaired = _fix_trailing_commas(_strip_json_comments(candidate))
+        try:
+            obj = json.loads(repaired)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            pass
+    obj = _try_repair_truncated_json(text)
+    if obj is not None:
+        return obj
     return None
 
 
