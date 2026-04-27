@@ -14,7 +14,7 @@
     "description": "LLM 调用超时时间（秒）",
     "type": "int",
     "default": 900,
-    "hint": "日程生成调用 LLM 时的超时时间。慢速提供商（如 deepseek-v4-pro）可能需要较长超时，默认 900 秒（15 分钟）。设为 0 则使用 AstrBot 框架默认超时（约 120 秒）。"
+    "hint": "日程生成调用 LLM 时的超时时间。慢速提供商可能需要较长超时，默认 900 秒（15 分钟）。设为 0 则使用 AstrBot 框架默认超时（约 120 秒）。"
   },
   "schedule_retention_days": {
     "description": "日程持久化保留天数",

@@ -7,6 +7,7 @@
 * 新增全局配置项 `llm_timeout_seconds`，默认 900 秒（与之前硬编码值相同）
 * 设为 0 时跳过超时覆盖，使用 AstrBot 框架默认超时（约 120 秒）
 * 修复 `call_llm_once` 中 `original_client_timeout` 未初始化的潜在 NameError
+* 移除无效的 `prov.timeout` 修改（仅 `prov.client.timeout` 在运行时被 openai SDK 动态读取，`prov.timeout` 是初始化后不再被框架读取的死属性）
 
 ---
 
@@ -15,7 +16,7 @@
 **⏱️ 插件接管 LLM 超时时间**
 
 * `call_llm_once` 在调用前临时将提供商 timeout 设为 900 秒（15 分钟），调用后恢复原值
-* 解决慢速提供商（如 deepseek-v4-pro）因框架默认 120 秒超时而失败的问题
+* 解决慢速提供商因框架默认 120 秒超时而失败的问题
 
 ---
 
