@@ -1992,6 +1992,7 @@ class DayflowService:
             configured_provider_id = select_providers[0] if select_providers else None
             session_provider_id = await self._resolve_session_provider_id(event)
             default_provider_id = await self._get_default_provider_id()
+            final_fallback_id = self._final_fallback_provider_id()
 
             if len(select_providers) <= 1:
                 primary_provider_id = configured_provider_id or session_provider_id or default_provider_id
@@ -2052,6 +2053,15 @@ class DayflowService:
 
                 raw_text = best_raw_text
                 actual_provider_id = best_provider_id
+
+            if not raw_text and final_fallback_id:
+                logger.info(f"[dayflow-subdivision] attempting final fallback provider={final_fallback_id} for persona={persona_name}")
+                try:
+                    raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
+                        prompt, final_fallback_id, None, retry_count=0,
+                    )
+                except Exception as e:
+                    logger.warning(f"[dayflow-subdivision] final fallback failed for persona={persona_name}: {e}")
 
             if not raw_text:
                 logger.warning(f"[dayflow-subdivision] empty response for persona={persona_name}")
