@@ -377,5 +377,7 @@ class DayflowPlugin(Star):
             f"style_research_sources_preview:\n{snapshot.get('style_research_sources_preview', '')}\n\n"
             f"recent_chats_preview:\n{snapshot.get('recent_chats_preview', '')}\n\n"
             f"recent_diaries_preview:\n{snapshot.get('recent_diaries_preview', '')}\n\n"
+            f"enable_subdivision: {snapshot.get('enable_subdivision', False)}\n"
+            f"sub_events_preview:\n{snapshot.get('sub_events_preview', '')}\n\n"
             f"rendered_prompt_preview:\n{snapshot.get('rendered_prompt_preview', '')}"
         )
