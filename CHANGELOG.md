@@ -2,25 +2,17 @@
 
 ## v1.6.0 - 2026-04-29
 
-** 日程细分骨架（双LLM制）**
+**🧩 日程细分骨架（双LLM制）**
 
 * 新增日程细分功能：Model 1 生成大骨架日程后，复用同一套提供商逻辑（竞速-对话-兜底-最终兜底）对大骨架进行创造性细分
 * 新增人格级配置项 enable_subdivision（纯 bool 开关），细分复用日程生成的同一套提供商配置
 * 细分结果 sub_events 独立存储，不嵌入 timeline，回退安全零影响
-* Model 2 失败时只记录 warning 日志，不影响 Model 1 的日程数据
-* 新增 alidate_sub_events 校验函数，校验细分结果的时间完整性、覆盖率和粒度
-* 新增 uild_draft_skeleton 格式化函数，将 timeline 转为 Model 2 可读的文本格式
-
-** 系统提示词注入增强**
-
+* 细分失败时只记录 warning 日志，不影响主日程数据
+* 新增 validate_sub_events 校验函数，校验细分结果的时间完整性、覆盖率和粒度
+* 新增 build_draft_skeleton 格式化函数，将 timeline 转为细分模型可读的文本格式
 * 新增 <DayFlow-Current-Activity> 标签注入，动态注入当前细分活动（此刻+刚做完+接下来，约60 token）
-* 只注入当前细分及前后各一个，不注入全天细分，避免 token 浪费
-* 注入前自动清理上次残留的细分注入标签
-
-** 暴露接口**
-
 * 新增 get_sub_events 方法，供 DayMind 和 DailySharing 获取细分数据
-* 新增 uild_current_sub_activity_injection 方法，供系统提示词注入使用
+* 新增 build_current_sub_activity_injection 方法，供系统提示词注入使用
 
 ---
 
