@@ -373,3 +373,106 @@ def build_generation_error_data(persona_name: str, persona: dict[str, Any], reas
         "memo": reason or "生成失败",
         "long_term_memory": [],
     }
+
+
+def _parse_hhmm_to_minutes(time_str: str) -> int | None:
+    try:
+        parts = str(time_str or "").strip().split(":")
+        if len(parts) != 2:
+            return None
+        h, m = int(parts[0]), int(parts[1])
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h * 60 + m
+    except Exception:
+        pass
+    return None
+
+
+def build_draft_skeleton(timeline: list[dict]) -> str:
+    if not isinstance(timeline, list) or not timeline:
+        return ""
+    parts = []
+    for i, item in enumerate(timeline):
+        if not isinstance(item, dict):
+            continue
+        time_start = str(item.get("time_start") or "").strip()
+        time_end = str(item.get("time_end") or "").strip()
+        title = str(item.get("title") or "").strip()
+        detail = str(item.get("detail") or "").strip()
+        outfit_change = str(item.get("outfit_change") or "").strip()
+        block = f"── 第 {i} 项 ──\n时间：{time_start}-{time_end}"
+        if title:
+            block += f"\n标题：{title}"
+        if detail:
+            block += f"\n内容：{detail}"
+        if outfit_change:
+            block += f"\n换装：{outfit_change}"
+        parts.append(block)
+    return "\n\n".join(parts)
+
+
+def validate_sub_events(sub_events: Any, timeline: list[dict]) -> tuple[bool, str]:
+    if not isinstance(sub_events, list):
+        return False, "sub_events 不是数组"
+    if not sub_events:
+        return False, "sub_events 为空数组"
+    if not isinstance(timeline, list) or not timeline:
+        return False, "timeline 为空，无法校验 sub_events"
+
+    timeline_len = len(timeline)
+    covered_indices: set[int] = set()
+
+    for entry_idx, entry in enumerate(sub_events):
+        if not isinstance(entry, dict):
+            return False, f"sub_events[{entry_idx}] 不是有效对象"
+
+        source_index = entry.get("source_index")
+        if not isinstance(source_index, int):
+            return False, f"sub_events[{entry_idx}] 的 source_index 不是整数"
+        if source_index < 0 or source_index >= timeline_len:
+            return False, f"sub_events[{entry_idx}] 的 source_index={source_index} 超出范围(0-{timeline_len - 1})"
+        if source_index in covered_indices:
+            return False, f"sub_events[{entry_idx}] 的 source_index={source_index} 重复"
+        covered_indices.add(source_index)
+
+        items = entry.get("items")
+        if not isinstance(items, list):
+            return False, f"sub_events[{entry_idx}] 的 items 不是数组"
+        if len(items) < 2 or len(items) > 4:
+            return False, f"sub_events[{entry_idx}] 有 {len(items)} 个子事件，需 2-4 个"
+
+        parent = timeline[source_index]
+        parent_start = _parse_hhmm_to_minutes(str(parent.get("time_start") or ""))
+        parent_end = _parse_hhmm_to_minutes(str(parent.get("time_end") or ""))
+        if parent_start is None or parent_end is None:
+            return False, f"timeline[{source_index}] 的时间格式无效"
+        parent_duration = parent_end - parent_start
+        if parent_duration <= 0:
+            parent_duration += 24 * 60
+
+        total_sub_minutes = 0
+        for item_idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                return False, f"sub_events[{entry_idx}].items[{item_idx}] 不是有效对象"
+            sub_start = _parse_hhmm_to_minutes(str(item.get("time_start") or ""))
+            sub_end = _parse_hhmm_to_minutes(str(item.get("time_end") or ""))
+            if sub_start is None or sub_end is None:
+                return False, f"sub_events[{entry_idx}].items[{item_idx}] 的时间格式无效"
+            sub_duration = sub_end - sub_start
+            if sub_duration <= 0:
+                sub_duration += 24 * 60
+            if sub_duration < 10:
+                return False, f"sub_events[{entry_idx}].items[{item_idx}] 时长不足10分钟"
+            total_sub_minutes += sub_duration
+
+        if total_sub_minutes != parent_duration:
+            return False, (
+                f"sub_events[{entry_idx}] 子事件总时长({total_sub_minutes}分钟)"
+                f"不等于父时段时长({parent_duration}分钟)"
+            )
+
+    if len(covered_indices) != timeline_len:
+        missing = set(range(timeline_len)) - covered_indices
+        return False, f"以下 timeline 索引缺少细分：{sorted(missing)}"
+
+    return True, ""

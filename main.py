@@ -27,6 +27,13 @@ _PRESENCE_PATTERN = re.compile(
     flags=re.DOTALL,
 )
 
+SUB_ACTIVITY_INJECTION_HEADER = "<DayFlow-Current-Activity>"
+SUB_ACTIVITY_INJECTION_FOOTER = "</DayFlow-Current-Activity>"
+_SUB_ACTIVITY_PATTERN = re.compile(
+    re.escape(SUB_ACTIVITY_INJECTION_HEADER) + r".*?" + re.escape(SUB_ACTIVITY_INJECTION_FOOTER),
+    flags=re.DOTALL,
+)
+
 
 def _build_injection_text(data: dict) -> str | None:
     if not is_schedule_valid(data):
@@ -58,6 +65,18 @@ def _remove_presence_injection(system_prompt: str | None) -> tuple[str, bool]:
     if not system_prompt:
         return system_prompt or "", False
     cleaned = _PRESENCE_PATTERN.sub("", system_prompt)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, cleaned != system_prompt
+
+
+def _build_sub_activity_injection_text(body: str) -> str:
+    return f"{SUB_ACTIVITY_INJECTION_HEADER}\n{body}\n{SUB_ACTIVITY_INJECTION_FOOTER}"
+
+
+def _remove_sub_activity_injection(system_prompt: str | None) -> tuple[str, bool]:
+    if not system_prompt:
+        return system_prompt or "", False
+    cleaned = _SUB_ACTIVITY_PATTERN.sub("", system_prompt)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned, cleaned != system_prompt
 
@@ -113,6 +132,15 @@ class DayflowPlugin(Star):
             if injection:
                 req.system_prompt += f"\n\n{injection}"
                 logger.info(f"[dayflow] 已注入日程: {today}")
+
+            persona_name_for_sub = resolved_ctx.get("persona_name") if resolved_ctx else None
+            if persona_name_for_sub:
+                sub_activity = self.service.build_current_sub_activity_injection(persona_name_for_sub)
+                if sub_activity:
+                    req.system_prompt, _ = _remove_sub_activity_injection(req.system_prompt)
+                    sub_injection = _build_sub_activity_injection_text(sub_activity)
+                    req.system_prompt += f"\n\n{sub_injection}"
+                    logger.info(f"[dayflow] 已注入细分活动: persona={persona_name_for_sub}")
         except Exception as e:
             logger.warning(f"[dayflow] on_llm_request 注入失败: {e}")
 
@@ -198,6 +226,20 @@ class DayflowPlugin(Star):
             if data.get("meta", {}).get("error"):
                 collected.append(event.plain_result(f"⚠️ 生成失败：{data.get('memo', '未知错误')}"))
             else:
+                persona_cfg = self.service.get_persona_config(persona_name)
+                enable_subdivision = bool((persona_cfg or {}).get("enable_subdivision", False))
+                if enable_subdivision:
+                    sub_provider_id = str((persona_cfg or {}).get("subdivision_provider") or "").strip() or None
+                    if not sub_provider_id:
+                        sub_provider_id = str(data.get("meta", {}).get("provider_id") or "").strip() or None
+                    sub_events = await self.service._generate_subdivision(
+                        result=data,
+                        persona_name=persona_name,
+                        persona_desc=persona_desc,
+                        provider_id=sub_provider_id,
+                    )
+                    if sub_events:
+                        data["sub_events"] = sub_events
                 await self.service.save_generated(store_key, data)
                 current_session = getattr(event, "unified_msg_origin", None)
                 await self.service.push_schedule_to_targets(store_key, data, exclude_umo=current_session)
