@@ -218,6 +218,10 @@ class DayflowService:
         except Exception:
             return 900
 
+    def _final_fallback_provider_id(self) -> str | None:
+        value = str(self.config.get("final_fallback_provider") or "").strip()
+        return value or None
+
     def _schedule_retention_days(self) -> int:
         try:
             value = int(self.config.get("schedule_retention_days", 3))
@@ -1403,6 +1407,82 @@ class DayflowService:
             logger.debug(f"[dayflow] get_default_provider_id failed: {e}")
         return None
 
+    async def _try_final_fallback(
+        self,
+        prompt: str,
+        normalized_persona_name: str,
+        validate_persona: dict,
+        outfit_style: str,
+        schedule_main_type: str,
+        core_event_driver: str,
+        date_str: str,
+        configured_provider_id: str | None,
+        session_provider_id: str | None,
+        default_provider_id: str | None,
+        effective_session_id: str | None,
+        today_weather: str,
+        configured_variation: str,
+        effective_variation: str,
+        style_reference: str,
+        best_partial: dict | None = None,
+    ) -> dict | None:
+        final_provider_id = self._final_fallback_provider_id()
+        if not final_provider_id:
+            return None
+        logger.info(
+            f"[dayflow] attempting final fallback for persona={normalized_persona_name}, "
+            f"final_provider={final_provider_id}"
+        )
+        try:
+            final_prompt = prompt
+            if best_partial and best_partial.get("raw_text") and best_partial.get("reason"):
+                final_prompt = build_repair_prompt(
+                    prompt, best_partial["raw_text"], best_partial["reason"],
+                    validate_persona, retry_index=1,
+                )
+                logger.info(
+                    f"[dayflow] final fallback using repair prompt from partial result, "
+                    f"source_provider={best_partial.get('provider_id')}, reason={best_partial.get('reason')}"
+                )
+            raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
+                final_prompt, final_provider_id, None, retry_count=0,
+            )
+            payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
+            ok, reason = validate_payload(payload, validate_persona)
+            if ok and payload:
+                logger.info(
+                    f"[dayflow] final fallback succeeded for persona={normalized_persona_name}, "
+                    f"provider={actual_provider_id or final_provider_id}"
+                )
+                return self._build_schedule_result(
+                    payload=payload,
+                    normalized_persona_name=normalized_persona_name,
+                    outfit_style=outfit_style,
+                    schedule_main_type=schedule_main_type,
+                    core_event_driver=core_event_driver,
+                    date_str=date_str,
+                    actual_provider_id=actual_provider_id or final_provider_id,
+                    configured_provider_id=configured_provider_id,
+                    session_provider_id=session_provider_id,
+                    default_provider_id=default_provider_id,
+                    effective_session_id=effective_session_id,
+                    today_weather=today_weather,
+                    configured_variation=configured_variation,
+                    effective_variation=effective_variation,
+                    style_reference=style_reference,
+                    validate_persona=validate_persona,
+                )
+            logger.warning(
+                f"[dayflow] final fallback validation failed for persona={normalized_persona_name}, "
+                f"provider={final_provider_id}, reason={reason}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[dayflow] final fallback exception for persona={normalized_persona_name}, "
+                f"provider={final_provider_id}: {e}"
+            )
+        return None
+
     def _build_schedule_result(
         self,
         payload: dict,
@@ -1999,6 +2079,25 @@ class DayflowService:
                     payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
                     ok, reason = validate_payload(payload, validate_persona)
                 if not ok or not payload:
+                    final_result = await self._try_final_fallback(
+                        prompt=prompt,
+                        normalized_persona_name=normalized_persona_name,
+                        validate_persona=validate_persona,
+                        outfit_style=outfit_style,
+                        schedule_main_type=schedule_main_type,
+                        core_event_driver=core_event_driver,
+                        date_str=date_str,
+                        configured_provider_id=configured_provider_id,
+                        session_provider_id=session_provider_id,
+                        default_provider_id=default_provider_id,
+                        effective_session_id=effective_session_id,
+                        today_weather=today_weather,
+                        configured_variation=configured_variation,
+                        effective_variation=effective_variation,
+                        style_reference=style_reference,
+                    )
+                    if final_result:
+                        return final_result
                     return build_generation_error_data(normalized_persona_name, validate_persona, reason or "模型输出未通过校验")
                 return self._build_schedule_result(
                     payload=payload,
@@ -2023,6 +2122,25 @@ class DayflowService:
                     f"[dayflow] llm generation failed for persona={normalized_persona_name}: {e}, "
                     f"configured_provider={configured_provider_id or 'none'}, session_provider={session_provider_id or 'none'}, target_date={date_str}"
                 )
+                final_result = await self._try_final_fallback(
+                    prompt=prompt,
+                    normalized_persona_name=normalized_persona_name,
+                    validate_persona=validate_persona,
+                    outfit_style=outfit_style,
+                    schedule_main_type=schedule_main_type,
+                    core_event_driver=core_event_driver,
+                    date_str=date_str,
+                    configured_provider_id=configured_provider_id,
+                    session_provider_id=session_provider_id,
+                    default_provider_id=default_provider_id,
+                    effective_session_id=effective_session_id,
+                    today_weather=today_weather,
+                    configured_variation=configured_variation,
+                    effective_variation=effective_variation,
+                    style_reference=style_reference,
+                )
+                if final_result:
+                    return final_result
                 return build_generation_error_data(normalized_persona_name, validate_persona, f"LLM 调用失败: {e}")
 
         seen = set()
@@ -2078,6 +2196,26 @@ class DayflowService:
                         payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
                         ok, reason = validate_payload(payload, validate_persona)
                     if not ok or not payload:
+                        final_result = await self._try_final_fallback(
+                            prompt=prompt,
+                            normalized_persona_name=normalized_persona_name,
+                            validate_persona=validate_persona,
+                            outfit_style=outfit_style,
+                            schedule_main_type=schedule_main_type,
+                            core_event_driver=core_event_driver,
+                            date_str=date_str,
+                            configured_provider_id=configured_provider_id,
+                            session_provider_id=session_provider_id,
+                            default_provider_id=default_provider_id,
+                            effective_session_id=effective_session_id,
+                            today_weather=today_weather,
+                            configured_variation=configured_variation,
+                            effective_variation=effective_variation,
+                            style_reference=style_reference,
+                            best_partial=best_partial,
+                        )
+                        if final_result:
+                            return final_result
                         return build_generation_error_data(normalized_persona_name, validate_persona, reason or "所有提供商均失败，对话模型也未通过校验")
                     return self._build_schedule_result(
                         payload=payload,
@@ -2099,7 +2237,47 @@ class DayflowService:
                     )
                 except Exception as e:
                     logger.warning(f"[dayflow] fallback provider also failed for persona={normalized_persona_name}: {e}")
+                    final_result = await self._try_final_fallback(
+                        prompt=prompt,
+                        normalized_persona_name=normalized_persona_name,
+                        validate_persona=validate_persona,
+                        outfit_style=outfit_style,
+                        schedule_main_type=schedule_main_type,
+                        core_event_driver=core_event_driver,
+                        date_str=date_str,
+                        configured_provider_id=configured_provider_id,
+                        session_provider_id=session_provider_id,
+                        default_provider_id=default_provider_id,
+                        effective_session_id=effective_session_id,
+                        today_weather=today_weather,
+                        configured_variation=configured_variation,
+                        effective_variation=effective_variation,
+                        style_reference=style_reference,
+                        best_partial=best_partial,
+                    )
+                    if final_result:
+                        return final_result
                     return build_generation_error_data(normalized_persona_name, validate_persona, f"所有提供商均失败，对话模型也失败: {e}")
+            final_result = await self._try_final_fallback(
+                prompt=prompt,
+                normalized_persona_name=normalized_persona_name,
+                validate_persona=validate_persona,
+                outfit_style=outfit_style,
+                schedule_main_type=schedule_main_type,
+                core_event_driver=core_event_driver,
+                date_str=date_str,
+                configured_provider_id=configured_provider_id,
+                session_provider_id=session_provider_id,
+                default_provider_id=default_provider_id,
+                effective_session_id=effective_session_id,
+                today_weather=today_weather,
+                configured_variation=configured_variation,
+                effective_variation=effective_variation,
+                style_reference=style_reference,
+                best_partial=best_partial,
+            )
+            if final_result:
+                return final_result
             return build_generation_error_data(normalized_persona_name, validate_persona, "所有提供商均失败，无对话模型可用")
 
         return self._build_schedule_result(

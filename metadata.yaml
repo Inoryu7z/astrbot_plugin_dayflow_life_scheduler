@@ -1,6 +1,6 @@
 name: astrbot_plugin_dayflow_life_scheduler
 display_name: 心迹日程
-version: 1.4.9
+version: 1.5.0
 description: 为每个人格生成今日穿搭与日程安排，基于历史、对话、日记与联网风格研究形成连贯的生活上下文
 author: Inoryu7z
 repo: https://github.com/Inoryu7z/astrbot_plugin_dayflow_life_scheduler

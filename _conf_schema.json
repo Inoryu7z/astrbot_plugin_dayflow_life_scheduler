@@ -16,6 +16,13 @@
     "default": 900,
     "hint": "日程生成调用 LLM 时的超时时间。慢速提供商可能需要较长超时，默认 900 秒（15 分钟）。设为 0 则使用 AstrBot 框架默认超时（约 120 秒）。"
   },
+  "final_fallback_provider": {
+    "description": "最终兜底提供商",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "当所有竞速提供商和对话提供商都失败后，使用此提供商进行最后一次尝试。留空则不启用兜底。建议选择稳定、响应快的提供商。"
+  },
   "schedule_retention_days": {
     "description": "日程持久化保留天数",
     "type": "int",
