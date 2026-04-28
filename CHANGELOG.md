@@ -4,8 +4,8 @@
 
 ** 日程细分骨架（双LLM制）**
 
-* 新增日程细分功能：Model 1 生成大骨架日程后，由 Model 2（顶尖模型）对大骨架进行创造性细分，生成更细粒度的活动片段
-* 新增人格级配置项 enable_subdivision（启用日程细分）和 subdivision_provider（细分模型提供商）
+* 新增日程细分功能：Model 1 生成大骨架日程后，复用同一套提供商逻辑（竞速-对话-兜底-最终兜底）对大骨架进行创造性细分
+* 新增人格级配置项 enable_subdivision（纯 bool 开关），细分复用日程生成的同一套提供商配置
 * 细分结果 sub_events 独立存储，不嵌入 timeline，回退安全零影响
 * Model 2 失败时只记录 warning 日志，不影响 Model 1 的日程数据
 * 新增 alidate_sub_events 校验函数，校验细分结果的时间完整性、覆盖率和粒度
