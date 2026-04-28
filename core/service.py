@@ -1851,6 +1851,8 @@ class DayflowService:
                 "rendered_prompt_preview": f"人格未在 Dayflow 中启用：{persona_ctx.get('persona_name', '')}",
                 "recent_chats_preview": "",
                 "recent_diaries_preview": "",
+                "enable_subdivision": False,
+                "sub_events_preview": "",
             }
 
         pool = persona.get("pool", {}) or {}
@@ -1883,6 +1885,8 @@ class DayflowService:
                 "rendered_prompt_preview": last_payload.get("rendered_prompt_preview", "")[:2200],
                 "recent_chats_preview": last_payload.get("recent_chats_preview", "")[:500],
                 "recent_diaries_preview": last_payload.get("recent_diaries_preview", "")[:500],
+                "enable_subdivision": bool(persona.get("enable_subdivision", False)),
+                "sub_events_preview": last_payload.get("sub_events_preview", ""),
             }
 
         session_id = getattr(event, "unified_msg_origin", None) if event else None
@@ -1944,7 +1948,43 @@ class DayflowService:
             "rendered_prompt_preview": prompt[:2200],
             "recent_chats_preview": replacements["recent_chats"][:500],
             "recent_diaries_preview": replacements["recent_diaries"][:500],
+            "enable_subdivision": bool(persona.get("enable_subdivision", False)),
+            "sub_events_preview": self._build_sub_events_debug_preview(resolved_name),
         }
+
+    def _build_sub_events_debug_preview(self, persona_name: str) -> str:
+        try:
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            store_key = self.normalize_persona_key(persona_name)
+            data = self.store.get_schedule_for_date(store_key, today)
+            if not data or data.get("meta", {}).get("error"):
+                return "(无今日日程)"
+            sub_events = data.get("sub_events")
+            if not isinstance(sub_events, list) or not sub_events:
+                return "(未启用细分或细分未生成)"
+            lines = []
+            for entry in sub_events:
+                if not isinstance(entry, dict):
+                    continue
+                si = entry.get("source_index")
+                items = entry.get("items") or []
+                timeline = data.get("timeline") or []
+                parent_title = ""
+                if isinstance(si, int) and 0 <= si < len(timeline):
+                    parent_title = str(timeline[si].get("title") or "")
+                lines.append(f"[{si}] {parent_title}")
+                for item in items:
+                    ts = str(item.get("time_start") or "")
+                    te = str(item.get("time_end") or "")
+                    t = str(item.get("title") or "")
+                    d = str(item.get("detail") or "")
+                    line = f"  {ts}-{te} {t}"
+                    if d:
+                        line += f" ({d})"
+                    lines.append(line)
+            return "\n".join(lines)
+        except Exception as e:
+            return f"(读取失败: {e})"
 
     async def _generate_subdivision(
         self,
