@@ -229,14 +229,12 @@ class DayflowPlugin(Star):
                 persona_cfg = self.service.get_persona_config(persona_name)
                 enable_subdivision = bool((persona_cfg or {}).get("enable_subdivision", False))
                 if enable_subdivision:
-                    sub_provider_id = str((persona_cfg or {}).get("subdivision_provider") or "").strip() or None
-                    if not sub_provider_id:
-                        sub_provider_id = str(data.get("meta", {}).get("provider_id") or "").strip() or None
                     sub_events = await self.service._generate_subdivision(
                         result=data,
                         persona_name=persona_name,
                         persona_desc=persona_desc,
-                        provider_id=sub_provider_id,
+                        persona=persona_cfg or {},
+                        event=event,
                     )
                     if sub_events:
                         data["sub_events"] = sub_events
