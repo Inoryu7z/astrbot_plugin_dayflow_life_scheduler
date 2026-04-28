@@ -271,6 +271,19 @@
             "editor_mode_fullscreen": true,
             "editor_language": "markdown",
             "editor_theme": "vs-dark"
+          },
+          "enable_subdivision": {
+            "type": "bool",
+            "description": "启用日程细分（双LLM制）",
+            "default": false,
+            "hint": "开启后，日程生成成功后会由第二个LLM将大骨架时段拆分为更细粒度的活动片段，用于系统提示词注入和DayMind思考。细分失败时不影响主日程。建议配合顶尖模型使用。"
+          },
+          "subdivision_provider": {
+            "type": "string",
+            "description": "细分模型提供商",
+            "default": "",
+            "_special": "select_provider",
+            "hint": "日程细分使用的顶尖模型提供商ID。细分需要角色理解能力，建议选择最强模型。留空则使用日程生成同一提供商。"
           }
         }
       }

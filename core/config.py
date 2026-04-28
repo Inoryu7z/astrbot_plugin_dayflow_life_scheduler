@@ -95,6 +95,8 @@ class DayflowConfig:
                 "retry_count": self._to_int(item.get("retry_count"), 2),
                 "prompt_template_override": prompt_template_override,
                 "prompt_template": effective_prompt_template,
+                "enable_subdivision": bool(item.get("enable_subdivision", False)),
+                "subdivision_provider": str(item.get("subdivision_provider") or "").strip(),
             })
         return normalized
 

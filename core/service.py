@@ -14,6 +14,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from .config import DayflowConfig
 from .constants import DEFAULT_VARIATION_LEVEL, VARIATION_LEVEL_DEFINITIONS
 from .generator import (
+    build_draft_skeleton,
     build_format_priority_append_prompt,
     build_generation_error_data,
     build_repair_prompt,
@@ -24,6 +25,7 @@ from .generator import (
     render_schedule_display,
     safe_json_loads,
     validate_payload,
+    validate_sub_events,
 )
 from .schedule_renderer import ScheduleRenderer
 from .store import DayflowStore
@@ -103,6 +105,54 @@ CUSTOM_SCHEDULE_INTENT_APPEND = """
 - 如果用户指定了新风格，请基于该风格进行风格研究
 - 如果 outfit_adjustments 非 null，请在 morning_look/afternoon_look 中体现调整
 """
+
+SUBDIVISION_SYSTEM_PROMPT = """你是日程细分编辑。将以下日程的每个时段拆分为更细粒度的活动片段。
+
+## 角色
+{persona_name}：{persona_desc}
+
+## 今日条件
+{weekday} | {today_weather} | 风格：{outfit_style}
+
+## 风格参考
+{style_reference}
+
+## 日程大骨架
+{draft_skeleton}
+
+## 核心原则
+
+细分不是对大时段的机械拆解，而是在大框架下的创造性丰富。
+大时段的detail是叙事高光，细分要还原出真实的生活节奏——
+那些大时段来不及写的、被叙事省略的、角色自然会做的种种小事，
+都是细分的素材。细分的价值在于让日程从"故事梗概"变成"真实的一天"。
+
+## 要求
+
+### 拆分规则
+1. 每个时段拆为2-4个小事件，每个至少10分钟
+2. 小事件总时长必须等于大时段时长，不得溢出或留空
+3. 拆分应体现活动的自然阶段——准备、执行、过渡、收尾
+
+### 内容规则
+4. 每个小事件只需简短标题描述活动类型（10字内）
+5. detail可选且不超过20字，只补充活动内容，禁止写感受、情绪、感官体验
+6. 大时段detail中明确提到的活动必须在细分中体现；detail未提及但角色在此场景下自然会做的事，也应补充
+7. 细分应比大时段更贴近真实生活节奏——真人不会从护肤直接跳到入睡，中间总有过渡、停顿、小习惯、小岔路
+
+### 输出
+输出JSON对象，包含一个sub_events数组。数组中每个元素对应一个大时段的细分结果：
+
+{{"sub_events": [{{"source_index": 0, "items": [{{"time_start": "08:30", "time_end": "08:42", "title": "活动标题", "detail": "简短补充"}}]}}]}}
+
+字段说明：
+- source_index：整数，从0开始，对应大骨架timeline数组的下标，每个大时段都必须有对应的细分
+- items：该大时段的细分活动数组
+- time_start/time_end：字符串，格式"HH:MM"
+- title：字符串，10字以内
+- detail：字符串，20字以内，可为空字符串
+
+只输出JSON，不要其他内容。"""
 
 
 class DayflowService:
@@ -806,6 +856,19 @@ class DayflowService:
                     extra_requirement=pending_requirement,
                 )
                 if not data.get("meta", {}).get("error"):
+                    enable_subdivision = bool(persona.get("enable_subdivision", False))
+                    if enable_subdivision:
+                        sub_provider_id = str(persona.get("subdivision_provider") or "").strip() or None
+                        if not sub_provider_id:
+                            sub_provider_id = str(data.get("meta", {}).get("provider_id") or "").strip() or None
+                        sub_events = await self._generate_subdivision(
+                            result=data,
+                            persona_name=configured_persona_name,
+                            persona_desc=persona_ctx.get("persona_desc") or "",
+                            provider_id=sub_provider_id,
+                        )
+                        if sub_events:
+                            data["sub_events"] = sub_events
                     await self.save_generated(store_key, data)
                     await self.push_schedule_to_targets(store_key, data)
                     self.store.clear_auto_generation_failure(store_key, trigger_key)
@@ -1885,6 +1948,174 @@ class DayflowService:
             "recent_chats_preview": replacements["recent_chats"][:500],
             "recent_diaries_preview": replacements["recent_diaries"][:500],
         }
+
+    async def _generate_subdivision(
+        self,
+        result: dict,
+        persona_name: str,
+        persona_desc: str,
+        provider_id: str | None,
+    ) -> list | None:
+        timeline = result.get("timeline")
+        if not isinstance(timeline, list) or not timeline:
+            logger.warning(f"[dayflow-subdivision] no timeline in result, skip subdivision for persona={persona_name}")
+            return None
+
+        draft_skeleton = build_draft_skeleton(timeline)
+        if not draft_skeleton:
+            logger.warning(f"[dayflow-subdivision] empty draft_skeleton, skip subdivision for persona={persona_name}")
+            return None
+
+        meta = result.get("meta") or {}
+        outfit_style = str(meta.get("style") or "").strip()
+        today_weather = str(meta.get("weather") or result.get("weather") or "").strip()
+        style_reference = str(meta.get("style_reference") or "").strip()
+        date_str = str(meta.get("date") or "").strip()
+        weekday = ""
+        if date_str:
+            try:
+                target_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+                weekday = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][target_dt.weekday()]
+            except Exception:
+                weekday = ""
+
+        prompt = SUBDIVISION_SYSTEM_PROMPT.format(
+            persona_name=persona_name,
+            persona_desc=persona_desc[:800] if persona_desc else f"人格：{persona_name}",
+            weekday=weekday,
+            today_weather=today_weather,
+            outfit_style=outfit_style,
+            style_reference=style_reference[:600] if style_reference else "",
+            draft_skeleton=draft_skeleton,
+        )
+
+        try:
+            raw_text = await self.call_llm_once(prompt, provider_id)
+            if not raw_text:
+                logger.warning(f"[dayflow-subdivision] empty response from provider={provider_id}, persona={persona_name}")
+                return None
+
+            parsed = safe_json_loads(raw_text)
+            if not isinstance(parsed, dict):
+                logger.warning(f"[dayflow-subdivision] response is not JSON object, persona={persona_name}")
+                return None
+
+            sub_events = parsed.get("sub_events")
+            if not isinstance(sub_events, list):
+                logger.warning(f"[dayflow-subdivision] sub_events field missing or not array, persona={persona_name}")
+                return None
+
+            ok, reason = validate_sub_events(sub_events, timeline)
+            if not ok:
+                logger.warning(f"[dayflow-subdivision] validation failed for persona={persona_name}: {reason}")
+                return None
+
+            logger.info(f"[dayflow-subdivision] success for persona={persona_name}, sub_events count={len(sub_events)}")
+            return sub_events
+
+        except Exception as e:
+            logger.warning(f"[dayflow-subdivision] failed for persona={persona_name}: {e}")
+            return None
+
+    def build_current_sub_activity_injection(self, persona_name: str) -> str | None:
+        if not persona_name:
+            return None
+        try:
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            store_key = self.normalize_persona_key(persona_name)
+            data = self.store.get_schedule_for_date(store_key, today)
+            if not data or data.get("meta", {}).get("error"):
+                return None
+
+            sub_events = data.get("sub_events")
+            if not isinstance(sub_events, list) or not sub_events:
+                return None
+
+            timeline = data.get("timeline")
+            if not isinstance(timeline, list) or not timeline:
+                return None
+
+            now = datetime.datetime.now()
+            now_minutes = now.hour * 60 + now.minute
+
+            index_map: dict[int, list[dict]] = {}
+            for entry in sub_events:
+                if not isinstance(entry, dict):
+                    continue
+                si = entry.get("source_index")
+                if isinstance(si, int):
+                    index_map[si] = entry.get("items") or []
+
+            all_sub_items: list[tuple[int, dict]] = []
+            for si in sorted(index_map.keys()):
+                for item in index_map[si]:
+                    all_sub_items.append((si, item))
+
+            current_idx = -1
+            for i, (si, item) in enumerate(all_sub_items):
+                start_min = self._parse_hhmm_to_minutes_local(str(item.get("time_start") or ""))
+                end_min = self._parse_hhmm_to_minutes_local(str(item.get("time_end") or ""))
+                if start_min is not None and end_min is not None:
+                    duration = end_min - start_min
+                    if duration <= 0:
+                        duration += 24 * 60
+                    if start_min <= now_minutes < start_min + duration:
+                        current_idx = i
+                        break
+
+            if current_idx < 0:
+                return None
+
+            lines = []
+            _, current_item = all_sub_items[current_idx]
+            cs = str(current_item.get("time_start") or "")
+            ce = str(current_item.get("time_end") or "")
+            ct = str(current_item.get("title") or "")
+            lines.append(f"此刻：{cs}-{ce} {ct}")
+
+            if current_idx > 0:
+                _, prev_item = all_sub_items[current_idx - 1]
+                ps = str(prev_item.get("time_start") or "")
+                pe = str(prev_item.get("time_end") or "")
+                pt = str(prev_item.get("title") or "")
+                lines.append(f"刚做完：{ps}-{pe} {pt}")
+
+            if current_idx < len(all_sub_items) - 1:
+                _, next_item = all_sub_items[current_idx + 1]
+                ns = str(next_item.get("time_start") or "")
+                ne = str(next_item.get("time_end") or "")
+                nt = str(next_item.get("title") or "")
+                lines.append(f"接下来：{ns}-{ne} {nt}")
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.debug(f"[dayflow] build_current_sub_activity_injection failed: {e}")
+            return None
+
+    @staticmethod
+    def _parse_hhmm_to_minutes_local(time_str: str) -> int | None:
+        try:
+            parts = str(time_str or "").strip().split(":")
+            if len(parts) != 2:
+                return None
+            h, m = int(parts[0]), int(parts[1])
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                return h * 60 + m
+        except Exception:
+            pass
+        return None
+
+    def get_sub_events(self, persona_name: str, target_date: str | None = None) -> list | None:
+        effective_date = target_date or datetime.datetime.now().strftime("%Y-%m-%d")
+        store_key = self.normalize_persona_key(persona_name)
+        data = self.store.get_schedule_for_date(store_key, effective_date)
+        if not data or data.get("meta", {}).get("error"):
+            return None
+        sub_events = data.get("sub_events")
+        if isinstance(sub_events, list) and sub_events:
+            return sub_events
+        return None
 
     async def generate_schedule(self, event, persona_name: str, persona_desc: str = "", session_id: str | None = None, target_date: str | None = None, auto_retry: bool = False, extra_requirement: str | None = None, force_regenerate: bool = False) -> dict:
         persona_ctx = await self._resolve_persona_context_internal(event=event, persona_name=persona_name, session_id=session_id)
