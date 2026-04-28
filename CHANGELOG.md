@@ -13,6 +13,7 @@
 * 新增 <DayFlow-Current-Activity> 标签注入，动态注入当前细分活动（此刻+刚做完+接下来，约60 token）
 * 新增 get_sub_events 方法，供 DayMind 和 DailySharing 获取细分数据
 * 新增 build_current_sub_activity_injection 方法，供系统提示词注入使用
+* 新增 /今日细分 命令（别名 dayflow_sub、查看细分），查看当前人格今日日程的细分活动
 
 ---
 
@@ -47,10 +48,6 @@
 * 设为 0 时跳过超时覆盖，使用 AstrBot 框架默认超时（约 120 秒）
 * 修复 `call_llm_once` 中 `original_client_timeout` 未初始化的潜在 NameError
 * 移除无效的 `prov.timeout` 修改（仅 `prov.client.timeout` 在运行时被 openai SDK 动态读取，`prov.timeout` 是初始化后不再被框架读取的死属性）
-
----
-
-## v1.4.9 - 2026-04-28
 
 ---
 
@@ -124,7 +121,7 @@
 
 ## v1.4.2 - 2026-04-26
 
-** 修复多日程共存 bug + 调试日志增强**
+**🐛 修复多日程共存 bug + 调试日志增强**
 
 * 修复 save_schedule 引用共享问题：memory_store 直接存储原始 dict 引用，history_store 浅拷贝但 meta 子字典仍共享，改为显式深拷贝 data 和 meta
 * save_schedule 新增旧条目移除计数日志，便于追踪同日覆盖情况
