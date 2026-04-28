@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.5.1 - 2026-04-28
+
+**🐛 修复串行路径最终兜底未传递 best_partial**
+
+* 修复单提供商（串行）路径中 `_try_final_fallback` 两处调用未传递 `best_partial` 参数的问题
+* 校验失败路径：构建 `serial_best_partial` 传递 raw_text 和 reason，使兜底提供商能利用部分成功结果构建修复提示词
+* 异常路径：构建 `exception_best_partial` 传递异常信息
+
+**🔧 增强最终兜底提供商重试能力**
+
+* `_try_final_fallback` 新增 `max_repair_retries` 参数（默认1），支持修复重试循环
+* 原来只尝试一次（retry_count=0），现在默认有1次修复重试机会，提高兜底成功率
+
+---
+
 ## v1.5.0 - 2026-04-28
 
 **🛡️ 最终兜底提供商**
