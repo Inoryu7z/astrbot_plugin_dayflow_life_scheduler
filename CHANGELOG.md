@@ -1,6 +1,13 @@
 # Changelog
 
-## v1.4.9 - 2026-04-28
+## v1.5.0 - 2026-04-28
+
+**🛡️ 最终兜底提供商**
+
+* 新增全局配置项 `final_fallback_provider`，当所有竞速提供商和对话提供商都失败后，使用此提供商进行最后一次尝试
+* 兜底尝试只执行一次，不进行 repair 重试，若失败则真正失败
+* 兜底尝试会利用竞速阶段的 best_partial 信息构建 repair prompt（如果有）
+* 适用于竞速提供商和对话提供商都是高失败率模型的场景
 
 **⚙️ LLM 超时时间可配置化**
 
@@ -8,6 +15,10 @@
 * 设为 0 时跳过超时覆盖，使用 AstrBot 框架默认超时（约 120 秒）
 * 修复 `call_llm_once` 中 `original_client_timeout` 未初始化的潜在 NameError
 * 移除无效的 `prov.timeout` 修改（仅 `prov.client.timeout` 在运行时被 openai SDK 动态读取，`prov.timeout` 是初始化后不再被框架读取的死属性）
+
+---
+
+## v1.4.9 - 2026-04-28
 
 ---
 
