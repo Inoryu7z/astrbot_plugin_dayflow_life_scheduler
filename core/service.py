@@ -858,14 +858,11 @@ class DayflowService:
                 if not data.get("meta", {}).get("error"):
                     enable_subdivision = bool(persona.get("enable_subdivision", False))
                     if enable_subdivision:
-                        sub_provider_id = str(persona.get("subdivision_provider") or "").strip() or None
-                        if not sub_provider_id:
-                            sub_provider_id = str(data.get("meta", {}).get("provider_id") or "").strip() or None
                         sub_events = await self._generate_subdivision(
                             result=data,
                             persona_name=configured_persona_name,
                             persona_desc=persona_ctx.get("persona_desc") or "",
-                            provider_id=sub_provider_id,
+                            persona=persona,
                         )
                         if sub_events:
                             data["sub_events"] = sub_events
@@ -1954,7 +1951,8 @@ class DayflowService:
         result: dict,
         persona_name: str,
         persona_desc: str,
-        provider_id: str | None,
+        persona: dict,
+        event=None,
     ) -> list | None:
         timeline = result.get("timeline")
         if not isinstance(timeline, list) or not timeline:
@@ -1990,9 +1988,73 @@ class DayflowService:
         )
 
         try:
-            raw_text = await self.call_llm_once(prompt, provider_id)
+            select_providers = persona.get("select_providers") or []
+            configured_provider_id = select_providers[0] if select_providers else None
+            session_provider_id = await self._resolve_session_provider_id(event)
+            default_provider_id = await self._get_default_provider_id()
+
+            if len(select_providers) <= 1:
+                primary_provider_id = configured_provider_id or session_provider_id or default_provider_id
+                fallback_candidates = []
+                if configured_provider_id:
+                    if session_provider_id and session_provider_id != configured_provider_id:
+                        fallback_candidates.append(session_provider_id)
+                    if default_provider_id and default_provider_id != configured_provider_id and default_provider_id != session_provider_id:
+                        fallback_candidates.append(default_provider_id)
+                elif session_provider_id:
+                    if default_provider_id and default_provider_id != session_provider_id:
+                        fallback_candidates.append(default_provider_id)
+                fallback_provider_id = fallback_candidates[0] if fallback_candidates else None
+
+                raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
+                    prompt, primary_provider_id, fallback_provider_id, retry_count=0,
+                )
+            else:
+                seen = set()
+                deduped_providers = []
+                for pid in select_providers:
+                    if pid and pid not in seen:
+                        seen.add(pid)
+                        deduped_providers.append(pid)
+
+                best_raw_text = ""
+                best_provider_id = None
+                for pid in deduped_providers:
+                    try:
+                        text = await self.call_llm_once(prompt, pid)
+                        if text:
+                            parsed = safe_json_loads(text)
+                            if isinstance(parsed, dict):
+                                sub_events = parsed.get("sub_events")
+                                if isinstance(sub_events, list):
+                                    ok, reason = validate_sub_events(sub_events, timeline)
+                                    if ok:
+                                        logger.info(f"[dayflow-subdivision] racing winner={pid} for persona={persona_name}")
+                                        return sub_events
+                            if not best_raw_text:
+                                best_raw_text = text
+                                best_provider_id = pid
+                    except Exception as e:
+                        logger.debug(f"[dayflow-subdivision] racing provider={pid} failed: {e}")
+                        continue
+
+                fallback_pid = session_provider_id or default_provider_id
+                if fallback_pid:
+                    try:
+                        raw_text, actual_pid = await self.call_llm_with_provider_fallback(
+                            prompt, fallback_pid, None, retry_count=0,
+                        )
+                        if raw_text:
+                            best_raw_text = raw_text
+                            best_provider_id = actual_pid
+                    except Exception:
+                        pass
+
+                raw_text = best_raw_text
+                actual_provider_id = best_provider_id
+
             if not raw_text:
-                logger.warning(f"[dayflow-subdivision] empty response from provider={provider_id}, persona={persona_name}")
+                logger.warning(f"[dayflow-subdivision] empty response for persona={persona_name}")
                 return None
 
             parsed = safe_json_loads(raw_text)
