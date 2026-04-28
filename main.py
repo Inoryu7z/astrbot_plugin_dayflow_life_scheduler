@@ -377,7 +377,46 @@ class DayflowPlugin(Star):
             f"style_research_sources_preview:\n{snapshot.get('style_research_sources_preview', '')}\n\n"
             f"recent_chats_preview:\n{snapshot.get('recent_chats_preview', '')}\n\n"
             f"recent_diaries_preview:\n{snapshot.get('recent_diaries_preview', '')}\n\n"
-            f"enable_subdivision: {snapshot.get('enable_subdivision', False)}\n"
-            f"sub_events_preview:\n{snapshot.get('sub_events_preview', '')}\n\n"
             f"rendered_prompt_preview:\n{snapshot.get('rendered_prompt_preview', '')}"
         )
+
+    @filter.command("今日细分", alias={"dayflow_sub", "查看细分"})
+    async def show_subdivision(self, event: AstrMessageEvent):
+        resolved_ctx = await self.service.resolve_persona_context(event=event)
+        persona_name = resolved_ctx.get("persona_name") if resolved_ctx else None
+        if not persona_name:
+            yield event.plain_result("未识别到人格，无法查看细分")
+            return
+
+        sub_events = self.service.get_sub_events(persona_name)
+        if not sub_events:
+            yield event.plain_result(f"[{persona_name}] 今日无细分数据（未启用细分或细分未生成）")
+            return
+
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        store_key = self.service.normalize_persona_key(persona_name)
+        data = self.service.store.get_schedule_for_date(store_key, today)
+        timeline = data.get("timeline") if data else []
+
+        lines = [f"📋 {persona_name} 今日细分 ({today})", ""]
+        for entry in sub_events:
+            if not isinstance(entry, dict):
+                continue
+            si = entry.get("source_index")
+            items = entry.get("items") or []
+            parent_title = ""
+            if isinstance(si, int) and timeline and 0 <= si < len(timeline):
+                parent_title = str(timeline[si].get("title") or "")
+            lines.append(f"{'─' * 20}")
+            lines.append(f"[{si}] {parent_title}")
+            for item in items:
+                ts = str(item.get("time_start") or "")
+                te = str(item.get("time_end") or "")
+                t = str(item.get("title") or "")
+                d = str(item.get("detail") or "")
+                line = f"  {ts}-{te} {t}"
+                if d:
+                    line += f"（{d}）"
+                lines.append(line)
+
+        yield event.plain_result("\n".join(lines))
