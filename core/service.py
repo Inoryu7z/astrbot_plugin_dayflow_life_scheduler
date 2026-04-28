@@ -1425,13 +1425,14 @@ class DayflowService:
         effective_variation: str,
         style_reference: str,
         best_partial: dict | None = None,
+        max_repair_retries: int = 1,
     ) -> dict | None:
         final_provider_id = self._final_fallback_provider_id()
         if not final_provider_id:
             return None
         logger.info(
             f"[dayflow] attempting final fallback for persona={normalized_persona_name}, "
-            f"final_provider={final_provider_id}"
+            f"final_provider={final_provider_id}, max_repair_retries={max_repair_retries}"
         )
         try:
             final_prompt = prompt
@@ -1449,6 +1450,19 @@ class DayflowService:
             )
             payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
             ok, reason = validate_payload(payload, validate_persona)
+            for attempt in range(1, max_repair_retries + 1):
+                if ok and payload:
+                    break
+                logger.warning(
+                    f"[dayflow] final fallback validation failed for persona={normalized_persona_name}, "
+                    f"provider={final_provider_id}, attempt={attempt}/{max_repair_retries}, reason={reason}"
+                )
+                repair_prompt = build_repair_prompt(final_prompt, raw_text, reason, validate_persona, retry_index=attempt)
+                raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
+                    repair_prompt, final_provider_id, None, retry_count=0,
+                )
+                payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
+                ok, reason = validate_payload(payload, validate_persona)
             if ok and payload:
                 logger.info(
                     f"[dayflow] final fallback succeeded for persona={normalized_persona_name}, "
@@ -1473,7 +1487,7 @@ class DayflowService:
                     validate_persona=validate_persona,
                 )
             logger.warning(
-                f"[dayflow] final fallback validation failed for persona={normalized_persona_name}, "
+                f"[dayflow] final fallback exhausted retries for persona={normalized_persona_name}, "
                 f"provider={final_provider_id}, reason={reason}"
             )
         except Exception as e:
@@ -2079,6 +2093,7 @@ class DayflowService:
                     payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
                     ok, reason = validate_payload(payload, validate_persona)
                 if not ok or not payload:
+                    serial_best_partial = {"payload": None, "provider_id": actual_provider_id, "raw_text": raw_text, "reason": reason}
                     final_result = await self._try_final_fallback(
                         prompt=prompt,
                         normalized_persona_name=normalized_persona_name,
@@ -2095,6 +2110,7 @@ class DayflowService:
                         configured_variation=configured_variation,
                         effective_variation=effective_variation,
                         style_reference=style_reference,
+                        best_partial=serial_best_partial,
                     )
                     if final_result:
                         return final_result
@@ -2122,6 +2138,7 @@ class DayflowService:
                     f"[dayflow] llm generation failed for persona={normalized_persona_name}: {e}, "
                     f"configured_provider={configured_provider_id or 'none'}, session_provider={session_provider_id or 'none'}, target_date={date_str}"
                 )
+                exception_best_partial = {"payload": None, "provider_id": actual_provider_id, "raw_text": "", "reason": str(e)}
                 final_result = await self._try_final_fallback(
                     prompt=prompt,
                     normalized_persona_name=normalized_persona_name,
@@ -2138,6 +2155,7 @@ class DayflowService:
                     configured_variation=configured_variation,
                     effective_variation=effective_variation,
                     style_reference=style_reference,
+                    best_partial=exception_best_partial,
                 )
                 if final_result:
                     return final_result
