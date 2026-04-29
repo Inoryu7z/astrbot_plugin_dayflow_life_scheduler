@@ -116,6 +116,8 @@ class DayflowPlugin(Star):
             presence_level = int(persona_cfg.get("presence_injection_level", 2)) if persona_cfg else 2
             presence_interval = int(persona_cfg.get("presence_min_interval_minutes", 0)) if persona_cfg else 0
 
+            injection_flags = []
+
             presence_body = self.service.build_presence_injection(
                 session_id, level=presence_level, min_interval=presence_interval,
             )
@@ -123,7 +125,7 @@ class DayflowPlugin(Star):
                 req.system_prompt, _ = _remove_presence_injection(req.system_prompt)
                 presence_injection = _build_presence_injection_text(presence_body)
                 req.system_prompt += f"\n\n{presence_injection}"
-                logger.info(f"[dayflow] 已注入存在感: session={session_id}, level={presence_level}")
+                injection_flags.append(f"存在感(L{presence_level})")
 
             today = datetime.datetime.now().strftime("%Y-%m-%d")
             data = await self.service.get_life_context(session_id=session_id, target_date=today)
@@ -131,7 +133,7 @@ class DayflowPlugin(Star):
             injection = _build_injection_text(data)
             if injection:
                 req.system_prompt += f"\n\n{injection}"
-                logger.info(f"[dayflow] 已注入日程: {today}")
+                injection_flags.append("日程")
 
             persona_name_for_sub = resolved_ctx.get("persona_name") if resolved_ctx else None
             if persona_name_for_sub:
@@ -140,7 +142,10 @@ class DayflowPlugin(Star):
                     req.system_prompt, _ = _remove_sub_activity_injection(req.system_prompt)
                     sub_injection = _build_sub_activity_injection_text(sub_activity)
                     req.system_prompt += f"\n\n{sub_injection}"
-                    logger.info(f"[dayflow] 已注入细分活动: persona={persona_name_for_sub}")
+                    injection_flags.append("细分")
+
+            if injection_flags:
+                logger.info(f"[dayflow] 注入: {', '.join(injection_flags)} | session={session_id}")
         except Exception as e:
             logger.warning(f"[dayflow] on_llm_request 注入失败: {e}")
 
@@ -420,3 +425,74 @@ class DayflowPlugin(Star):
                 lines.append(line)
 
         yield event.plain_result("\n".join(lines))
+
+    @filter.command("生成细分", alias={"dayflow_sub_gen", "重新生成细分"})
+    async def generate_subdivision(self, event: AstrMessageEvent):
+        resolved_ctx = await self.service.resolve_persona_context(event=event)
+        persona_name = resolved_ctx.get("persona_name") if resolved_ctx else None
+        if not persona_name:
+            yield event.plain_result("未识别到人格，无法生成细分")
+            return
+
+        if not self.service.is_persona_configured(persona_name, resolved_ctx.get("persona_id") if resolved_ctx else None):
+            yield event.plain_result(f"当前人格未在 Dayflow 中启用：{persona_name}")
+            return
+
+        persona_cfg = self.service.get_persona_config(persona_name) or self.service.cfg.find_persona(persona_name)
+        if not persona_cfg:
+            yield event.plain_result(f"未找到人格配置：{persona_name}")
+            return
+
+        if not bool(persona_cfg.get("enable_subdivision", False)):
+            yield event.plain_result(f"⚠️ {persona_name} 未启用日程细分，请在配置中开启「启用日程细分」")
+            return
+
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        store_key = self.service.normalize_persona_key(persona_name)
+        data = self.service.store.get_schedule_for_date(store_key, today)
+        if not data or data.get("meta", {}).get("error"):
+            yield event.plain_result(f"⚠️ {persona_name} 今日尚无有效日程，请先生成日程")
+            return
+
+        yield event.plain_result(f"🪄 正在为 {persona_name} 重新生成今日细分，请稍候...")
+
+        try:
+            sub_events = await self.service._generate_subdivision(
+                result=data,
+                persona_name=persona_name,
+                persona_desc=resolved_ctx.get("persona_desc") or "",
+                persona=persona_cfg,
+                event=event,
+            )
+            if sub_events:
+                data["sub_events"] = sub_events
+                await self.service.save_generated(store_key, data)
+                logger.info(f"[dayflow] 细分重新生成成功: persona={persona_name}, 子事件数={len(sub_events)}")
+
+                timeline = data.get("timeline") or []
+                lines = [f"✅ {persona_name} 今日细分已重新生成 ({today})", ""]
+                for entry in sub_events:
+                    if not isinstance(entry, dict):
+                        continue
+                    si = entry.get("source_index")
+                    items = entry.get("items") or []
+                    parent_title = ""
+                    if isinstance(si, int) and timeline and 0 <= si < len(timeline):
+                        parent_title = str(timeline[si].get("title") or "")
+                    lines.append(f"{'─' * 20}")
+                    lines.append(f"[{si}] {parent_title}")
+                    for item in items:
+                        ts = str(item.get("time_start") or "")
+                        te = str(item.get("time_end") or "")
+                        t = str(item.get("title") or "")
+                        d = str(item.get("detail") or "")
+                        line = f"  {ts}-{te} {t}"
+                        if d:
+                            line += f"（{d}）"
+                        lines.append(line)
+                yield event.plain_result("\n".join(lines))
+            else:
+                yield event.plain_result(f"⚠️ {persona_name} 细分生成失败，请稍后重试")
+        except Exception as e:
+            logger.warning(f"[dayflow] 生成细分异常: persona={persona_name}: {e}")
+            yield event.plain_result(f"⚠️ 细分生成异常：{e}")

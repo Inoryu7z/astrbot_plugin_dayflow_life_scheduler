@@ -30,8 +30,6 @@ class GenerationContext:
     date_str: str = ""
     actual_provider_id: str | None = None
     configured_provider_id: str | None = None
-    session_provider_id: str | None = None
-    default_provider_id: str | None = None
     effective_session_id: str | None = None
     today_weather: str = ""
     configured_variation: str = ""

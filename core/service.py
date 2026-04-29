@@ -1241,7 +1241,7 @@ class DayflowService:
             else:
                 provider_text = "current_provider"
             lines.append(
-                f"- {item['name']} @ {item.get('generate_time', '07:00')} ({provider_text} -> session_fallback) | 重试:{item.get('retry_count', 2)} | 变化:{item.get('schedule_variation_level', DEFAULT_VARIATION_LEVEL)} | 持久化:{retention_text} | 推送:{len(item.get('push_targets') or [])}个目标"
+                f"- {item['name']} @ {item.get('generate_time', '07:00')} ({provider_text} -> 最终兜底) | 重试:{item.get('retry_count', 2)} | 变化:{item.get('schedule_variation_level', DEFAULT_VARIATION_LEVEL)} | 持久化:{retention_text} | 推送:{len(item.get('push_targets') or [])}个目标"
             )
         return lines
 
@@ -1393,6 +1393,23 @@ class DayflowService:
                         break
         return text
 
+    @staticmethod
+    def _summarize_error(error: Any) -> str:
+        s = str(error)
+        if "Error code: 524" in s:
+            return "Error 524: origin_response_timeout (Cloudflare 120s 超时)"
+        if "Error code: 529" in s:
+            return "Error 529: site_overloaded (Cloudflare 站点过载)"
+        if "Error code: 502" in s:
+            return "Error 502: bad_gateway"
+        if "Error code: 503" in s:
+            return "Error 503: service_unavailable"
+        if "Error code: 429" in s:
+            return "Error 429: rate_limit_exceeded"
+        if len(s) > 300:
+            return s[:300].rstrip() + "…"
+        return s
+
     async def call_llm_with_retries(self, prompt: str, provider_id: str | None, retry_count: int = 0) -> str:
         attempts = max(int(retry_count), 0) + 1
         last_text = ""
@@ -1408,22 +1425,12 @@ class DayflowService:
                 logger.warning(f"[dayflow] LLM 补全为空: provider={provider_id or '会话默认'}, attempt={attempt}/{attempts}")
             except Exception as e:
                 last_error = e
-                logger.warning(f"[dayflow] LLM 调用失败: provider={provider_id or '会话默认'}, attempt={attempt}/{attempts}, error={e}")
+                logger.warning(f"[dayflow] LLM 调用失败: provider={provider_id or '会话默认'}, attempt={attempt}/{attempts}, error={self._summarize_error(e)}")
             if attempt < attempts and self.LLM_RETRY_DELAY_SECONDS > 0:
                 await asyncio.sleep(self.LLM_RETRY_DELAY_SECONDS)
         if last_error is not None:
             raise last_error
         return last_text
-
-    async def _resolve_session_provider_id(self, event=None) -> str | None:
-        if event is None or not hasattr(self.context, "get_current_chat_provider_id"):
-            return None
-        try:
-            provider_id = await self.context.get_current_chat_provider_id(umo=event.unified_msg_origin)
-            return provider_id or None
-        except Exception as e:
-            logger.warning(f"[dayflow] 获取当前聊天提供商 ID 失败: {e}")
-            return None
 
     def _get_provider_id_from_instance(self, provider) -> str | None:
         if provider is None:
@@ -1514,8 +1521,6 @@ class DayflowService:
                     date_str=ctx.date_str,
                     actual_provider_id=actual_provider_id or final_provider_id,
                     configured_provider_id=ctx.configured_provider_id,
-                    session_provider_id=ctx.session_provider_id,
-                    default_provider_id=ctx.default_provider_id,
                     effective_session_id=ctx.effective_session_id,
                     today_weather=ctx.today_weather,
                     configured_variation=ctx.configured_variation,
@@ -1556,8 +1561,7 @@ class DayflowService:
         )
         logger.info(
             f"[dayflow] LLM JSON 日程已生成: persona={ctx.normalized_persona_name}, "
-            f"使用提供商={ctx.actual_provider_id or '会话默认'}, 配置提供商={ctx.configured_provider_id or '无'}, "
-            f"会话提供商={ctx.session_provider_id or '无'}, 默认提供商={ctx.default_provider_id or '无'}, "
+            f"使用提供商={ctx.actual_provider_id or '无'}, 配置提供商={ctx.configured_provider_id or '无'}, "
             f"是否回退={used_fallback}, 会话={ctx.effective_session_id or '无'}, 目标日期={ctx.date_str}"
         )
         return {
@@ -1572,8 +1576,6 @@ class DayflowService:
                 "date": ctx.date_str,
                 "provider_id": ctx.actual_provider_id or "",
                 "configured_provider_id": ctx.configured_provider_id or "",
-                "session_provider_id": ctx.session_provider_id or "",
-                "default_provider_id": ctx.default_provider_id or "",
                 "source_session_id": ctx.effective_session_id or "",
                 "weather": ctx.today_weather,
                 "prompt_template_version": "persona_full_template_v9_timeline_struct",
@@ -1635,7 +1637,7 @@ class DayflowService:
             )
             return {"payload": None, "provider_id": provider_id, "raw_text": last_raw_text, "reason": last_reason}
         except Exception as e:
-            logger.warning(f"[dayflow] 竞速: provider={provider_id} 异常: persona={normalized_persona_name}: {e}")
+            logger.warning(f"[dayflow] 竞速: provider={provider_id} 异常: persona={normalized_persona_name}: {self._summarize_error(e)}")
             return {"payload": None, "provider_id": provider_id, "raw_text": last_raw_text, "reason": str(e)}
 
     async def _race_providers(
@@ -1705,13 +1707,16 @@ class DayflowService:
         if winner is not None:
             winner_pid = winner["provider_id"]
             logger.info(
-                f"[dayflow] 竞速: 胜出者={winner_pid}: persona={normalized_persona_name}, "
-                f"results={provider_results}"
+                f"[dayflow] 竞速: 胜出者={winner_pid}: persona={normalized_persona_name}"
             )
         else:
+            summary_parts = []
+            for pid, status in provider_results.items():
+                short = status if len(status) <= 80 else status[:80].rstrip() + "…"
+                summary_parts.append(f"{pid}={short}")
             logger.warning(
                 f"[dayflow] 竞速: 所有提供商均失败: persona={normalized_persona_name}, "
-                f"results={provider_results}"
+                f"results=[{', '.join(summary_parts)}]"
             )
 
         self._update_debug_payload({
@@ -1764,7 +1769,7 @@ class DayflowService:
                 primary_failed = True
                 logger.warning(
                     f"[dayflow] 主提供商重试耗尽，切换到回退: "
-                    f"provider={primary_provider_id or '会话默认'}, error={e}"
+                    f"provider={primary_provider_id or '会话默认'}, error={self._summarize_error(e)}"
                 )
 
         if fallback_provider_id is not None and (primary_failed or not should_try_primary):
@@ -1777,7 +1782,7 @@ class DayflowService:
                 logger.warning(f"[dayflow] 回退提供商耗尽重试后仍为空: provider={fallback_provider_id}")
             except Exception as e:
                 last_error = e
-                logger.warning(f"[dayflow] 回退提供商失败: provider={fallback_provider_id}, error={e}")
+                logger.warning(f"[dayflow] 回退提供商失败: provider={fallback_provider_id}, error={self._summarize_error(e)}")
 
         if last_error is not None:
             raise last_error
@@ -1994,25 +1999,15 @@ class DayflowService:
         try:
             select_providers = persona.get("select_providers") or []
             configured_provider_id = select_providers[0] if select_providers else None
-            session_provider_id = await self._resolve_session_provider_id(event)
-            default_provider_id = await self._get_default_provider_id()
             final_fallback_id = self._final_fallback_provider_id()
 
             if len(select_providers) <= 1:
-                primary_provider_id = configured_provider_id or session_provider_id or default_provider_id
-                fallback_candidates = []
-                if configured_provider_id:
-                    if session_provider_id and session_provider_id != configured_provider_id:
-                        fallback_candidates.append(session_provider_id)
-                    if default_provider_id and default_provider_id != configured_provider_id and default_provider_id != session_provider_id:
-                        fallback_candidates.append(default_provider_id)
-                elif session_provider_id:
-                    if default_provider_id and default_provider_id != session_provider_id:
-                        fallback_candidates.append(default_provider_id)
-                fallback_provider_id = fallback_candidates[0] if fallback_candidates else None
+                if not configured_provider_id:
+                    logger.warning(f"[dayflow-细分] 未配置提供商: persona={persona_name}")
+                    return None
 
                 raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
-                    prompt, primary_provider_id, fallback_provider_id, retry_count=0,
+                    prompt, configured_provider_id, None, retry_count=0,
                 )
             else:
                 seen = set()
@@ -2081,18 +2076,6 @@ class DayflowService:
                 if winner_sub_events is not None:
                     logger.info(f"[dayflow-细分] 细分生成成功: persona={persona_name}, 子事件数={len(winner_sub_events)}")
                     return winner_sub_events
-
-                fallback_pid = session_provider_id or default_provider_id
-                if fallback_pid:
-                    try:
-                        raw_text, actual_pid = await self.call_llm_with_provider_fallback(
-                            prompt, fallback_pid, None, retry_count=0,
-                        )
-                        if raw_text:
-                            best_raw_text = raw_text
-                            best_provider_id = actual_pid
-                    except Exception:
-                        pass
 
                 raw_text = best_raw_text
                 actual_provider_id = best_provider_id
@@ -2383,32 +2366,22 @@ class DayflowService:
         )
 
         configured_provider_id = (persona.get("select_providers") or [None])[0]
-        session_provider_id = await self._resolve_session_provider_id(event)
-        default_provider_id = await self._get_default_provider_id()
 
         racing_provider_ids = persona.get("select_providers") or []
         if len(racing_provider_ids) <= 1:
             if len(racing_provider_ids) == 1:
                 configured_provider_id = racing_provider_ids[0]
-            primary_provider_id = configured_provider_id or session_provider_id or default_provider_id
-            fallback_candidates = []
-            if configured_provider_id:
-                if session_provider_id and session_provider_id != configured_provider_id:
-                    fallback_candidates.append(session_provider_id)
-                if default_provider_id and default_provider_id != configured_provider_id and default_provider_id != session_provider_id:
-                    fallback_candidates.append(default_provider_id)
-            elif session_provider_id:
-                if default_provider_id and default_provider_id != session_provider_id:
-                    fallback_candidates.append(default_provider_id)
-            fallback_provider_id = fallback_candidates[0] if fallback_candidates else None
+
+            if not configured_provider_id:
+                return build_generation_error_data(normalized_persona_name, validate_persona, "未配置日程生成提供商")
 
             repair_retries = int(persona.get("retry_count", 2) or 2) if auto_retry else 0
-            actual_provider_id = primary_provider_id
+            actual_provider_id = configured_provider_id
             try:
                 raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
                     prompt,
-                    primary_provider_id,
-                    fallback_provider_id,
+                    configured_provider_id,
+                    None,
                     retry_count=0,
                 )
                 payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
@@ -2420,8 +2393,8 @@ class DayflowService:
                     repair_prompt = build_repair_prompt(prompt, raw_text, reason, validate_persona, retry_index=attempt)
                     raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
                         repair_prompt,
-                        primary_provider_id,
-                        fallback_provider_id,
+                        configured_provider_id,
+                        None,
                         retry_count=0,
                     )
                     payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
@@ -2437,8 +2410,6 @@ class DayflowService:
                             core_event_driver=core_event_driver,
                             date_str=date_str,
                             configured_provider_id=configured_provider_id,
-                            session_provider_id=session_provider_id,
-                            default_provider_id=default_provider_id,
                             effective_session_id=effective_session_id,
                             today_weather=today_weather,
                             configured_variation=configured_variation,
@@ -2461,8 +2432,6 @@ class DayflowService:
                         date_str=date_str,
                         actual_provider_id=actual_provider_id,
                         configured_provider_id=configured_provider_id,
-                        session_provider_id=session_provider_id,
-                        default_provider_id=default_provider_id,
                         effective_session_id=effective_session_id,
                         today_weather=today_weather,
                         configured_variation=configured_variation,
@@ -2473,8 +2442,8 @@ class DayflowService:
                 )
             except Exception as e:
                 logger.warning(
-                    f"[dayflow] LLM 生成失败: persona={normalized_persona_name}: {e}, "
-                    f"configured_provider={configured_provider_id or 'none'}, session_provider={session_provider_id or 'none'}, target_date={date_str}"
+                    f"[dayflow] LLM 生成失败: persona={normalized_persona_name}: {self._summarize_error(e)}, "
+                    f"configured_provider={configured_provider_id}, target_date={date_str}"
                 )
                 exception_best_partial = {"payload": None, "provider_id": actual_provider_id, "raw_text": "", "reason": str(e)}
                 final_result = await self._try_final_fallback(
@@ -2486,8 +2455,6 @@ class DayflowService:
                         core_event_driver=core_event_driver,
                         date_str=date_str,
                         configured_provider_id=configured_provider_id,
-                        session_provider_id=session_provider_id,
-                        default_provider_id=default_provider_id,
                         effective_session_id=effective_session_id,
                         today_weather=today_weather,
                         configured_variation=configured_variation,
@@ -2499,7 +2466,7 @@ class DayflowService:
                 )
                 if final_result:
                     return final_result
-                return build_generation_error_data(normalized_persona_name, validate_persona, f"LLM 调用失败: {e}")
+                return build_generation_error_data(normalized_persona_name, validate_persona, f"LLM 调用失败: {self._summarize_error(e)}")
 
         seen = set()
         deduped_providers = []
@@ -2525,103 +2492,7 @@ class DayflowService:
         )
 
         if result is None:
-            logger.warning(f"[dayflow] 竞速所有提供商均失败: persona={normalized_persona_name}，回退到会话/默认提供商")
-            fallback_provider_id = session_provider_id or default_provider_id
-            if fallback_provider_id:
-                try:
-                    fallback_prompt = prompt
-                    if best_partial and best_partial.get("raw_text") and best_partial.get("reason"):
-                        fallback_prompt = build_repair_prompt(
-                            prompt, best_partial["raw_text"], best_partial["reason"],
-                            validate_persona, retry_index=1,
-                        )
-                        logger.info(
-                            f"[dayflow] 回退使用竞速部分结果的修复提示词, "
-                            f"source_provider={best_partial.get('provider_id')}, reason={best_partial.get('reason')}"
-                        )
-                    raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
-                        fallback_prompt, fallback_provider_id, None, retry_count=0,
-                    )
-                    payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
-                    ok, reason = validate_payload(payload, validate_persona)
-                    for attempt in range(1, repair_retries + 1):
-                        if ok and payload:
-                            break
-                        repair_prompt = build_repair_prompt(fallback_prompt, raw_text, reason, validate_persona, retry_index=attempt)
-                        raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
-                            repair_prompt, fallback_provider_id, None, retry_count=0,
-                        )
-                        payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
-                        ok, reason = validate_payload(payload, validate_persona)
-                    if not ok or not payload:
-                        final_result = await self._try_final_fallback(
-                            prompt=prompt,
-                            ctx=GenerationContext(
-                                normalized_persona_name=normalized_persona_name,
-                                outfit_style=outfit_style,
-                                schedule_main_type=schedule_main_type,
-                                core_event_driver=core_event_driver,
-                                date_str=date_str,
-                                configured_provider_id=configured_provider_id,
-                                session_provider_id=session_provider_id,
-                                default_provider_id=default_provider_id,
-                                effective_session_id=effective_session_id,
-                                today_weather=today_weather,
-                                configured_variation=configured_variation,
-                                effective_variation=effective_variation,
-                                style_reference=style_reference,
-                                validate_persona=validate_persona,
-                                best_partial=best_partial,
-                            ),
-                        )
-                        if final_result:
-                            return final_result
-                        return build_generation_error_data(normalized_persona_name, validate_persona, reason or "所有提供商均失败，对话模型也未通过校验")
-                    return self._build_schedule_result(
-                        payload=payload,
-                        ctx=GenerationContext(
-                            normalized_persona_name=normalized_persona_name,
-                            outfit_style=outfit_style,
-                            schedule_main_type=schedule_main_type,
-                            core_event_driver=core_event_driver,
-                            date_str=date_str,
-                            actual_provider_id=actual_provider_id,
-                            configured_provider_id=configured_provider_id,
-                            session_provider_id=session_provider_id,
-                            default_provider_id=default_provider_id,
-                            effective_session_id=effective_session_id,
-                            today_weather=today_weather,
-                            configured_variation=configured_variation,
-                            effective_variation=effective_variation,
-                            style_reference=style_reference,
-                            validate_persona=validate_persona,
-                        ),
-                    )
-                except Exception as e:
-                    logger.warning(f"[dayflow] 回退提供商也失败: persona={normalized_persona_name}, 错误={e}")
-                    final_result = await self._try_final_fallback(
-                        prompt=prompt,
-                        ctx=GenerationContext(
-                            normalized_persona_name=normalized_persona_name,
-                            outfit_style=outfit_style,
-                            schedule_main_type=schedule_main_type,
-                            core_event_driver=core_event_driver,
-                            date_str=date_str,
-                            configured_provider_id=configured_provider_id,
-                            session_provider_id=session_provider_id,
-                            default_provider_id=default_provider_id,
-                            effective_session_id=effective_session_id,
-                            today_weather=today_weather,
-                            configured_variation=configured_variation,
-                            effective_variation=effective_variation,
-                            style_reference=style_reference,
-                            validate_persona=validate_persona,
-                            best_partial=best_partial,
-                        ),
-                    )
-                    if final_result:
-                        return final_result
-                    return build_generation_error_data(normalized_persona_name, validate_persona, f"所有提供商均失败，对话模型也失败: {e}")
+            logger.warning(f"[dayflow] 竞速所有提供商均失败: persona={normalized_persona_name}，尝试最终兜底")
             final_result = await self._try_final_fallback(
                 prompt=prompt,
                 ctx=GenerationContext(
@@ -2631,8 +2502,6 @@ class DayflowService:
                     core_event_driver=core_event_driver,
                     date_str=date_str,
                     configured_provider_id=configured_provider_id,
-                    session_provider_id=session_provider_id,
-                    default_provider_id=default_provider_id,
                     effective_session_id=effective_session_id,
                     today_weather=today_weather,
                     configured_variation=configured_variation,
@@ -2644,7 +2513,7 @@ class DayflowService:
             )
             if final_result:
                 return final_result
-            return build_generation_error_data(normalized_persona_name, validate_persona, "所有提供商均失败，无对话模型可用")
+            return build_generation_error_data(normalized_persona_name, validate_persona, "竞速提供商与兜底提供商均失败")
 
         return self._build_schedule_result(
             payload=result["payload"],
@@ -2656,8 +2525,6 @@ class DayflowService:
                 date_str=date_str,
                 actual_provider_id=result["provider_id"],
                 configured_provider_id=configured_provider_id,
-                session_provider_id=session_provider_id,
-                default_provider_id=default_provider_id,
                 effective_session_id=effective_session_id,
                 today_weather=today_weather,
                 configured_variation=configured_variation,
