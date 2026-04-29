@@ -29,6 +29,7 @@ from .generator import (
 )
 from .schedule_renderer import ScheduleRenderer
 from .store import DayflowStore
+from .utils import GenerationContext, parse_hhmm_to_minutes
 
 
 STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰风格研究助手。你的任务是基于联网搜索结果，为另一个日程生成模型提供低歧义、可执行的穿搭方案。
@@ -384,7 +385,7 @@ class DayflowService:
     ) -> dict[str, str]:
         cache_key = self._frozen_randoms_key(store_key, target_date)
         if cache_key in self._frozen_randoms:
-            logger.info(f"[dayflow] reusing frozen randoms: key={cache_key}, values={self._frozen_randoms[cache_key]}")
+            logger.info(f"[dayflow] 复用冻结随机值: key={cache_key}, values={self._frozen_randoms[cache_key]}")
             return self._frozen_randoms[cache_key]
         today_weather = random.choice(today_weather_pool) if today_weather_pool else "晴，微风，18~26℃"
         outfit_style = random.choice(outfit_styles_pool) if outfit_styles_pool else "自然风"
@@ -399,13 +400,13 @@ class DayflowService:
             "effective_variation": effective_variation,
         }
         self._frozen_randoms[cache_key] = frozen
-        logger.info(f"[dayflow] frozen randoms: key={cache_key}, values={frozen}")
+        logger.info(f"[dayflow] 冻结随机值: key={cache_key}, values={frozen}")
         return frozen
 
     def clear_frozen_randoms(self, store_key: str, target_date: str):
         cache_key = self._frozen_randoms_key(store_key, target_date)
         if cache_key in self._frozen_randoms:
-            logger.info(f"[dayflow] cleared frozen randoms: key={cache_key}")
+            logger.info(f"[dayflow] 已清除冻结随机值: key={cache_key}")
             del self._frozen_randoms[cache_key]
 
     def _cleanup_stale_caches(self):
@@ -414,17 +415,21 @@ class DayflowService:
         for k in stale_keys:
             del self._frozen_randoms[k]
         if stale_keys:
-            logger.info(f"[dayflow] cleaned up {len(stale_keys)} stale frozen_randoms entries")
+            logger.info(f"[dayflow] 已清理 {len(stale_keys)} 条过期 frozen_randoms 条目")
 
         cutoff = datetime.datetime.now() - datetime.timedelta(days=7)
-        stale_sessions = [
-            sid for sid, iso in self._last_interaction_times.items()
-            if iso < cutoff.isoformat()
-        ]
+        stale_sessions = []
+        for sid, iso in self._last_interaction_times.items():
+            try:
+                last_dt = datetime.datetime.fromisoformat(iso)
+                if last_dt < cutoff:
+                    stale_sessions.append(sid)
+            except Exception:
+                stale_sessions.append(sid)
         for sid in stale_sessions:
             del self._last_interaction_times[sid]
         if stale_sessions:
-            logger.info(f"[dayflow] cleaned up {len(stale_sessions)} stale interaction time entries")
+            logger.info(f"[dayflow] 已清理 {len(stale_sessions)} 条过期交互时间条目")
 
     def _load_style_research_cache(self):
         try:
@@ -433,7 +438,7 @@ class DayflowService:
                 if isinstance(data, dict):
                     self._style_research_cache = data
         except Exception as e:
-            logger.warning(f"[dayflow] load style research cache failed: {e}")
+            logger.warning(f"[dayflow] 加载风格研究缓存失败: {e}")
             self._style_research_cache = {}
 
     def _save_style_research_cache(self):
@@ -444,7 +449,7 @@ class DayflowService:
                 encoding="utf-8",
             )
         except Exception as e:
-            logger.warning(f"[dayflow] save style research cache failed: {e}")
+            logger.warning(f"[dayflow] 保存风格研究缓存失败: {e}")
 
     def _is_style_cache_entry_valid(self, entry: dict[str, Any] | None) -> bool:
         if not isinstance(entry, dict):
@@ -576,34 +581,42 @@ class DayflowService:
             lines.extend(f"- {url}" for url in source_urls)
         return "\n".join(lines).strip()
 
-    def _find_grok_plugin(self):
+    def _find_plugin_by_name(self, plugin_name: str, validator=None):
         try:
             stars = self.context.get_all_stars()
         except Exception as e:
-            logger.debug(f"[dayflow] get_all_stars failed when finding grok: {e}")
+            logger.debug(f"[dayflow] get_all_stars 失败（查找 {plugin_name}）: {e}")
             stars = []
         for meta in stars or []:
-            plugin_name = str(getattr(meta, "name", "") or "").strip()
+            meta_name = str(getattr(meta, "name", "") or "").strip()
             root_dir_name = str(getattr(meta, "root_dir_name", "") or "").strip()
             module_path = str(getattr(meta, "module_path", "") or "").strip()
-            if plugin_name != self.GROK_PLUGIN_NAME and root_dir_name != self.GROK_PLUGIN_NAME and self.GROK_PLUGIN_NAME not in module_path:
+            if meta_name != plugin_name and root_dir_name != plugin_name and plugin_name not in module_path:
                 continue
             for attr in ("star", "instance", "plugin", "obj", "star_cls"):
                 candidate = getattr(meta, attr, None)
-                if candidate is not None and hasattr(candidate, "_do_search"):
-                    return candidate
+                if candidate is not None:
+                    if validator is None or validator(candidate):
+                        return candidate
         for star in self._iter_loaded_stars():
             cls_module = getattr(star.__class__, "__module__", "")
-            if self.GROK_PLUGIN_NAME in cls_module and hasattr(star, "_do_search"):
-                return star
+            if plugin_name in cls_module:
+                if validator is None or validator(star):
+                    return star
         return None
+
+    def _find_grok_plugin(self):
+        return self._find_plugin_by_name(
+            self.GROK_PLUGIN_NAME,
+            validator=lambda obj: hasattr(obj, "_do_search"),
+        )
 
     def _build_style_research_query(self, style_name: str, location: str | None = None) -> str:
         template = self._style_research_query_template()
         try:
             query = template.format(style_name=style_name)
         except Exception as e:
-            logger.warning(f"[dayflow] invalid style research query template, fallback to default: {e}")
+            logger.warning(f"[dayflow] 风格研究查询模板无效，回退到默认: {e}")
             query = STYLE_RESEARCH_QUERY_TEMPLATE.format(style_name=style_name)
         if location and str(location).strip():
             query += f" | 同时查询{str(location).strip()}今日真实天气"
@@ -629,12 +642,12 @@ class DayflowService:
                 "style_research_sources_preview": self._render_sources_preview(sources),
                 "style_research_weather": cached_weather,
             })
-            logger.info(f"[dayflow-style-research] cache hit | style={style_name} | weather={cached_weather}")
+            logger.info(f"[dayflow-风格研究] 缓存命中 | style={style_name} | weather={cached_weather}")
             return summary, payload, sources, None, cached_weather
 
         grok = self._find_grok_plugin()
         if grok is None:
-            logger.warning(f"[dayflow] grok plugin not found, skip style research: style={style_name}")
+            logger.warning(f"[dayflow] 未找到 grok 插件，跳过风格研究: style={style_name}")
             return "", {}, [], None, None
 
         query = self._build_style_research_query(style_name, location=location)
@@ -651,9 +664,9 @@ class DayflowService:
                     core_event_drivers_pool=json.dumps(pool_options.get("core_event_drivers", []), ensure_ascii=False),
                 )
             except Exception as e:
-                logger.warning(f"[dayflow] custom schedule intent append format failed: {e}")
+                logger.warning(f"[dayflow] 自定义日程意图追加格式化失败: {e}")
 
-        logger.info(f"[dayflow-style-research] query | style={style_name} | location={location} | query={query}")
+        logger.info(f"[dayflow-风格研究] 查询 | style={style_name} | location={location} | query={query}")
         result = await grok._do_search(query=query, system_prompt=system_prompt, use_retry=True)
 
         sources = list(result.get("sources") or [])
@@ -667,27 +680,27 @@ class DayflowService:
             raw_from_error = str(result.get("raw") or "").strip()
             if raw_from_error:
                 raw_text = raw_from_error
-                logger.warning(f"[dayflow] style research search failed but raw content available, degrading: style={style_name}, error={last_reason}")
+                logger.warning(f"[dayflow] 风格研究搜索失败但原始内容可用，降级处理: style={style_name}, error={last_reason}")
             else:
-                logger.warning(f"[dayflow] style research search failed: style={style_name}, reason={last_reason}")
+                logger.warning(f"[dayflow] 风格研究搜索失败: style={style_name}, reason={last_reason}")
         else:
             raw_text = str(result.get("content") or "").strip()
-            logger.info(f"[dayflow-style-research] raw_response | style={style_name} | content={self._preview_text(raw_text, limit=1600)}")
+            logger.info(f"[dayflow-风格研究] 原始响应 | style={style_name} | content={self._preview_text(raw_text, limit=1600)}")
             parsed = safe_json_loads(raw_text)
             if isinstance(parsed, dict) and parsed.get("definition"):
                 parsed_payload = parsed
             else:
                 last_reason = "研究结果不是有效 JSON"
-                logger.warning(f"[dayflow] style research parse failed: style={style_name}, reason={last_reason}")
+                logger.warning(f"[dayflow] 风格研究解析失败: style={style_name}, reason={last_reason}")
 
         if parsed_payload:
             if extra_requirement and isinstance(parsed_payload.get("intent_overrides"), dict):
                 intent_overrides = parsed_payload.pop("intent_overrides")
-                logger.info(f"[dayflow-style-research] intent_overrides | style={style_name} | overrides={json.dumps(intent_overrides, ensure_ascii=False)}")
+                logger.info(f"[dayflow-风格研究] intent_overrides | style={style_name} | overrides={json.dumps(intent_overrides, ensure_ascii=False)}")
             weather_value = parsed_payload.pop("weather", None)
             if isinstance(weather_value, str) and weather_value.strip():
                 real_weather = weather_value.strip()
-                logger.info(f"[dayflow-style-research] weather | style={style_name} | location={location} | weather={real_weather}")
+                logger.info(f"[dayflow-风格研究] 天气 | style={style_name} | location={location} | weather={real_weather}")
             summary = self._render_style_reference(style_name, parsed_payload, sources)
             self._style_research_cache[cache_key] = {
                 "style_name": style_name,
@@ -700,8 +713,8 @@ class DayflowService:
             }
             self._save_style_research_cache()
             payload_preview = json.dumps(parsed_payload, ensure_ascii=False, indent=2)
-            logger.info(f"[dayflow-style-research] parsed_payload | style={style_name} | payload={self._preview_text(payload_preview, limit=1600)}")
-            logger.info(f"[dayflow-style-research] sources | style={style_name} | sources={self._render_sources_preview(sources)}")
+            logger.info(f"[dayflow-风格研究] 解析结果 | style={style_name} | payload={self._preview_text(payload_preview, limit=1600)}")
+            logger.info(f"[dayflow-风格研究] 来源 | style={style_name} | sources={self._render_sources_preview(sources)}")
             self._update_debug_payload({
                 "style_research_cache_hit": False,
                 "style_research_query_preview": self._preview_text(query, limit=1200),
@@ -711,7 +724,7 @@ class DayflowService:
                 "style_research_sources_preview": self._render_sources_preview(sources),
                 "style_research_weather": real_weather,
             })
-            logger.info(f"[dayflow] style research success(json): style={style_name}, sources={len(sources)}, weather={real_weather}")
+            logger.info(f"[dayflow] 风格研究成功(json): style={style_name}, sources={len(sources)}, weather={real_weather}")
             return summary, parsed_payload, sources, intent_overrides, real_weather
 
         if raw_text:
@@ -735,13 +748,13 @@ class DayflowService:
                 "style_research_sources_preview": self._render_sources_preview(sources),
                 "style_research_weather": None,
             })
-            logger.info(f"[dayflow-style-research] fallback_plain_text | style={style_name} | summary={self._preview_text(summary, limit=1600)}")
-            logger.info(f"[dayflow-style-research] sources | style={style_name} | sources={self._render_sources_preview(sources)}")
-            logger.warning(f"[dayflow] style research downgraded to plain text: style={style_name}, reason={last_reason or '非 JSON 输出'}")
+            logger.info(f"[dayflow-风格研究] 回退纯文本 | style={style_name} | summary={self._preview_text(summary, limit=1600)}")
+            logger.info(f"[dayflow-风格研究] 来源 | style={style_name} | sources={self._render_sources_preview(sources)}")
+            logger.warning(f"[dayflow] 风格研究降级为纯文本: style={style_name}, reason={last_reason or '非 JSON 输出'}")
             return summary, {}, sources, intent_overrides, None
 
         if last_reason:
-            logger.warning(f"[dayflow] style research unavailable: style={style_name}, reason={last_reason}")
+            logger.warning(f"[dayflow] 风格研究不可用: style={style_name}, reason={last_reason}")
         self._update_debug_payload({
             "style_research_cache_hit": False,
             "style_research_query_preview": self._preview_text(query, limit=1200),
@@ -759,8 +772,8 @@ class DayflowService:
         self.store.set_retention_days(self._schedule_retention_days())
         self._load_style_research_cache()
         self._cleanup_stale_caches()
-        logger.info("[dayflow] plugin initialized")
-        logger.info(f"[dayflow] loaded personas: {[p.get('name') for p in self.cfg.personas()]}")
+        logger.info("[dayflow] 插件已初始化")
+        logger.info(f"[dayflow] 已加载人格: {[p.get('name') for p in self.cfg.personas()]}")
         await self.start_scheduler()
 
     async def terminate(self):
@@ -768,14 +781,14 @@ class DayflowService:
         self.store.prune_expired(force=True)
         await self.store.async_save_state()
         self._save_style_research_cache()
-        logger.info("[dayflow] terminated")
+        logger.info("[dayflow] 已终止")
 
     async def start_scheduler(self):
         if self._scheduler_running:
             return
         self._scheduler_running = True
         self.scheduler_task = asyncio.create_task(self._scheduler_loop())
-        logger.info("[dayflow] auto scheduler started")
+        logger.info("[dayflow] 自动调度器已启动")
 
     async def stop_scheduler(self):
         self._scheduler_running = False
@@ -786,7 +799,7 @@ class DayflowService:
             except asyncio.CancelledError:
                 pass
             self.scheduler_task = None
-        logger.info("[dayflow] auto scheduler stopped")
+        logger.info("[dayflow] 自动调度器已停止")
 
     async def _scheduler_loop(self):
         loop_count = 0
@@ -800,7 +813,7 @@ class DayflowService:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning(f"[dayflow] scheduler loop error: {e}")
+                logger.warning(f"[dayflow] 调度循环错误: {e}")
                 await asyncio.sleep(60)
 
     def _parse_hhmm(self, value: str) -> tuple[int, int]:
@@ -836,7 +849,7 @@ class DayflowService:
             if failure_count >= auto_retry_limit + 1:
                 self.store.mark_auto_generation_consumed(store_key, trigger_key)
                 logger.warning(
-                    f"[dayflow] auto generation retry limit reached, stop retrying today: "
+                    f"[dayflow] 自动生成重试已达上限，今日停止重试: "
                     f"persona={configured_persona_name}, trigger={trigger_key}, failures={failure_count}, limit={auto_retry_limit}"
                 )
                 continue
@@ -873,7 +886,7 @@ class DayflowService:
                     self.store.clear_auto_generation_failure(store_key, trigger_key)
                     self.store.mark_auto_generation_consumed(store_key, trigger_key)
                     logger.info(
-                        f"[dayflow] auto generated schedule for persona={configured_persona_name}, "
+                        f"[dayflow] 已自动生成日程: persona={configured_persona_name}, "
                         f"store_key={store_key}, trigger={trigger_key}, session={auto_session_id or 'none'}"
                     )
                 else:
@@ -881,12 +894,12 @@ class DayflowService:
                     if failure_count >= auto_retry_limit + 1:
                         self.store.mark_auto_generation_consumed(store_key, trigger_key)
                         logger.warning(
-                            f"[dayflow] auto generation failed and reached retry limit, stop retrying today: "
+                            f"[dayflow] 自动生成失败且已达重试上限，今日停止重试: "
                             f"persona={configured_persona_name}, trigger={trigger_key}, failures={failure_count}, limit={auto_retry_limit}, reason={data.get('memo', '')}"
                         )
                     else:
                         logger.warning(
-                            f"[dayflow] auto generation failed, will retry later: "
+                            f"[dayflow] 自动生成失败，稍后重试: "
                             f"persona={configured_persona_name}, trigger={trigger_key}, failures={failure_count}/{auto_retry_limit + 1}, reason={data.get('memo', '')}"
                         )
             except Exception as e:
@@ -894,12 +907,12 @@ class DayflowService:
                 if failure_count >= auto_retry_limit + 1:
                     self.store.mark_auto_generation_consumed(store_key, trigger_key)
                     logger.warning(
-                        f"[dayflow] auto generation exception and reached retry limit, stop retrying today: "
+                        f"[dayflow] 自动生成异常且已达重试上限，今日停止重试: "
                         f"persona={configured_persona_name}, trigger={trigger_key}, failures={failure_count}, limit={auto_retry_limit}, error={e}"
                     )
                 else:
                     logger.warning(
-                        f"[dayflow] auto generation failed for persona={configured_persona_name}: {e}, "
+                        f"[dayflow] 自动生成失败: persona={configured_persona_name}: {e}, "
                         f"failures={failure_count}/{auto_retry_limit + 1}, trigger={trigger_key}"
                     )
             finally:
@@ -949,7 +962,7 @@ class DayflowService:
                     conversation = await conv_mgr.get_conversation(effective_session_id, curr_cid)
                     bound_persona_id = getattr(conversation, "persona_id", None) if conversation else None
             except Exception as e:
-                logger.warning(f"[dayflow] read conversation persona failed: {e}")
+                logger.warning(f"[dayflow] 读取会话人格失败: {e}")
 
         if persona_mgr and bound_persona_id:
             try:
@@ -961,7 +974,7 @@ class DayflowService:
                     result.update(extracted)
                     result["source"] = "conversation_persona"
             except Exception as e:
-                logger.warning(f"[dayflow] get_persona by bound persona_id failed: {e}")
+                logger.warning(f"[dayflow] 通过绑定 persona_id 获取人格失败: {e}")
 
         if persona_mgr and target_persona_name and not result["persona_desc"]:
             try:
@@ -983,7 +996,7 @@ class DayflowService:
                     result.update(extracted)
                     result["source"] = "default_persona_v3"
             except Exception as e:
-                logger.warning(f"[dayflow] get_default_persona_v3 failed: {e}")
+                logger.warning(f"[dayflow] 获取默认人格 v3 失败: {e}")
 
         if not result["persona_name"] and target_persona_name:
             result["persona_name"] = target_persona_name
@@ -1000,7 +1013,7 @@ class DayflowService:
             result["persona_desc"] = f"人格：{result['persona_name']}。"
             result["source"] = result["source"] or "fallback_name_only"
             logger.warning(
-                f"[dayflow] persona context fallback to name only: persona={result['persona_name']}, "
+                f"[dayflow] 人格上下文回退到仅名称: persona={result['persona_name']}, "
                 f"session={effective_session_id or ''}, target={target_persona_name or ''}, bound_persona_id={bound_persona_id or ''}"
             )
         return result
@@ -1064,7 +1077,7 @@ class DayflowService:
         if not self.is_persona_configured(resolved_ctx.get("persona_name"), resolved_ctx.get("persona_id")):
             reason = f"人格未在 Dayflow 中启用：{resolved_ctx.get('persona_name') or persona_name or '（未识别人格）'}"
             logger.warning(
-                f"[dayflow] get_life_context rejected unconfigured persona: session={session_id or ''}, "
+                f"[dayflow] get_life_context 拒绝未配置人格: session={session_id or ''}, "
                 f"requested_persona={persona_name or ''}, resolved_persona={resolved_ctx.get('persona_name', '')}, "
                 f"resolved_persona_id={resolved_ctx.get('persona_id', '')}, target_date={effective_date}"
             )
@@ -1092,7 +1105,7 @@ class DayflowService:
                 s = self.store.get_schedule_for_date(ck, effective_date)
                 key_status.append(f"{ck}={'hit' if s and not s.get('meta', {}).get('error') else 'miss'}")
             logger.info(
-                f"[dayflow] get_life_context multi-key lookup: session={session_id or ''}, "
+                f"[dayflow] get_life_context 多键查找: session={session_id or ''}, "
                 f"requested_persona={persona_name or ''}, candidate_keys={candidate_keys}, "
                 f"key_status=[{', '.join(key_status)}], date={effective_date}"
             )
@@ -1101,7 +1114,7 @@ class DayflowService:
             exact_schedule = self.store.get_schedule_for_date(store_key, effective_date)
             if exact_schedule and not exact_schedule.get("meta", {}).get("error"):
                 logger.info(
-                    f"[dayflow] get_life_context hit target schedule: session={session_id or ''}, "
+                    f"[dayflow] get_life_context 命中目标日程: session={session_id or ''}, "
                     f"requested_persona={persona_name or ''}, resolved_persona={resolved_ctx.get('persona_name', '')}, "
                     f"resolved_persona_id={resolved_ctx.get('persona_id', '')}, store_key={store_key}, date={effective_date}"
                 )
@@ -1118,7 +1131,7 @@ class DayflowService:
 
         latest_date = str((latest or {}).get("meta", {}).get("date") or "")
         logger.info(
-            f"[dayflow] get_life_context missing target schedule: session={session_id or ''}, "
+            f"[dayflow] get_life_context 缺少目标日程: session={session_id or ''}, "
             f"requested_persona={persona_name or ''}, resolved_persona={resolved_ctx.get('persona_name', '')}, "
             f"resolved_persona_id={resolved_ctx.get('persona_id', '')}, candidate_keys={candidate_keys}, "
             f"target_date={effective_date}, latest_date={latest_date or 'none'}, returning_fallback=yes"
@@ -1139,7 +1152,7 @@ class DayflowService:
     async def save_generated(self, persona_name: str, data: dict):
         requested_store_key = self.normalize_persona_key(persona_name)
         if data.get("meta", {}).get("error"):
-            logger.warning(f"[dayflow] skip saving error result for persona={requested_store_key}")
+            logger.warning(f"[dayflow] 跳过保存错误结果: persona={requested_store_key}")
             return
 
         saved_date = str((data.get("meta") or {}).get("date") or datetime.datetime.now().strftime("%Y-%m-%d"))
@@ -1152,7 +1165,7 @@ class DayflowService:
             meta_store_key = self.normalize_persona_key(meta_persona_name)
             if meta_store_key != requested_store_key:
                 logger.warning(
-                    f"[dayflow] generated persona key mismatch, use caller key: "
+                    f"[dayflow] 生成的人格键不匹配，使用调用方键: "
                     f"requested={requested_store_key}, meta={meta_persona_name}, normalized_meta={meta_store_key}"
                 )
         store_key = requested_store_key
@@ -1160,7 +1173,7 @@ class DayflowService:
         data["meta"] = meta
         await self.store.save_schedule(store_key, data)
         logger.info(
-            f"[dayflow] schedule saved: store_key={store_key}, date={saved_date}, "
+            f"[dayflow] 日程已保存: store_key={store_key}, date={saved_date}, "
             f"history_count={self.store.get_history_count(store_key)}, "
             f"memory_current_date={self.store.get_memory_date(store_key)}"
         )
@@ -1192,7 +1205,7 @@ class DayflowService:
         if push_image_enabled:
             image_bytes = await self._render_push_image(data, persona_name)
             if image_bytes is None:
-                logger.warning(f"[dayflow] image render failed for persona={persona_name}, fallback to plain text")
+                logger.warning(f"[dayflow] 图片渲染失败: persona={persona_name}，回退到纯文本")
                 text_content = self._render_push_content(data)
         else:
             text_content = self._render_push_content(data)
@@ -1211,9 +1224,9 @@ class DayflowService:
                 else:
                     continue
                 await self.context.send_message(target_umo, chain)
-                logger.info(f"[dayflow] schedule pushed to {target_umo} for persona={persona_name} (image={image_bytes is not None})")
+                logger.info(f"[dayflow] 日程已推送到 {target_umo}: persona={persona_name} (image={image_bytes is not None})")
             except Exception as e:
-                logger.warning(f"[dayflow] push to {target_umo} failed for persona={persona_name}: {e}")
+                logger.warning(f"[dayflow] 推送到 {target_umo} 失败: persona={persona_name}: {e}")
 
     def describe_personas(self) -> list[str]:
         retention = self._schedule_retention_days()
@@ -1236,7 +1249,7 @@ class DayflowService:
         try:
             stars = self.context.get_all_stars()
         except Exception as e:
-            logger.debug(f"[dayflow] get_all_stars failed: {e}")
+            logger.debug(f"[dayflow] get_all_stars 失败: {e}")
             return []
         result = []
         for item in stars or []:
@@ -1262,32 +1275,10 @@ class DayflowService:
         return has_cache or has_scheduler_api
 
     def _find_daymind_plugin(self):
-        try:
-            stars = self.context.get_all_stars()
-        except Exception as e:
-            logger.debug(f"[dayflow] get_all_stars failed when finding daymind: {e}")
-            stars = []
-        for meta in stars or []:
-            plugin_name = str(getattr(meta, "name", "") or "").strip()
-            root_dir_name = str(getattr(meta, "root_dir_name", "") or "").strip()
-            module_path = str(getattr(meta, "module_path", "") or "").strip()
-            for attr in ("star", "instance", "plugin", "obj", "star_cls"):
-                candidate = getattr(meta, attr, None)
-                if plugin_name == "astrbot_plugin_daymind" or root_dir_name == "astrbot_plugin_daymind" or "astrbot_plugin_daymind" in module_path:
-                    if self._is_valid_daymind_instance(candidate):
-                        return candidate
-            star_obj = getattr(meta, "star_cls", None)
-            if star_obj is not None:
-                cls_name = star_obj.__class__.__name__
-                module_name = getattr(star_obj.__class__, "__module__", "")
-                if (cls_name == "DayMindPlugin" or "astrbot_plugin_daymind" in module_name) and self._is_valid_daymind_instance(star_obj):
-                    return star_obj
-        for star in self._iter_loaded_stars():
-            cls_name = star.__class__.__name__
-            module_name = getattr(star.__class__, "__module__", "")
-            if (cls_name == "DayMindPlugin" or "astrbot_plugin_daymind" in module_name) and self._is_valid_daymind_instance(star):
-                return star
-        return None
+        return self._find_plugin_by_name(
+            "astrbot_plugin_daymind",
+            validator=self._is_valid_daymind_instance,
+        )
 
     async def _get_recent_session_id_for_persona(self, persona_name: str | None = None, persona_id: str | None = None) -> str | None:
         daymind = self._find_daymind_plugin()
@@ -1312,7 +1303,7 @@ class DayflowService:
                 if mapped_key == target_key:
                     return session_id
         except Exception as e:
-            logger.warning(f"[dayflow] resolve recent session for persona failed: {e}")
+            logger.warning(f"[dayflow] 解析人格最近会话失败: {e}")
         return None
 
     async def collect_recent_chat_text(self, event=None, persona: dict | None = None, session_id: str | None = None) -> str:
@@ -1332,7 +1323,7 @@ class DayflowService:
                         clipped = recent_messages[-limit:]
                         return "\n".join(f"- {line}" for line in clipped)
                 except Exception as e:
-                    logger.warning(f"[dayflow] read daymind recent messages failed: {e}")
+                    logger.warning(f"[dayflow] 读取 DayMind 近期消息失败: {e}")
         msg = (getattr(event, "message_str", None) or "").strip() if event else ""
         if not msg:
             return "（暂无近期对话参考）"
@@ -1366,7 +1357,7 @@ class DayflowService:
                 lines.append(body)
             return "\n\n".join(lines)
         except Exception as e:
-            logger.warning(f"[dayflow] read daymind diaries failed: {e}")
+            logger.warning(f"[dayflow] 读取 DayMind 日记失败: {e}")
             return f"（读取 DayMind 近日日记失败：{e}）"
 
     async def call_llm_once(self, prompt: str, provider_id: str | None) -> str:
@@ -1374,7 +1365,7 @@ class DayflowService:
         if not effective_id:
             effective_id = await self._get_default_provider_id()
         if not effective_id:
-            raise RuntimeError("[dayflow] no provider available for llm_generate")
+            raise RuntimeError("[dayflow] 无可用提供商")
         prov = self.context.get_provider_by_id(effective_id)
         original_client_timeout = None
         timeout_seconds = self._llm_timeout_seconds()
@@ -1412,12 +1403,12 @@ class DayflowService:
                 last_text = text
                 if text:
                     if attempt > 1:
-                        logger.info(f"[dayflow] llm call retry success: provider={provider_id or 'session_default'}, attempt={attempt}/{attempts}")
+                        logger.info(f"[dayflow] LLM 调用重试成功: provider={provider_id or '会话默认'}, attempt={attempt}/{attempts}")
                     return text
-                logger.warning(f"[dayflow] llm completion empty: provider={provider_id or 'session_default'}, attempt={attempt}/{attempts}")
+                logger.warning(f"[dayflow] LLM 补全为空: provider={provider_id or '会话默认'}, attempt={attempt}/{attempts}")
             except Exception as e:
                 last_error = e
-                logger.warning(f"[dayflow] llm call failed: provider={provider_id or 'session_default'}, attempt={attempt}/{attempts}, error={e}")
+                logger.warning(f"[dayflow] LLM 调用失败: provider={provider_id or '会话默认'}, attempt={attempt}/{attempts}, error={e}")
             if attempt < attempts and self.LLM_RETRY_DELAY_SECONDS > 0:
                 await asyncio.sleep(self.LLM_RETRY_DELAY_SECONDS)
         if last_error is not None:
@@ -1431,7 +1422,7 @@ class DayflowService:
             provider_id = await self.context.get_current_chat_provider_id(umo=event.unified_msg_origin)
             return provider_id or None
         except Exception as e:
-            logger.warning(f"[dayflow] get_current_chat_provider_id failed: {e}")
+            logger.warning(f"[dayflow] 获取当前聊天提供商 ID 失败: {e}")
             return None
 
     def _get_provider_id_from_instance(self, provider) -> str | None:
@@ -1466,138 +1457,108 @@ class DayflowService:
                 if hasattr(pm, "selected_provider_id"):
                     return pm.selected_provider_id or None
         except Exception as e:
-            logger.debug(f"[dayflow] get_default_provider_id failed: {e}")
+            logger.debug(f"[dayflow] 获取默认提供商 ID 失败: {e}")
         return None
 
     async def _try_final_fallback(
         self,
         prompt: str,
-        normalized_persona_name: str,
-        validate_persona: dict,
-        outfit_style: str,
-        schedule_main_type: str,
-        core_event_driver: str,
-        date_str: str,
-        configured_provider_id: str | None,
-        session_provider_id: str | None,
-        default_provider_id: str | None,
-        effective_session_id: str | None,
-        today_weather: str,
-        configured_variation: str,
-        effective_variation: str,
-        style_reference: str,
-        best_partial: dict | None = None,
-        max_repair_retries: int = 1,
+        ctx: GenerationContext,
     ) -> dict | None:
         final_provider_id = self._final_fallback_provider_id()
         if not final_provider_id:
             return None
         logger.info(
-            f"[dayflow] attempting final fallback for persona={normalized_persona_name}, "
-            f"final_provider={final_provider_id}, max_repair_retries={max_repair_retries}"
+            f"[dayflow] 尝试最终回退: persona={ctx.normalized_persona_name}, "
+            f"最终提供商={final_provider_id}, 最大修复重试={ctx.max_repair_retries}"
         )
         try:
             final_prompt = prompt
-            if best_partial and best_partial.get("raw_text") and best_partial.get("reason"):
+            if ctx.best_partial and ctx.best_partial.get("raw_text") and ctx.best_partial.get("reason"):
                 final_prompt = build_repair_prompt(
-                    prompt, best_partial["raw_text"], best_partial["reason"],
-                    validate_persona, retry_index=1,
+                    prompt, ctx.best_partial["raw_text"], ctx.best_partial["reason"],
+                    ctx.validate_persona, retry_index=1,
                 )
                 logger.info(
-                    f"[dayflow] final fallback using repair prompt from partial result, "
-                    f"source_provider={best_partial.get('provider_id')}, reason={best_partial.get('reason')}"
+                    f"[dayflow] 最终回退使用修复提示词: "
+                    f"来源提供商={ctx.best_partial.get('provider_id')}, 原因={ctx.best_partial.get('reason')}"
                 )
             raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
                 final_prompt, final_provider_id, None, retry_count=0,
             )
-            payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
-            ok, reason = validate_payload(payload, validate_persona)
-            for attempt in range(1, max_repair_retries + 1):
+            payload = normalize_payload(safe_json_loads(raw_text), ctx.validate_persona)
+            ok, reason = validate_payload(payload, ctx.validate_persona)
+            for attempt in range(1, ctx.max_repair_retries + 1):
                 if ok and payload:
                     break
                 logger.warning(
-                    f"[dayflow] final fallback validation failed for persona={normalized_persona_name}, "
-                    f"provider={final_provider_id}, attempt={attempt}/{max_repair_retries}, reason={reason}"
+                    f"[dayflow] 最终回退校验失败: persona={ctx.normalized_persona_name}, "
+                    f"提供商={final_provider_id}, 第{attempt}/{ctx.max_repair_retries}次, 原因={reason}"
                 )
-                repair_prompt = build_repair_prompt(final_prompt, raw_text, reason, validate_persona, retry_index=attempt)
+                repair_prompt = build_repair_prompt(final_prompt, raw_text, reason, ctx.validate_persona, retry_index=attempt)
                 raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
                     repair_prompt, final_provider_id, None, retry_count=0,
                 )
-                payload = normalize_payload(safe_json_loads(raw_text), validate_persona)
-                ok, reason = validate_payload(payload, validate_persona)
+                payload = normalize_payload(safe_json_loads(raw_text), ctx.validate_persona)
+                ok, reason = validate_payload(payload, ctx.validate_persona)
             if ok and payload:
                 logger.info(
-                    f"[dayflow] final fallback succeeded for persona={normalized_persona_name}, "
-                    f"provider={actual_provider_id or final_provider_id}"
+                    f"[dayflow] 最终回退成功: persona={ctx.normalized_persona_name}, "
+                    f"提供商={actual_provider_id or final_provider_id}"
                 )
-                return self._build_schedule_result(
-                    payload=payload,
-                    normalized_persona_name=normalized_persona_name,
-                    outfit_style=outfit_style,
-                    schedule_main_type=schedule_main_type,
-                    core_event_driver=core_event_driver,
-                    date_str=date_str,
+                new_ctx = GenerationContext(
+                    normalized_persona_name=ctx.normalized_persona_name,
+                    outfit_style=ctx.outfit_style,
+                    schedule_main_type=ctx.schedule_main_type,
+                    core_event_driver=ctx.core_event_driver,
+                    date_str=ctx.date_str,
                     actual_provider_id=actual_provider_id or final_provider_id,
-                    configured_provider_id=configured_provider_id,
-                    session_provider_id=session_provider_id,
-                    default_provider_id=default_provider_id,
-                    effective_session_id=effective_session_id,
-                    today_weather=today_weather,
-                    configured_variation=configured_variation,
-                    effective_variation=effective_variation,
-                    style_reference=style_reference,
-                    validate_persona=validate_persona,
+                    configured_provider_id=ctx.configured_provider_id,
+                    session_provider_id=ctx.session_provider_id,
+                    default_provider_id=ctx.default_provider_id,
+                    effective_session_id=ctx.effective_session_id,
+                    today_weather=ctx.today_weather,
+                    configured_variation=ctx.configured_variation,
+                    effective_variation=ctx.effective_variation,
+                    style_reference=ctx.style_reference,
+                    validate_persona=ctx.validate_persona,
                 )
+                return self._build_schedule_result(payload=payload, ctx=new_ctx)
             logger.warning(
-                f"[dayflow] final fallback exhausted retries for persona={normalized_persona_name}, "
-                f"provider={final_provider_id}, reason={reason}"
+                f"[dayflow] 最终回退重试耗尽: persona={ctx.normalized_persona_name}, "
+                f"提供商={final_provider_id}, 原因={reason}"
             )
         except Exception as e:
             logger.warning(
-                f"[dayflow] final fallback exception for persona={normalized_persona_name}, "
-                f"provider={final_provider_id}: {e}"
+                f"[dayflow] 最终回退异常: persona={ctx.normalized_persona_name}, "
+                f"提供商={final_provider_id}: {e}"
             )
         return None
 
     def _build_schedule_result(
         self,
         payload: dict,
-        normalized_persona_name: str,
-        outfit_style: str,
-        schedule_main_type: str,
-        core_event_driver: str,
-        date_str: str,
-        actual_provider_id: str | None,
-        configured_provider_id: str | None,
-        session_provider_id: str | None,
-        default_provider_id: str | None,
-        effective_session_id: str | None,
-        today_weather: str,
-        configured_variation: str,
-        effective_variation: str,
-        style_reference: str,
-        validate_persona: dict,
-        racing_provider_ids: list[str] | None = None,
+        ctx: GenerationContext,
     ) -> dict:
-        parsed_style = str(payload.get("outfit_style") or outfit_style).strip()
+        parsed_style = str(payload.get("outfit_style") or ctx.outfit_style).strip()
         outfit = str(payload.get("outfit") or "").strip()
         schedule = str(payload.get("schedule") or "").strip()
         summary = str(payload.get("summary") or "").strip()
         timeline_data = payload.get("timeline")
         if not outfit:
-            return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少 outfit 字段")
+            return build_generation_error_data(ctx.normalized_persona_name, ctx.validate_persona, "JSON 缺少 outfit 字段")
         if not schedule and not timeline_data:
-            return build_generation_error_data(normalized_persona_name, validate_persona, "JSON 缺少 schedule 和 timeline 字段")
+            return build_generation_error_data(ctx.normalized_persona_name, ctx.validate_persona, "JSON 缺少 schedule 和 timeline 字段")
         used_fallback = (
-            actual_provider_id != configured_provider_id
-            and configured_provider_id is not None
-            and actual_provider_id not in (racing_provider_ids or [])
+            ctx.actual_provider_id != ctx.configured_provider_id
+            and ctx.configured_provider_id is not None
+            and ctx.actual_provider_id not in (ctx.racing_provider_ids or [])
         )
         logger.info(
-            f"[dayflow] llm json schedule generated for persona={normalized_persona_name}, "
-            f"provider_used={actual_provider_id or 'session_default'}, configured_provider={configured_provider_id or 'none'}, "
-            f"session_provider={session_provider_id or 'none'}, default_provider={default_provider_id or 'none'}, "
-            f"fallback_used={used_fallback}, session={effective_session_id or 'none'}, target_date={date_str}"
+            f"[dayflow] LLM JSON 日程已生成: persona={ctx.normalized_persona_name}, "
+            f"使用提供商={ctx.actual_provider_id or '会话默认'}, 配置提供商={ctx.configured_provider_id or '无'}, "
+            f"会话提供商={ctx.session_provider_id or '无'}, 默认提供商={ctx.default_provider_id or '无'}, "
+            f"是否回退={used_fallback}, 会话={ctx.effective_session_id or '无'}, 目标日期={ctx.date_str}"
         )
         return {
             "outfit": outfit,
@@ -1605,24 +1566,24 @@ class DayflowService:
             "summary": summary,
             "meta": {
                 "style": parsed_style,
-                "schedule_main_type": schedule_main_type,
-                "core_event_driver": core_event_driver,
-                "persona_name": normalized_persona_name,
-                "date": date_str,
-                "provider_id": actual_provider_id or "",
-                "configured_provider_id": configured_provider_id or "",
-                "session_provider_id": session_provider_id or "",
-                "default_provider_id": default_provider_id or "",
-                "source_session_id": effective_session_id or "",
-                "weather": today_weather,
+                "schedule_main_type": ctx.schedule_main_type,
+                "core_event_driver": ctx.core_event_driver,
+                "persona_name": ctx.normalized_persona_name,
+                "date": ctx.date_str,
+                "provider_id": ctx.actual_provider_id or "",
+                "configured_provider_id": ctx.configured_provider_id or "",
+                "session_provider_id": ctx.session_provider_id or "",
+                "default_provider_id": ctx.default_provider_id or "",
+                "source_session_id": ctx.effective_session_id or "",
+                "weather": ctx.today_weather,
                 "prompt_template_version": "persona_full_template_v9_timeline_struct",
                 "fallback": used_fallback,
-                "variation_configured": configured_variation,
-                "variation_effective": effective_variation,
-                "style_reference": style_reference,
+                "variation_configured": ctx.configured_variation,
+                "variation_effective": ctx.effective_variation,
+                "style_reference": ctx.style_reference,
             },
             "timeline": timeline_data if isinstance(timeline_data, list) and timeline_data else extract_timeline(schedule),
-            "weather": today_weather,
+            "weather": ctx.today_weather,
             "memo": "",
             "long_term_memory": [],
         }
@@ -1649,7 +1610,7 @@ class DayflowService:
                 if ok and payload:
                     break
                 logger.warning(
-                    f"[dayflow] racing: payload validation failed for persona={normalized_persona_name}, "
+                    f"[dayflow] 竞速: 载荷校验失败: persona={normalized_persona_name}, "
                     f"provider={provider_id}, attempt={attempt}, reason={reason}"
                 )
                 repair_prompt = build_repair_prompt(prompt, raw_text, reason, validate_persona, retry_index=attempt)
@@ -1666,15 +1627,15 @@ class DayflowService:
                 timeline_data = payload.get("timeline")
                 if outfit and (schedule or timeline_data):
                     logger.info(
-                        f"[dayflow] racing: provider={actual_provider_id or provider_id} succeeded for persona={normalized_persona_name}"
+                        f"[dayflow] 竞速: provider={actual_provider_id or provider_id} 胜出: persona={normalized_persona_name}"
                     )
                     return {"payload": payload, "provider_id": actual_provider_id or provider_id}
             logger.warning(
-                f"[dayflow] racing: provider={provider_id} failed validation for persona={normalized_persona_name}, reason={reason}"
+                f"[dayflow] 竞速: provider={provider_id} 校验失败: persona={normalized_persona_name}, reason={reason}"
             )
             return {"payload": None, "provider_id": provider_id, "raw_text": last_raw_text, "reason": last_reason}
         except Exception as e:
-            logger.warning(f"[dayflow] racing: provider={provider_id} exception for persona={normalized_persona_name}: {e}")
+            logger.warning(f"[dayflow] 竞速: provider={provider_id} 异常: persona={normalized_persona_name}: {e}")
             return {"payload": None, "provider_id": provider_id, "raw_text": last_raw_text, "reason": str(e)}
 
     async def _race_providers(
@@ -1744,12 +1705,12 @@ class DayflowService:
         if winner is not None:
             winner_pid = winner["provider_id"]
             logger.info(
-                f"[dayflow] racing: winner={winner_pid} for persona={normalized_persona_name}, "
+                f"[dayflow] 竞速: 胜出者={winner_pid}: persona={normalized_persona_name}, "
                 f"results={provider_results}"
             )
         else:
             logger.warning(
-                f"[dayflow] racing: all providers failed for persona={normalized_persona_name}, "
+                f"[dayflow] 竞速: 所有提供商均失败: persona={normalized_persona_name}, "
                 f"results={provider_results}"
             )
 
@@ -1776,7 +1737,7 @@ class DayflowService:
             fallback_provider_id = None
 
         logger.info(
-            f"[dayflow] llm provider strategy: primary={primary_provider_id or 'session_default'}, "
+            f"[dayflow] LLM 提供商策略: primary={primary_provider_id or '会话默认'}, "
             f"fallback={fallback_provider_id or 'none'}, retry_count={max(int(retry_count), 0)}"
         )
 
@@ -1796,27 +1757,27 @@ class DayflowService:
                 last_text = text
                 primary_failed = True
                 logger.warning(
-                    f"[dayflow] primary provider exhausted with empty result, switching to fallback: provider={primary_provider_id or 'session_default'}"
+                    f"[dayflow] 主提供商耗尽重试后仍为空，切换到回退: provider={primary_provider_id or '会话默认'}"
                 )
             except Exception as e:
                 last_error = e
                 primary_failed = True
                 logger.warning(
-                    f"[dayflow] primary provider exhausted retries, switching to fallback: "
-                    f"provider={primary_provider_id or 'session_default'}, error={e}"
+                    f"[dayflow] 主提供商重试耗尽，切换到回退: "
+                    f"provider={primary_provider_id or '会话默认'}, error={e}"
                 )
 
         if fallback_provider_id is not None and (primary_failed or not should_try_primary):
             try:
                 text = await self.call_llm_with_retries(prompt, fallback_provider_id, retry_count=retry_count)
                 if text:
-                    logger.info(f"[dayflow] fallback provider succeeded: provider={fallback_provider_id}")
+                    logger.info(f"[dayflow] 回退提供商成功: provider={fallback_provider_id}")
                     return text, fallback_provider_id
                 last_text = text
-                logger.warning(f"[dayflow] fallback provider exhausted with empty result: provider={fallback_provider_id}")
+                logger.warning(f"[dayflow] 回退提供商耗尽重试后仍为空: provider={fallback_provider_id}")
             except Exception as e:
                 last_error = e
-                logger.warning(f"[dayflow] fallback provider failed: provider={fallback_provider_id}, error={e}")
+                logger.warning(f"[dayflow] 回退提供商失败: provider={fallback_provider_id}, error={e}")
 
         if last_error is not None:
             raise last_error
@@ -1996,14 +1957,15 @@ class DayflowService:
         persona: dict,
         event=None,
     ) -> list | None:
+        logger.info(f"[dayflow-细分] 开始生成细分: persona={persona_name}")
         timeline = result.get("timeline")
         if not isinstance(timeline, list) or not timeline:
-            logger.warning(f"[dayflow-subdivision] no timeline in result, skip subdivision for persona={persona_name}")
+            logger.warning(f"[dayflow-细分] 日程无 timeline，跳过细分: persona={persona_name}")
             return None
 
         draft_skeleton = build_draft_skeleton(timeline)
         if not draft_skeleton:
-            logger.warning(f"[dayflow-subdivision] empty draft_skeleton, skip subdivision for persona={persona_name}")
+            logger.warning(f"[dayflow-细分] 骨架为空，跳过细分: persona={persona_name}")
             return None
 
         meta = result.get("meta") or {}
@@ -2060,9 +2022,7 @@ class DayflowService:
                         seen.add(pid)
                         deduped_providers.append(pid)
 
-                best_raw_text = ""
-                best_provider_id = None
-                for pid in deduped_providers:
+                async def _try_single_provider(pid: str) -> tuple[str, str | None] | None:
                     try:
                         text = await self.call_llm_once(prompt, pid)
                         if text:
@@ -2072,14 +2032,55 @@ class DayflowService:
                                 if isinstance(sub_events, list):
                                     ok, reason = validate_sub_events(sub_events, timeline)
                                     if ok:
-                                        logger.info(f"[dayflow-subdivision] racing winner={pid} for persona={persona_name}")
-                                        return sub_events
-                            if not best_raw_text:
-                                best_raw_text = text
-                                best_provider_id = pid
+                                        return pid, sub_events
+                        return None
                     except Exception as e:
-                        logger.debug(f"[dayflow-subdivision] racing provider={pid} failed: {e}")
-                        continue
+                        logger.debug(f"[dayflow-细分] 竞速提供商 {pid} 失败: {e}")
+                        return None
+
+                tasks = {asyncio.create_task(_try_single_provider(pid)): pid for pid in deduped_providers}
+                winner_sub_events = None
+                best_raw_text = ""
+                best_provider_id = None
+                pending = set(tasks.keys())
+                try:
+                    while pending:
+                        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                        for task in done:
+                            pid = tasks[task]
+                            try:
+                                task_result = task.result()
+                            except Exception:
+                                task_result = None
+                            if task_result is not None:
+                                winner_pid, winner_events = task_result
+                                logger.info(f"[dayflow-细分] 竞速胜出: provider={winner_pid}, persona={persona_name}")
+                                winner_sub_events = winner_events
+                                break
+                            else:
+                                try:
+                                    text = await self.call_llm_once(prompt, pid)
+                                    if text and not best_raw_text:
+                                        best_raw_text = text
+                                        best_provider_id = pid
+                                except Exception:
+                                    pass
+                        if winner_sub_events is not None:
+                            break
+                finally:
+                    for task in list(tasks.keys()):
+                        if not task.done():
+                            task.cancel()
+                    for task in list(tasks.keys()):
+                        if not task.done():
+                            try:
+                                await task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+
+                if winner_sub_events is not None:
+                    logger.info(f"[dayflow-细分] 细分生成成功: persona={persona_name}, 子事件数={len(winner_sub_events)}")
+                    return winner_sub_events
 
                 fallback_pid = session_provider_id or default_provider_id
                 if fallback_pid:
@@ -2097,38 +2098,38 @@ class DayflowService:
                 actual_provider_id = best_provider_id
 
             if not raw_text and final_fallback_id:
-                logger.info(f"[dayflow-subdivision] attempting final fallback provider={final_fallback_id} for persona={persona_name}")
+                logger.info(f"[dayflow-细分] 尝试最终回退提供商: provider={final_fallback_id}, persona={persona_name}")
                 try:
                     raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
                         prompt, final_fallback_id, None, retry_count=0,
                     )
                 except Exception as e:
-                    logger.warning(f"[dayflow-subdivision] final fallback failed for persona={persona_name}: {e}")
+                    logger.warning(f"[dayflow-细分] 最终回退失败: persona={persona_name}, 错误={e}")
 
             if not raw_text:
-                logger.warning(f"[dayflow-subdivision] empty response for persona={persona_name}")
+                logger.warning(f"[dayflow-细分] 无响应: persona={persona_name}")
                 return None
 
             parsed = safe_json_loads(raw_text)
             if not isinstance(parsed, dict):
-                logger.warning(f"[dayflow-subdivision] response is not JSON object, persona={persona_name}")
+                logger.warning(f"[dayflow-细分] 响应非 JSON 对象: persona={persona_name}")
                 return None
 
             sub_events = parsed.get("sub_events")
             if not isinstance(sub_events, list):
-                logger.warning(f"[dayflow-subdivision] sub_events field missing or not array, persona={persona_name}")
+                logger.warning(f"[dayflow-细分] sub_events 字段缺失或非数组: persona={persona_name}")
                 return None
 
             ok, reason = validate_sub_events(sub_events, timeline)
             if not ok:
-                logger.warning(f"[dayflow-subdivision] validation failed for persona={persona_name}: {reason}")
+                logger.warning(f"[dayflow-细分] 校验失败: persona={persona_name}, 原因={reason}")
                 return None
 
-            logger.info(f"[dayflow-subdivision] success for persona={persona_name}, sub_events count={len(sub_events)}")
+            logger.info(f"[dayflow-细分] 细分生成成功: persona={persona_name}, 子事件数={len(sub_events)}")
             return sub_events
 
         except Exception as e:
-            logger.warning(f"[dayflow-subdivision] failed for persona={persona_name}: {e}")
+            logger.warning(f"[dayflow-细分] 细分生成异常: persona={persona_name}, 错误={e}")
             return None
 
     def build_current_sub_activity_injection(self, persona_name: str) -> str | None:
@@ -2167,8 +2168,8 @@ class DayflowService:
 
             current_idx = -1
             for i, (si, item) in enumerate(all_sub_items):
-                start_min = self._parse_hhmm_to_minutes_local(str(item.get("time_start") or ""))
-                end_min = self._parse_hhmm_to_minutes_local(str(item.get("time_end") or ""))
+                start_min = parse_hhmm_to_minutes(str(item.get("time_start") or ""))
+                end_min = parse_hhmm_to_minutes(str(item.get("time_end") or ""))
                 if start_min is not None and end_min is not None:
                     duration = end_min - start_min
                     if duration <= 0:
@@ -2204,21 +2205,8 @@ class DayflowService:
             return "\n".join(lines)
 
         except Exception as e:
-            logger.debug(f"[dayflow] build_current_sub_activity_injection failed: {e}")
+            logger.debug(f"[dayflow] 构建当前子活动注入失败: {e}")
             return None
-
-    @staticmethod
-    def _parse_hhmm_to_minutes_local(time_str: str) -> int | None:
-        try:
-            parts = str(time_str or "").strip().split(":")
-            if len(parts) != 2:
-                return None
-            h, m = int(parts[0]), int(parts[1])
-            if 0 <= h <= 23 and 0 <= m <= 59:
-                return h * 60 + m
-        except Exception:
-            pass
-        return None
 
     def get_sub_events(self, persona_name: str, target_date: str | None = None) -> list | None:
         effective_date = target_date or datetime.datetime.now().strftime("%Y-%m-%d")
@@ -2237,7 +2225,7 @@ class DayflowService:
         effective_date = str(target_date or datetime.datetime.now().strftime("%Y-%m-%d")).strip() or datetime.datetime.now().strftime("%Y-%m-%d")
         if not matched_persona:
             target_persona = persona_ctx.get("persona_name") or persona_name
-            logger.warning(f"[dayflow] reject generation for unconfigured persona={target_persona}")
+            logger.warning(f"[dayflow] 拒绝为未配置人格生成: persona={target_persona}")
             return self._build_persona_not_enabled_data(target_persona, target_date=effective_date)
 
         normalized_persona_name = str(matched_persona.get("name") or self.normalize_persona_key(persona_ctx.get("persona_name"), persona_ctx.get("persona_id"))).strip()
@@ -2294,7 +2282,7 @@ class DayflowService:
 
         if real_weather:
             today_weather = real_weather
-            logger.info(f"[dayflow] real weather override: persona={normalized_persona_name}, location={persona_location}, weather={today_weather}")
+            logger.info(f"[dayflow] 真实天气覆盖: persona={normalized_persona_name}, location={persona_location}, weather={today_weather}")
 
         user_specified_outfit_style = None
         user_specified_outfit_item = None
@@ -2306,7 +2294,7 @@ class DayflowService:
                 if override_weather:
                     real_weather = override_weather
                     today_weather = override_weather
-                    logger.info(f"[dayflow] real weather override (intent override): persona={normalized_persona_name}, location={persona_location}, weather={today_weather}")
+                    logger.info(f"[dayflow] 真实天气覆盖（意图覆盖）: persona={normalized_persona_name}, location={persona_location}, weather={today_weather}")
                 outfit_style = override_style
                 user_specified_outfit_style = override_style
             elif override_style:
@@ -2325,7 +2313,7 @@ class DayflowService:
             if override_adjustments:
                 outfit_adjustments = override_adjustments
             logger.info(
-                f"[dayflow] intent overrides applied: persona={normalized_persona_name}, "
+                f"[dayflow] 意图覆盖已应用: persona={normalized_persona_name}, "
                 f"outfit_style={outfit_style}, outfit_item={user_specified_outfit_item}, "
                 f"main_type={schedule_main_type}, driver={core_event_driver}, adjustments={outfit_adjustments}"
             )
@@ -2363,13 +2351,14 @@ class DayflowService:
             if outfit_adjustments:
                 prompt += f"\n- 穿搭调整：{outfit_adjustments}"
 
-        prompt += build_format_priority_append_prompt(validate_persona := {
+        validate_persona = {
             "outfit_style": outfit_style,
             "schedule_main_type": schedule_main_type,
             "core_event_driver": core_event_driver,
             "today_weather": today_weather,
             "user_specified_outfit_style": user_specified_outfit_style,
-        })
+        }
+        prompt += build_format_priority_append_prompt(validate_persona)
         self._update_debug_payload({
             "persona_name": normalized_persona_name,
             "persona_desc_preview": (replacements["persona_desc"] or "")[:1200],
@@ -2388,7 +2377,7 @@ class DayflowService:
             "rendered_prompt_preview": prompt[:2500],
         })
         logger.info(
-            f"[dayflow-debug] persona={normalized_persona_name} style={outfit_style} "
+            f"[dayflow-调试] persona={normalized_persona_name} style={outfit_style} "
             f"main={schedule_main_type} driver={core_event_driver} variation={configured_variation}->{effective_variation} "
             f"desc_len={len(replacements['persona_desc'] or '')}, session={effective_session_id or 'none'}, target_date={date_str}"
         )
@@ -2427,7 +2416,7 @@ class DayflowService:
                 for attempt in range(1, repair_retries + 1):
                     if ok and payload:
                         break
-                    logger.warning(f"[dayflow] payload validation failed for persona={normalized_persona_name}, attempt={attempt}, reason={reason}")
+                    logger.warning(f"[dayflow] 载荷校验失败: persona={normalized_persona_name}, attempt={attempt}, reason={reason}")
                     repair_prompt = build_repair_prompt(prompt, raw_text, reason, validate_persona, retry_index=attempt)
                     raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
                         repair_prompt,
@@ -2441,8 +2430,57 @@ class DayflowService:
                     serial_best_partial = {"payload": None, "provider_id": actual_provider_id, "raw_text": raw_text, "reason": reason}
                     final_result = await self._try_final_fallback(
                         prompt=prompt,
+                        ctx=GenerationContext(
+                            normalized_persona_name=normalized_persona_name,
+                            outfit_style=outfit_style,
+                            schedule_main_type=schedule_main_type,
+                            core_event_driver=core_event_driver,
+                            date_str=date_str,
+                            configured_provider_id=configured_provider_id,
+                            session_provider_id=session_provider_id,
+                            default_provider_id=default_provider_id,
+                            effective_session_id=effective_session_id,
+                            today_weather=today_weather,
+                            configured_variation=configured_variation,
+                            effective_variation=effective_variation,
+                            style_reference=style_reference,
+                            validate_persona=validate_persona,
+                            best_partial=serial_best_partial,
+                        ),
+                    )
+                    if final_result:
+                        return final_result
+                    return build_generation_error_data(normalized_persona_name, validate_persona, reason or "模型输出未通过校验")
+                return self._build_schedule_result(
+                    payload=payload,
+                    ctx=GenerationContext(
                         normalized_persona_name=normalized_persona_name,
+                        outfit_style=outfit_style,
+                        schedule_main_type=schedule_main_type,
+                        core_event_driver=core_event_driver,
+                        date_str=date_str,
+                        actual_provider_id=actual_provider_id,
+                        configured_provider_id=configured_provider_id,
+                        session_provider_id=session_provider_id,
+                        default_provider_id=default_provider_id,
+                        effective_session_id=effective_session_id,
+                        today_weather=today_weather,
+                        configured_variation=configured_variation,
+                        effective_variation=effective_variation,
+                        style_reference=style_reference,
                         validate_persona=validate_persona,
+                    ),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[dayflow] LLM 生成失败: persona={normalized_persona_name}: {e}, "
+                    f"configured_provider={configured_provider_id or 'none'}, session_provider={session_provider_id or 'none'}, target_date={date_str}"
+                )
+                exception_best_partial = {"payload": None, "provider_id": actual_provider_id, "raw_text": "", "reason": str(e)}
+                final_result = await self._try_final_fallback(
+                    prompt=prompt,
+                    ctx=GenerationContext(
+                        normalized_persona_name=normalized_persona_name,
                         outfit_style=outfit_style,
                         schedule_main_type=schedule_main_type,
                         core_event_driver=core_event_driver,
@@ -2455,52 +2493,9 @@ class DayflowService:
                         configured_variation=configured_variation,
                         effective_variation=effective_variation,
                         style_reference=style_reference,
-                        best_partial=serial_best_partial,
-                    )
-                    if final_result:
-                        return final_result
-                    return build_generation_error_data(normalized_persona_name, validate_persona, reason or "模型输出未通过校验")
-                return self._build_schedule_result(
-                    payload=payload,
-                    normalized_persona_name=normalized_persona_name,
-                    outfit_style=outfit_style,
-                    schedule_main_type=schedule_main_type,
-                    core_event_driver=core_event_driver,
-                    date_str=date_str,
-                    actual_provider_id=actual_provider_id,
-                    configured_provider_id=configured_provider_id,
-                    session_provider_id=session_provider_id,
-                    default_provider_id=default_provider_id,
-                    effective_session_id=effective_session_id,
-                    today_weather=today_weather,
-                    configured_variation=configured_variation,
-                    effective_variation=effective_variation,
-                    style_reference=style_reference,
-                    validate_persona=validate_persona,
-                )
-            except Exception as e:
-                logger.warning(
-                    f"[dayflow] llm generation failed for persona={normalized_persona_name}: {e}, "
-                    f"configured_provider={configured_provider_id or 'none'}, session_provider={session_provider_id or 'none'}, target_date={date_str}"
-                )
-                exception_best_partial = {"payload": None, "provider_id": actual_provider_id, "raw_text": "", "reason": str(e)}
-                final_result = await self._try_final_fallback(
-                    prompt=prompt,
-                    normalized_persona_name=normalized_persona_name,
-                    validate_persona=validate_persona,
-                    outfit_style=outfit_style,
-                    schedule_main_type=schedule_main_type,
-                    core_event_driver=core_event_driver,
-                    date_str=date_str,
-                    configured_provider_id=configured_provider_id,
-                    session_provider_id=session_provider_id,
-                    default_provider_id=default_provider_id,
-                    effective_session_id=effective_session_id,
-                    today_weather=today_weather,
-                    configured_variation=configured_variation,
-                    effective_variation=effective_variation,
-                    style_reference=style_reference,
-                    best_partial=exception_best_partial,
+                        validate_persona=validate_persona,
+                        best_partial=exception_best_partial,
+                    ),
                 )
                 if final_result:
                     return final_result
@@ -2517,7 +2512,7 @@ class DayflowService:
 
         repair_retries = int(persona.get("retry_count", 2) or 2) if auto_retry else 0
         logger.info(
-            f"[dayflow] racing generation for persona={normalized_persona_name}, "
+            f"[dayflow] 竞速生成: persona={normalized_persona_name}, "
             f"providers={deduped_providers}, target_date={date_str}"
         )
 
@@ -2530,7 +2525,7 @@ class DayflowService:
         )
 
         if result is None:
-            logger.warning(f"[dayflow] all racing providers failed for persona={normalized_persona_name}, falling back to session/default provider")
+            logger.warning(f"[dayflow] 竞速所有提供商均失败: persona={normalized_persona_name}，回退到会话/默认提供商")
             fallback_provider_id = session_provider_id or default_provider_id
             if fallback_provider_id:
                 try:
@@ -2541,7 +2536,7 @@ class DayflowService:
                             validate_persona, retry_index=1,
                         )
                         logger.info(
-                            f"[dayflow] fallback using repair prompt from racing partial result, "
+                            f"[dayflow] 回退使用竞速部分结果的修复提示词, "
                             f"source_provider={best_partial.get('provider_id')}, reason={best_partial.get('reason')}"
                         )
                     raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
@@ -2561,8 +2556,53 @@ class DayflowService:
                     if not ok or not payload:
                         final_result = await self._try_final_fallback(
                             prompt=prompt,
+                            ctx=GenerationContext(
+                                normalized_persona_name=normalized_persona_name,
+                                outfit_style=outfit_style,
+                                schedule_main_type=schedule_main_type,
+                                core_event_driver=core_event_driver,
+                                date_str=date_str,
+                                configured_provider_id=configured_provider_id,
+                                session_provider_id=session_provider_id,
+                                default_provider_id=default_provider_id,
+                                effective_session_id=effective_session_id,
+                                today_weather=today_weather,
+                                configured_variation=configured_variation,
+                                effective_variation=effective_variation,
+                                style_reference=style_reference,
+                                validate_persona=validate_persona,
+                                best_partial=best_partial,
+                            ),
+                        )
+                        if final_result:
+                            return final_result
+                        return build_generation_error_data(normalized_persona_name, validate_persona, reason or "所有提供商均失败，对话模型也未通过校验")
+                    return self._build_schedule_result(
+                        payload=payload,
+                        ctx=GenerationContext(
                             normalized_persona_name=normalized_persona_name,
+                            outfit_style=outfit_style,
+                            schedule_main_type=schedule_main_type,
+                            core_event_driver=core_event_driver,
+                            date_str=date_str,
+                            actual_provider_id=actual_provider_id,
+                            configured_provider_id=configured_provider_id,
+                            session_provider_id=session_provider_id,
+                            default_provider_id=default_provider_id,
+                            effective_session_id=effective_session_id,
+                            today_weather=today_weather,
+                            configured_variation=configured_variation,
+                            effective_variation=effective_variation,
+                            style_reference=style_reference,
                             validate_persona=validate_persona,
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(f"[dayflow] 回退提供商也失败: persona={normalized_persona_name}, 错误={e}")
+                    final_result = await self._try_final_fallback(
+                        prompt=prompt,
+                        ctx=GenerationContext(
+                            normalized_persona_name=normalized_persona_name,
                             outfit_style=outfit_style,
                             schedule_main_type=schedule_main_type,
                             core_event_driver=core_event_driver,
@@ -2575,60 +2615,46 @@ class DayflowService:
                             configured_variation=configured_variation,
                             effective_variation=effective_variation,
                             style_reference=style_reference,
+                            validate_persona=validate_persona,
                             best_partial=best_partial,
-                        )
-                        if final_result:
-                            return final_result
-                        return build_generation_error_data(normalized_persona_name, validate_persona, reason or "所有提供商均失败，对话模型也未通过校验")
-                    return self._build_schedule_result(
-                        payload=payload,
-                        normalized_persona_name=normalized_persona_name,
-                        outfit_style=outfit_style,
-                        schedule_main_type=schedule_main_type,
-                        core_event_driver=core_event_driver,
-                        date_str=date_str,
-                        actual_provider_id=actual_provider_id,
-                        configured_provider_id=configured_provider_id,
-                        session_provider_id=session_provider_id,
-                        default_provider_id=default_provider_id,
-                        effective_session_id=effective_session_id,
-                        today_weather=today_weather,
-                        configured_variation=configured_variation,
-                        effective_variation=effective_variation,
-                        style_reference=style_reference,
-                        validate_persona=validate_persona,
-                    )
-                except Exception as e:
-                    logger.warning(f"[dayflow] fallback provider also failed for persona={normalized_persona_name}: {e}")
-                    final_result = await self._try_final_fallback(
-                        prompt=prompt,
-                        normalized_persona_name=normalized_persona_name,
-                        validate_persona=validate_persona,
-                        outfit_style=outfit_style,
-                        schedule_main_type=schedule_main_type,
-                        core_event_driver=core_event_driver,
-                        date_str=date_str,
-                        configured_provider_id=configured_provider_id,
-                        session_provider_id=session_provider_id,
-                        default_provider_id=default_provider_id,
-                        effective_session_id=effective_session_id,
-                        today_weather=today_weather,
-                        configured_variation=configured_variation,
-                        effective_variation=effective_variation,
-                        style_reference=style_reference,
-                        best_partial=best_partial,
+                        ),
                     )
                     if final_result:
                         return final_result
                     return build_generation_error_data(normalized_persona_name, validate_persona, f"所有提供商均失败，对话模型也失败: {e}")
             final_result = await self._try_final_fallback(
                 prompt=prompt,
+                ctx=GenerationContext(
+                    normalized_persona_name=normalized_persona_name,
+                    outfit_style=outfit_style,
+                    schedule_main_type=schedule_main_type,
+                    core_event_driver=core_event_driver,
+                    date_str=date_str,
+                    configured_provider_id=configured_provider_id,
+                    session_provider_id=session_provider_id,
+                    default_provider_id=default_provider_id,
+                    effective_session_id=effective_session_id,
+                    today_weather=today_weather,
+                    configured_variation=configured_variation,
+                    effective_variation=effective_variation,
+                    style_reference=style_reference,
+                    validate_persona=validate_persona,
+                    best_partial=best_partial,
+                ),
+            )
+            if final_result:
+                return final_result
+            return build_generation_error_data(normalized_persona_name, validate_persona, "所有提供商均失败，无对话模型可用")
+
+        return self._build_schedule_result(
+            payload=result["payload"],
+            ctx=GenerationContext(
                 normalized_persona_name=normalized_persona_name,
-                validate_persona=validate_persona,
                 outfit_style=outfit_style,
                 schedule_main_type=schedule_main_type,
                 core_event_driver=core_event_driver,
                 date_str=date_str,
+                actual_provider_id=result["provider_id"],
                 configured_provider_id=configured_provider_id,
                 session_provider_id=session_provider_id,
                 default_provider_id=default_provider_id,
@@ -2637,28 +2663,7 @@ class DayflowService:
                 configured_variation=configured_variation,
                 effective_variation=effective_variation,
                 style_reference=style_reference,
-                best_partial=best_partial,
-            )
-            if final_result:
-                return final_result
-            return build_generation_error_data(normalized_persona_name, validate_persona, "所有提供商均失败，无对话模型可用")
-
-        return self._build_schedule_result(
-            payload=result["payload"],
-            normalized_persona_name=normalized_persona_name,
-            outfit_style=outfit_style,
-            schedule_main_type=schedule_main_type,
-            core_event_driver=core_event_driver,
-            date_str=date_str,
-            actual_provider_id=result["provider_id"],
-            configured_provider_id=configured_provider_id,
-            session_provider_id=session_provider_id,
-            default_provider_id=default_provider_id,
-            effective_session_id=effective_session_id,
-            today_weather=today_weather,
-            configured_variation=configured_variation,
-            effective_variation=effective_variation,
-            style_reference=style_reference,
-            validate_persona=validate_persona,
-            racing_provider_ids=deduped_providers,
+                validate_persona=validate_persona,
+                racing_provider_ids=deduped_providers,
+            ),
         )

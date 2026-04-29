@@ -659,14 +659,30 @@ class ScheduleRenderer:
         except TypeError:
             return False
         emoji_ranges = [
-            (0x1F000, 0x1F9FF),
-            (0x1FA00, 0x1FAFF),
-            (0x2600, 0x26FF),
-            (0x2700, 0x27BF),
+            (0x1F000, 0x1F02F),
+            (0x1F0A0, 0x1F0FF),
+            (0x1F100, 0x1F1FF),
+            (0x1F200, 0x1F2FF),
             (0x1F300, 0x1F5FF),
             (0x1F600, 0x1F64F),
+            (0x1F650, 0x1F67F),
             (0x1F680, 0x1F6FF),
+            (0x1F700, 0x1F77F),
+            (0x1F780, 0x1F7FF),
+            (0x1F800, 0x1F8FF),
             (0x1F900, 0x1F9FF),
+            (0x1FA00, 0x1FA6F),
+            (0x1FA70, 0x1FAFF),
+            (0x1FC00, 0x1FCFF),
+            (0x1FD00, 0x1FDFF),
+            (0x1FE00, 0x1FEFF),
+            (0x2600, 0x26FF),
+            (0x2700, 0x27BF),
+            (0x2B50, 0x2B55),
+            (0x2300, 0x23FF),
+            (0x20E3, 0x20E3),
+            (0xFE0F, 0xFE0F),
+            (0x200D, 0x200D),
         ]
         return any(start <= code_point <= end for start, end in emoji_ranges)
 

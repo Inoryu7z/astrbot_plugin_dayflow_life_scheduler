@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.6.1 - 2026-04-29
+
+**🔧 代码质量全面改进 + 日志中文化**
+
+* 修复 `_build_schedule_result` 参数过多（17个）问题：引入 `GenerationContext` dataclass 封装参数
+* 修复 `_try_final_fallback` 参数过多（15个）问题：同样使用 `GenerationContext` 封装
+* 修复 `validate_persona` 使用 walrus 运算符 `:=` 隐式赋值，可读性极差的问题
+* 修复 `_cleanup_stale_caches` 中时间比较使用字符串 `iso < cutoff.isoformat()` 不可靠的问题，改为 `datetime.fromisoformat()` 解析后比较
+* 修复 `_is_emoji` 检测范围不完整问题：从 8 个范围扩展到 24 个，覆盖 Emoji 15.0 全部范围
+* 修复 `save_schedule` 浅拷贝问题：从 `dict(data)` 改为 `copy.deepcopy(data)`，彻底解决嵌套数据共享
+* 消除 `_parse_hhmm_to_minutes` 重复定义：提取到 `core/utils.py` 共享工具模块
+* 统一插件发现机制：提取 `_find_plugin_by_name` 通用方法，消除 `_find_daymind_plugin` 和 `_find_grok_plugin` 的重复逻辑
+* 细分竞速从串行改为并行：`_generate_subdivision` 中多提供商竞速使用 `asyncio.wait(FIRST_COMPLETED)` 并行
+* 细分生成新增完整日志：入口添加 `[dayflow-细分] 开始生成细分` 日志，成功/失败均有明确中文提示
+* 全部英文日志翻译为中文：~140 条日志从英文改为中文，`[dayflow-style-research]` 统一为 `[dayflow-风格研究]`，`[dayflow-subdivision]` 统一为 `[dayflow-细分]`
+* 新增 `core/utils.py` 共享工具模块：包含 `parse_hhmm_to_minutes`、`deep_copy_schedule`、`GenerationContext`
+
+---
+
 ## v1.6.0 - 2026-04-29
 
 **🧩 日程细分骨架（双LLM制）**
