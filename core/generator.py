@@ -353,7 +353,7 @@ def build_generation_error_data(persona_name: str, persona: dict[str, Any], reas
     core_event_driver = persona.get("core_event_driver") or "任务驱动"
     weather = persona.get("today_weather") or ""
     if reason:
-        logger.warning(f"[dayflow] generation error for persona={persona_name}, reason={reason}")
+        logger.warning(f"[dayflow] 生成错误: persona={persona_name}, reason={reason}")
     return {
         "outfit": "",
         "schedule": "",
@@ -375,17 +375,7 @@ def build_generation_error_data(persona_name: str, persona: dict[str, Any], reas
     }
 
 
-def _parse_hhmm_to_minutes(time_str: str) -> int | None:
-    try:
-        parts = str(time_str or "").strip().split(":")
-        if len(parts) != 2:
-            return None
-        h, m = int(parts[0]), int(parts[1])
-        if 0 <= h <= 23 and 0 <= m <= 59:
-            return h * 60 + m
-    except Exception:
-        pass
-    return None
+from .utils import parse_hhmm_to_minutes
 
 
 def build_draft_skeleton(timeline: list[dict]) -> str:
@@ -442,8 +432,8 @@ def validate_sub_events(sub_events: Any, timeline: list[dict]) -> tuple[bool, st
             return False, f"sub_events[{entry_idx}] 有 {len(items)} 个子事件，需 2-4 个"
 
         parent = timeline[source_index]
-        parent_start = _parse_hhmm_to_minutes(str(parent.get("time_start") or ""))
-        parent_end = _parse_hhmm_to_minutes(str(parent.get("time_end") or ""))
+        parent_start = parse_hhmm_to_minutes(str(parent.get("time_start") or ""))
+        parent_end = parse_hhmm_to_minutes(str(parent.get("time_end") or ""))
         if parent_start is None or parent_end is None:
             return False, f"timeline[{source_index}] 的时间格式无效"
         parent_duration = parent_end - parent_start
@@ -454,8 +444,8 @@ def validate_sub_events(sub_events: Any, timeline: list[dict]) -> tuple[bool, st
         for item_idx, item in enumerate(items):
             if not isinstance(item, dict):
                 return False, f"sub_events[{entry_idx}].items[{item_idx}] 不是有效对象"
-            sub_start = _parse_hhmm_to_minutes(str(item.get("time_start") or ""))
-            sub_end = _parse_hhmm_to_minutes(str(item.get("time_end") or ""))
+            sub_start = parse_hhmm_to_minutes(str(item.get("time_start") or ""))
+            sub_end = parse_hhmm_to_minutes(str(item.get("time_end") or ""))
             if sub_start is None or sub_end is None:
                 return False, f"sub_events[{entry_idx}].items[{item_idx}] 的时间格式无效"
             sub_duration = sub_end - sub_start

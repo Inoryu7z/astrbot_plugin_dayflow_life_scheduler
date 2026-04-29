@@ -66,7 +66,7 @@ class DayflowStore:
                 if now - ts > self._generation_stale_timeout
             ]
             for k in stale:
-                logger.warning(f"[dayflow] clearing stale generation lock for persona={k}, held for {now - self.generating_personas[k]:.0f}s")
+                logger.warning(f"[dayflow] 清除过期生成锁: persona={k}, 已持有 {now - self.generating_personas[k]:.0f}s")
                 del self.generating_personas[k]
             if persona_name in self.generating_personas:
                 return False
@@ -78,19 +78,18 @@ class DayflowStore:
             self.generating_personas.pop(persona_name, None)
 
     async def save_schedule(self, store_key: str, data: dict):
-        data_copy = dict(data)
-        meta_copy = dict(data.get("meta") or {})
-        data_copy["meta"] = meta_copy
+        import copy
+        data_copy = copy.deepcopy(data)
         self.memory_store[store_key] = data_copy
-        date_str = str(meta_copy.get("date") or "")
+        date_str = str((data_copy.get("meta") or {}).get("date") or "")
         history = self.history_store.setdefault(store_key, [])
         before_count = len(history)
         history = [item for item in history if str((item.get("meta") or {}).get("date") or item.get("date") or "") != date_str]
         removed_count = before_count - len(history)
-        history.append(dict(data_copy))
+        history.append(copy.deepcopy(data_copy))
         self.history_store[store_key] = history
         if removed_count > 0:
-            logger.info(f"[dayflow] save_schedule: store_key={store_key}, date={date_str}, removed {removed_count} old entry/entries, history now has {len(history)} items")
+            logger.info(f"[dayflow] save_schedule: store_key={store_key}, date={date_str}, 已移除 {removed_count} 条旧记录，历史共 {len(history)} 条")
         self.prune_expired()
         await self.async_save_state()
 
@@ -372,9 +371,9 @@ class DayflowStore:
             saved_retention = payload.get("retention_days")
             if saved_retention is not None:
                 self.retention_days = self._normalize_retention_days(saved_retention)
-            logger.info(f"[dayflow] store loaded: personas={list(self.memory_store.keys())}")
+            logger.info(f"[dayflow] 存储已加载: personas={list(self.memory_store.keys())}")
         except Exception as e:
-            logger.warning(f"[dayflow] load state failed: {e}")
+            logger.warning(f"[dayflow] 加载存储状态失败: {e}")
 
     def _save_state(self):
         with self._save_lock:
@@ -394,7 +393,7 @@ class DayflowStore:
                 tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
                 tmp_path.replace(self.state_file)
             except Exception as e:
-                logger.warning(f"[dayflow] save state failed: {e}")
+                logger.warning(f"[dayflow] 保存存储状态失败: {e}")
 
     async def async_save_state(self):
         await asyncio.to_thread(self._save_state)
