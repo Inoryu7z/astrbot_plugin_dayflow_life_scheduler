@@ -147,6 +147,7 @@ DayFlow 会把已生成的日程保存到本地目录，重启后仍可读取。
 - `/定制日程`：`life_custom`、`dayflow_custom`
 - `/明日日程`：`life_tomorrow`、`dayflow_tomorrow`
 - `/取消明日日程`：`life_cancel_tomorrow`、`dayflow_cancel_tomorrow`
+- `/今日细分`：`dayflow_sub`、`查看细分`
 - `/查看人格日程`：`life_personas`、`dayflow_personas`
 - `/dayflow_debug`：`查看日程调试`、`日程调试`
 
@@ -201,6 +202,7 @@ DayFlow 会把已生成的日程保存到本地目录，重启后仍可读取。
 - `retry_count`：生成失败后的修复重试次数
 - `prompt_template`：人格专用模板；留空则回退到默认模板
 - `schedule_variation_level`：日程变化等级（低 / 中 / 高 / 随机）
+- `enable_subdivision`：启用日程细分（默认 `false`），开启后日程生成成功时会复用同一套提供商逻辑将大骨架时段拆分为更细粒度的活动片段，用于系统提示词注入和 DayMind 思考
 
 ### 参考数量
 
