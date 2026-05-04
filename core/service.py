@@ -871,6 +871,7 @@ class DayflowService:
                     extra_requirement=pending_requirement,
                 )
                 if not data.get("meta", {}).get("error"):
+                    await self.save_generated(store_key, data)
                     enable_subdivision = bool(persona.get("enable_subdivision", False))
                     if enable_subdivision:
                         sub_events = await self._generate_subdivision(
@@ -881,7 +882,7 @@ class DayflowService:
                         )
                         if sub_events:
                             data["sub_events"] = sub_events
-                    await self.save_generated(store_key, data)
+                            await self.save_generated(store_key, data)
                     await self.push_schedule_to_targets(store_key, data)
                     self.store.clear_auto_generation_failure(store_key, trigger_key)
                     self.store.mark_auto_generation_consumed(store_key, trigger_key)
@@ -2000,6 +2001,7 @@ class DayflowService:
             select_providers = persona.get("select_providers") or []
             configured_provider_id = select_providers[0] if select_providers else None
             final_fallback_id = self._final_fallback_provider_id()
+            logger.info(f"[dayflow-细分] 细分提供商配置: persona={persona_name}, 提供商数={len(select_providers)}, 最终回退={final_fallback_id or '无'}")
 
             if len(select_providers) <= 1:
                 if not configured_provider_id:
@@ -2009,6 +2011,10 @@ class DayflowService:
                 raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
                     prompt, configured_provider_id, None, retry_count=0,
                 )
+                if raw_text:
+                    logger.info(f"[dayflow-细分] 单提供商返回成功: provider={actual_provider_id}, persona={persona_name}, 长度={len(raw_text)}")
+                else:
+                    logger.warning(f"[dayflow-细分] 单提供商返回为空: provider={configured_provider_id}, persona={persona_name}")
             else:
                 seen = set()
                 deduped_providers = []
@@ -2016,6 +2022,7 @@ class DayflowService:
                     if pid and pid not in seen:
                         seen.add(pid)
                         deduped_providers.append(pid)
+                logger.info(f"[dayflow-细分] 多提供商竞速模式: persona={persona_name}, 提供商数={len(deduped_providers)}")
 
                 async def _try_single_provider(pid: str) -> tuple[str, str | None] | None:
                     try:
@@ -2077,6 +2084,7 @@ class DayflowService:
                     logger.info(f"[dayflow-细分] 细分生成成功: persona={persona_name}, 子事件数={len(winner_sub_events)}")
                     return winner_sub_events
 
+                logger.info(f"[dayflow-细分] 竞速无胜出: persona={persona_name}, 兜底文本={'有' if best_raw_text else '无'}")
                 raw_text = best_raw_text
                 actual_provider_id = best_provider_id
 
@@ -2086,6 +2094,8 @@ class DayflowService:
                     raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
                         prompt, final_fallback_id, None, retry_count=0,
                     )
+                    if raw_text:
+                        logger.info(f"[dayflow-细分] 最终回退成功: provider={actual_provider_id}, persona={persona_name}, 长度={len(raw_text)}")
                 except Exception as e:
                     logger.warning(f"[dayflow-细分] 最终回退失败: persona={persona_name}, 错误={e}")
 
@@ -2093,6 +2103,7 @@ class DayflowService:
                 logger.warning(f"[dayflow-细分] 无响应: persona={persona_name}")
                 return None
 
+            logger.info(f"[dayflow-细分] 开始解析细分响应: persona={persona_name}, 使用提供商={actual_provider_id}")
             parsed = safe_json_loads(raw_text)
             if not isinstance(parsed, dict):
                 logger.warning(f"[dayflow-细分] 响应非 JSON 对象: persona={persona_name}")

@@ -232,6 +232,7 @@ class DayflowPlugin(Star):
                 collected.append(event.plain_result(f"⚠️ 生成失败：{data.get('memo', '未知错误')}"))
             else:
                 persona_cfg = self.service.get_persona_config(persona_name)
+                await self.service.save_generated(store_key, data)
                 enable_subdivision = bool((persona_cfg or {}).get("enable_subdivision", False))
                 if enable_subdivision:
                     sub_events = await self.service._generate_subdivision(
@@ -243,7 +244,7 @@ class DayflowPlugin(Star):
                     )
                     if sub_events:
                         data["sub_events"] = sub_events
-                await self.service.save_generated(store_key, data)
+                        await self.service.save_generated(store_key, data)
                 current_session = getattr(event, "unified_msg_origin", None)
                 await self.service.push_schedule_to_targets(store_key, data, exclude_umo=current_session)
                 async for result in self._send_schedule_result(event, persona_name, data):

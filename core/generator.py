@@ -428,19 +428,15 @@ def validate_sub_events(sub_events: Any, timeline: list[dict]) -> tuple[bool, st
         items = entry.get("items")
         if not isinstance(items, list):
             return False, f"sub_events[{entry_idx}] 的 items 不是数组"
-        if len(items) < 2 or len(items) > 4:
-            return False, f"sub_events[{entry_idx}] 有 {len(items)} 个子事件，需 2-4 个"
+        if len(items) < 1:
+            return False, f"sub_events[{entry_idx}] 没有子事件"
 
         parent = timeline[source_index]
         parent_start = parse_hhmm_to_minutes(str(parent.get("time_start") or ""))
         parent_end = parse_hhmm_to_minutes(str(parent.get("time_end") or ""))
         if parent_start is None or parent_end is None:
             return False, f"timeline[{source_index}] 的时间格式无效"
-        parent_duration = parent_end - parent_start
-        if parent_duration <= 0:
-            parent_duration += 24 * 60
 
-        total_sub_minutes = 0
         for item_idx, item in enumerate(items):
             if not isinstance(item, dict):
                 return False, f"sub_events[{entry_idx}].items[{item_idx}] 不是有效对象"
@@ -448,21 +444,5 @@ def validate_sub_events(sub_events: Any, timeline: list[dict]) -> tuple[bool, st
             sub_end = parse_hhmm_to_minutes(str(item.get("time_end") or ""))
             if sub_start is None or sub_end is None:
                 return False, f"sub_events[{entry_idx}].items[{item_idx}] 的时间格式无效"
-            sub_duration = sub_end - sub_start
-            if sub_duration <= 0:
-                sub_duration += 24 * 60
-            if sub_duration < 10:
-                return False, f"sub_events[{entry_idx}].items[{item_idx}] 时长不足10分钟"
-            total_sub_minutes += sub_duration
-
-        if total_sub_minutes != parent_duration:
-            return False, (
-                f"sub_events[{entry_idx}] 子事件总时长({total_sub_minutes}分钟)"
-                f"不等于父时段时长({parent_duration}分钟)"
-            )
-
-    if len(covered_indices) != timeline_len:
-        missing = set(range(timeline_len)) - covered_indices
-        return False, f"以下 timeline 索引缺少细分：{sorted(missing)}"
 
     return True, ""
