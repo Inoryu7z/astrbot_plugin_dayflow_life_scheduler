@@ -137,17 +137,19 @@ DayFlow 会把已生成的日程保存到本地目录，重启后仍可读取。
 | `/明日日程 <要求>` | 所有人 | 提前设置明天的定制日程要求，明天自动生成时应用 |
 | `/取消明日日程` | 所有人 | 取消已设置的明日定制日程要求 |
 | `/今日细分` | 所有人 | 查看当前人格今日日程的细分活动（需启用 enable_subdivision） |
+| `/生成细分` | 所有人 | 重新生成当前人格的今日细分活动（需启用 enable_subdivision） |
 | `/查看人格日程` | 所有人 | 查看当前已启用人格、自动生成时间、provider 与重试配置 |
 | `/dayflow_debug` | 管理员 | 输出当前人格的完整上下文、配置池、Grok 风格研究预览、来源预览、渲染后的 prompt 预览等 |
 
 ### 指令别名
 
-- `/查看日程`：`life_show`、`dayflow_show`
+- `/今日日程`：`life_today`、`dayflow_today`
 - `/生成日程`：`life_renew`、`dayflow_gen`
 - `/定制日程`：`life_custom`、`dayflow_custom`
 - `/明日日程`：`life_tomorrow`、`dayflow_tomorrow`
 - `/取消明日日程`：`life_cancel_tomorrow`、`dayflow_cancel_tomorrow`
 - `/今日细分`：`dayflow_sub`、`查看细分`
+- `/生成细分`：`dayflow_sub_gen`、`重新生成细分`
 - `/查看人格日程`：`life_personas`、`dayflow_personas`
 - `/dayflow_debug`：`查看日程调试`、`日程调试`
 
@@ -186,7 +188,9 @@ DayFlow 会把已生成的日程保存到本地目录，重启后仍可读取。
 
 - `default_prompt_template`：默认生成模板
 - `schedule_retention_days`：日程本地保留天数，默认 `3`，填 `-1` 表示不限天数
-- `style_research_retry_count`：风格研究失败时的额外重试次数
+- `llm_timeout_seconds`：LLM 调用超时时间（秒），默认 `900`，设为 `0` 则使用框架默认超时
+- `final_fallback_provider`：最终兜底提供商，当所有竞速提供商都失败后进行最后一次尝试，留空则不启用
+- `custom_schedule_intent_append`：定制日程意图解析追加模板，高级用户可自定义
 - `style_research_system_prompt`：发送给 Grok 的 system prompt，可自定义风格研究输出结构
 - `style_research_query_template`：发送给 Grok 的查询模板，需保留 `{style_name}` 占位符
 
@@ -197,12 +201,14 @@ DayFlow 会把已生成的日程保存到本地目录，重启后仍可读取。
 - `location`：所在地点（如 `"北京市海淀区"`），填写后 Grok 联网研究时会顺便查询该地点当日真实天气并覆盖天气池的随机值；留空则使用天气池随机抽取，适合异世界等虚构人设
 - `presence_injection_level`：存在感注入等级（1=关闭 / 2=仅时间 / 3=引导分享日程 / 4=引导分享日程+心情），默认 `2`
 - `presence_min_interval_minutes`：存在感注入最小间隔（分钟），默认 `0`（始终注入）
-- `provider_id`：该人格使用的模型提供商（失败时可回退到会话 provider）
+- `select_providers`：日程生成提供商（支持多个提供商并行竞速，谁先成功用谁的结果；只填一个则串行生成）
 - `generate_time`：该人格自动生成日程的时间，如 `07:00`
 - `retry_count`：生成失败后的修复重试次数
 - `prompt_template`：人格专用模板；留空则回退到默认模板
 - `schedule_variation_level`：日程变化等级（低 / 中 / 高 / 随机）
 - `enable_subdivision`：启用日程细分（默认 `false`），开启后日程生成成功时会复用同一套提供商逻辑将大骨架时段拆分为更细粒度的活动片段，用于系统提示词注入和 DayMind 思考
+- `push_targets`：日程推送目标（UMO 字符串数组），日程生成后自动推送到指定的聊天会话
+- `push_image_enabled`：推送时渲染为图片（默认 `false`），图片渲染失败时自动降级为纯文本
 
 ### 参考数量
 
@@ -237,6 +243,3 @@ DayFlow 会从以下池中取值注入 Prompt：
 
 ---
 
-## 🛠️ TODO
-
-- [x] 支持在使用 Grok 联网研究时，顺便输出用户指定地点的当天天气（v1.2.7）
