@@ -160,7 +160,7 @@ SUBDIVISION_SYSTEM_PROMPT = """你是日程细分编辑。将以下日程的每�
 
 class DayflowService:
     PLUGIN_NAME = "astrbot_plugin_dayflow_life_scheduler"
-    GROK_PLUGIN_NAME = "astrbot_plugin_grok_web_search"
+    GROK_PLUGIN_NAME = "astrbot_plugin_grok_web_search_Inoryu7z"
     LLM_RETRY_DELAY_SECONDS = 2.0
     STYLE_RESEARCH_CACHE_DAYS = 1
     STYLE_RESEARCH_MAX_CHARS = 1200
