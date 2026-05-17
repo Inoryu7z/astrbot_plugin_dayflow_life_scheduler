@@ -667,7 +667,7 @@ class DayflowService:
                 logger.warning(f"[dayflow] 自定义日程意图追加格式化失败: {e}")
 
         logger.info(f"[dayflow-风格研究] 查询 | style={style_name} | location={location} | query={query}")
-        result = await grok._do_search(query=query, system_prompt=system_prompt, use_retry=True)
+        result = await grok._do_search(query=query, system_prompt=system_prompt, use_retry=True, prefer_quality=True)
 
         sources = list(result.get("sources") or [])
         raw_text = ""
