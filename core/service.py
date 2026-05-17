@@ -42,8 +42,11 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰风格研究助手。你的�
 输出 JSON 对象，字段如下：
 - definition: string，风格定义——这个风格是什么，不是什么，主体风格与辅助元素的关系
 - must_keep: string[]，两套穿搭都必须保留的核心识别点，3-6条
-- morning_look: string[]，晨间第一套穿搭建议，5-8条，每条须包含：具体单品名称+材质+配色+搭配理由
-- afternoon_look: string[]，午后第二套换装建议，5-8条，每条须包含：具体单品名称+材质+配色+搭配理由
+- morning_look: object，晨间第一套穿搭方案，包含：
+  - pieces: string[]，5-8个单品，每个须以穿着类别开头（内搭/外搭/下装/连衣裙/袜子等），后接：具体单品名+材质+具体色名+版型/剪裁+搭配理由
+  - accessories: string[]，2-5个配饰（鞋/包/首饰/发饰等），每个须包含：具体品名+材质+色名+搭配理由
+  - hair_makeup: string，发型与妆容要点，须包含具体发型名称，妆容统一为淡妆（如"低马尾配空气刘海，淡妆"）
+- afternoon_look: object，午后第二套换装方案，结构同 morning_look
 - difference: string[]，两套穿搭之间的关键差异点，3-5条（须具体：如"晨间浅粉系轻盈搭配，午后深酒红系沉稳搭配"，而非"风格场景化变化"）
 - avoid: string[]，常见误判与禁区，3-6条
 - notes: string，补充说明
@@ -51,15 +54,16 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰风格研究助手。你的�
 
 ## 两套穿搭的要求
 1. 必须属于同一风格体系，但必须在视觉上呈现明显差异——不是换件上衣就完事，而是从单品选择、配色深浅、层次搭配、版型轮廓等多维度拉开差距
-2. 两套都应完整覆盖从上到下、从里到外的搭配逻辑，让日程生成模型能直接据此写出完整穿搭描述
+2. 两套都应完整覆盖从上到下、从里到外、从服装到配饰到发妆的完整造型，让日程生成模型能直接据此写出完整穿搭描述
 3. 如果风格是混合风格，两套都须体现主体风格与辅助元素的主辅关系
+4. 材质对比应在 pieces 的搭配理由中自然体现（如"缎面吊带配针织开衫，光泽×哑光对比"），而非生硬凑搭
 
 规则：
 1. 必须输出 JSON 对象，不要输出 Markdown 代码块，不要额外解释
 2. 结果要去重、压缩、边界清晰
 3. 用中文输出"""
 
-STYLE_RESEARCH_QUERY_TEMPLATE = """「{style_name}」穿搭风格 搭配要点 单品推荐 常见误区"""
+STYLE_RESEARCH_QUERY_TEMPLATE = """「{style_name}」穿搭风格 搭配要点 色彩搭配 材质混搭 常见误区"""
 
 CUSTOM_SCHEDULE_INTENT_APPEND = """
 
@@ -163,7 +167,7 @@ class DayflowService:
     GROK_PLUGIN_NAME = "astrbot_plugin_grok_web_search_Inoryu7z"
     LLM_RETRY_DELAY_SECONDS = 2.0
     STYLE_RESEARCH_CACHE_DAYS = 1
-    STYLE_RESEARCH_MAX_CHARS = 1200
+    STYLE_RESEARCH_MAX_CHARS = 2500
 
     def __init__(self, context, config=None):
         self.context = context
@@ -475,7 +479,7 @@ class DayflowService:
     def _normalize_style_key(self, style_name: str) -> str:
         return "".join(str(style_name or "").strip().lower().split())
 
-    def _clip_list(self, value: Any, max_items: int = 6, max_chars: int = 80) -> list[str]:
+    def _clip_list(self, value: Any, max_items: int = 8, max_chars: int = 150) -> list[str]:
         if not isinstance(value, list):
             return []
         result = []
@@ -524,8 +528,6 @@ class DayflowService:
         definition = str(payload.get("definition") or "").strip()
         notes = str(payload.get("notes") or "").strip()
         must_keep = self._clip_list(payload.get("must_keep"), max_items=6)
-        morning_look = self._clip_list(payload.get("morning_look"), max_items=8)
-        afternoon_look = self._clip_list(payload.get("afternoon_look"), max_items=8)
         difference = self._clip_list(payload.get("difference"), max_items=5)
         avoid = self._clip_list(payload.get("avoid"), max_items=6)
         lines = [f"风格名：{style_name}"]
@@ -534,12 +536,25 @@ class DayflowService:
         if must_keep:
             lines.append("两套穿搭都必须保留的核心识别点：")
             lines.extend(f"- {item}" for item in must_keep)
-        if morning_look:
-            lines.append("晨间第一套建议：")
-            lines.extend(f"- {item}" for item in morning_look)
-        if afternoon_look:
-            lines.append("午后第二套换装建议：")
-            lines.extend(f"- {item}" for item in afternoon_look)
+        for label, key in [("晨间第一套", "morning_look"), ("午后第二套", "afternoon_look")]:
+            look = payload.get(key)
+            if isinstance(look, dict):
+                pieces = self._clip_list(look.get("pieces"), max_items=8, max_chars=150)
+                accessories = self._clip_list(look.get("accessories"), max_items=5, max_chars=150)
+                hair_makeup = str(look.get("hair_makeup") or "").strip()
+                if pieces:
+                    lines.append(f"{label}单品：")
+                    lines.extend(f"- {item}" for item in pieces)
+                if accessories:
+                    lines.append(f"{label}配饰：")
+                    lines.extend(f"- {item}" for item in accessories)
+                if hair_makeup:
+                    lines.append(f"{label}发妆：{hair_makeup}")
+            elif isinstance(look, list):
+                clipped = self._clip_list(look, max_items=8, max_chars=150)
+                if clipped:
+                    lines.append(f"{label}建议：")
+                    lines.extend(f"- {item}" for item in clipped)
         if difference:
             lines.append("两套穿搭之间的关键差异：")
             lines.extend(f"- {item}" for item in difference)
