@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.6.4 - 2026-05-17
+
+** 风格研究接入 Grok 质量优先链路**
+
+* 风格研究调用 grok._do_search() 时新增 prefer_quality=True 参数，使后台研究场景走 Grok 插件的质量优先提供商链路（quality_chain），而非速度优先链路
+
+---
+
 ## v1.6.3 - 2026-05-05
 
 **🔧 细分校验放宽 + 日志改进 + save_generated 提前**
