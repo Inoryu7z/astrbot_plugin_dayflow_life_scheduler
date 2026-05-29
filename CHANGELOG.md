@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.6.5 - 2026-05-29
+
+**👗 风格研究防重复机制**
+
+* 新增风格研究防重复机制：当同一风格在近3次日程中出现时，风格研究会获取这些历史穿搭记录，并在产出新穿搭方案时要求做出差异化设计
+* `DayflowStore` 新增 `collect_recent_style_outfits()` 方法：从历史记录中收集同一风格的穿搭数据（晨间穿搭+所有午后换装）
+* `DayflowService` 新增 `_build_style_anti_repetition_append()` 方法：将历史穿搭格式化为防重复提示文本
+* `_research_style_reference()` 新增 `persona_name` 参数：有防重复数据时绕过缓存重新调用风格研究，确保防重复信息被注入
+* 防重复只作用于风格研究提供商（system prompt 追加），不影响主日程生成模型
+
+---
+
 ## v1.6.4 - 2026-05-17
 
 **🔗 风格研究接入 Grok 质量优先链路 + 适配插件重命名**
