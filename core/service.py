@@ -626,6 +626,30 @@ class DayflowService:
             validator=lambda obj: hasattr(obj, "_do_search"),
         )
 
+    def _build_style_anti_repetition_append(self, persona_name: str | None, style_name: str) -> str:
+        if not persona_name:
+            return ""
+        recent_outfits = self.store.collect_recent_style_outfits(persona_name, style_name, max_occurrences=3)
+        if not recent_outfits:
+            return ""
+        lines = [
+            "",
+            "## 近期同风格穿搭记录（防重复）",
+            f"以下是该人格近期穿过「{style_name}」风格的穿搭记录，你本次产出的穿搭方案必须与这些记录做出明显差异——",
+            "在单品选择、配色方案、材质搭配、版型轮廓、配饰选择等维度上均需不同，确保每次同风格穿搭各有辨识度。",
+            "",
+        ]
+        for record in recent_outfits:
+            date_str = record.get("date", "")
+            lines.append(f"### {date_str} 的穿搭")
+            morning = record.get("morning_outfit", "")
+            if morning:
+                lines.append(f"晨间穿搭：{morning}")
+            for i, afternoon in enumerate(record.get("afternoon_outfits", []), 1):
+                lines.append(f"午后换装{i}：{afternoon}")
+            lines.append("")
+        return "\n".join(lines)
+
     def _build_style_research_query(self, style_name: str, location: str | None = None) -> str:
         template = self._style_research_query_template()
         try:
@@ -637,13 +661,15 @@ class DayflowService:
             query += f" | 同时查询{str(location).strip()}今日真实天气"
         return query
 
-    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
+    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
         style_name = str(style_name or "").strip()
         if not style_name:
             return "", {}, [], None, None
         cache_key = self._normalize_style_key(style_name)
+        anti_repetition_append = self._build_style_anti_repetition_append(persona_name, style_name)
+        has_anti_repetition = bool(anti_repetition_append.strip())
         cached = self._style_research_cache.get(cache_key)
-        if self._is_style_cache_entry_valid(cached):
+        if self._is_style_cache_entry_valid(cached) and not has_anti_repetition:
             payload = dict(cached.get("payload") or {})
             sources = list(cached.get("sources") or [])
             summary = str(cached.get("summary") or "")
@@ -667,6 +693,10 @@ class DayflowService:
 
         query = self._build_style_research_query(style_name, location=location)
         system_prompt = self._style_research_system_prompt()
+
+        if has_anti_repetition:
+            system_prompt += anti_repetition_append
+            logger.info(f"[dayflow-风格研究] 防重复追加 | persona={persona_name} | style={style_name} | history_count={len(self.store.collect_recent_style_outfits(persona_name, style_name, max_occurrences=3))}")
 
         intent_overrides = None
         if extra_requirement and pool_options:
@@ -1885,7 +1915,7 @@ class DayflowService:
         core_event_driver = core_event_drivers_pool[0] if core_event_drivers_pool else ""
         configured_variation = persona.get("schedule_variation_level", DEFAULT_VARIATION_LEVEL)
         effective_variation = self._effective_variation_level(configured_variation)
-        style_reference, _, _, _, _ = await self._research_style_reference(outfit_style)
+        style_reference, _, _, _, _ = await self._research_style_reference(outfit_style, persona_name=resolved_name)
         replacements = {
             "date": date_str,
             "date_str": date_str,
@@ -2286,7 +2316,7 @@ class DayflowService:
 
         persona_location = str(persona.get("location") or "").strip()
         style_reference, style_payload, style_sources, intent_overrides, real_weather = await self._research_style_reference(
-            outfit_style, extra_requirement=extra_requirement, pool_options=pool_options, location=persona_location or None,
+            outfit_style, extra_requirement=extra_requirement, pool_options=pool_options, location=persona_location or None, persona_name=normalized_persona_name,
         )
 
         if real_weather:
@@ -2299,7 +2329,7 @@ class DayflowService:
         if intent_overrides:
             override_style = intent_overrides.get("outfit_style")
             if override_style and override_style != outfit_style:
-                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, location=persona_location or None)
+                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, location=persona_location or None, persona_name=normalized_persona_name)
                 if override_weather:
                     real_weather = override_weather
                     today_weather = override_weather

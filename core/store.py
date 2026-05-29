@@ -180,6 +180,39 @@ class DayflowStore:
             )
         return "\n\n".join(parts)
 
+    def _normalize_style_key(self, style_name: str) -> str:
+        return "".join(str(style_name or "").strip().lower().split())
+
+    def collect_recent_style_outfits(self, persona_name: str, style_name: str, max_occurrences: int = 3) -> list[dict]:
+        self.prune_expired()
+        normalized_target = self._normalize_style_key(style_name)
+        if not normalized_target:
+            return []
+        history = self.history_store.get(persona_name, [])
+        results = []
+        for item in reversed(history):
+            converted = self._history_item_to_schedule(persona_name, item) or {}
+            item_style = str(converted.get("outfit_style") or "").strip()
+            if self._normalize_style_key(item_style) != normalized_target:
+                continue
+            date_str = str((converted.get("meta") or {}).get("date") or item.get("date") or "")
+            morning_outfit = str(converted.get("outfit") or "").strip()
+            afternoon_outfits = []
+            timeline = converted.get("timeline")
+            if isinstance(timeline, list):
+                for seg in timeline:
+                    if isinstance(seg, dict) and str(seg.get("outfit_change") or "").strip():
+                        afternoon_outfits.append(str(seg["outfit_change"]).strip())
+            results.append({
+                "date": date_str,
+                "outfit_style": item_style,
+                "morning_outfit": morning_outfit,
+                "afternoon_outfits": afternoon_outfits,
+            })
+            if len(results) >= max_occurrences:
+                break
+        return results
+
     def has_generated_for_date(self, persona_name: str, date_str: str) -> bool:
         return self.get_schedule_for_date(persona_name, date_str) is not None
 
