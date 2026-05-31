@@ -12,7 +12,7 @@ from astrbot.api.message_components import Image as ImageComponent, Plain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .config import DayflowConfig
-from .constants import DEFAULT_VARIATION_LEVEL, STYLE_SUB_VARIANTS, VARIATION_LEVEL_DEFINITIONS
+from .constants import DEFAULT_VARIATION_LEVEL, STYLE_SUB_VARIANTS, SUB_VARIANT_NAME_TO_STYLE, VARIATION_LEVEL_DEFINITIONS
 from .generator import (
     build_draft_skeleton,
     build_format_priority_append_prompt,
@@ -50,11 +50,11 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是�
 输出 JSON 对象，字段如下：
 - definition: string，风格定义——须涵盖核心美学特征与标志性元素、核心搭配逻辑与设计原则。禁止场景适配性描述（如"适合XX场合""营造XX氛围"）
 - morning_look: object，晨间第一套穿搭方案，包含：
-  - pieces: string[]，5-8个单品。每个以穿着类别开头（内搭/外搭/外套/马甲/下装/连衣裙/袜子/腿饰/腰饰），后接单品名、材质与色名；版型与设计细节如有意义则附注。下装应为裙装。袜子为功能型腿部穿着（丝袜、棉袜等），腿饰为装饰型（腿套、腿环等），两者不宜同时出现。禁止实用性描述（如"透气舒适""方便活动""适合XX天气"）
-  - accessories: string[]，2-5个配饰。鞋为必选项（完整造型的必要组成部分），其余从包/首饰/发饰/腰带等中自由选取。每个配饰为独立单品，禁止将多件合并为一条。每个须包含品名、材质和色名，可标注设计细节
+  - pieces: string[]，2个及以上单品，每条为一段完整描述，须涵盖单品名、材质、色名、版型与设计细节，具体到可直接想象出实物。**详尽度分级**：连衣裙、外搭等主体单品描述不少于100字，须包含至少2个具体设计细节（如刺绣图案、装饰件、边缘处理、层次结构等）；内搭、袜子、腰饰等辅助单品不做字数要求，但材质与设计细节仍须具体。袜子为功能型腿部穿着（丝袜、裤袜等），腿饰为装饰型（腿套、腿环等），两者不宜同时出现。禁止实用性描述（如"透气舒适""方便活动""适合XX天气"）
+  - accessories: string[]，1个以上配饰。鞋为必选项（完整造型的必要组成部分），其余从包/首饰/发饰/腰带等中自由选取。每个配饰为独立单品，禁止将多件合并为一条。每个须包含品名、材质和色名，可标注设计细节
   - hair_makeup: string，发型与妆容。分别描述发型和妆容：发型须包含具体名称及特征描述；妆容仅限淡妆（轻透底妆、自然眉形、淡色唇妆），禁止烟熏妆、浓妆、舞台妆等任何非淡妆风格，无论风格如何均不可突破此限制
 - afternoon_look: object，午后第二套换装方案，结构同 morning_look
-- difference: string[]，两套穿搭之间的审美维度差异，3-5条。每条应体现具体的审美维度差异（配色方向/廓形语言/材质情绪/风格倾向），禁止使用实用性理由
+- difference: string[]，两套穿搭之间的审美维度差异，2-5条。每条应体现具体的审美维度差异（配色方向/廓形语言/材质情绪/风格倾向），禁止使用实用性理由
 - weather: string | null，当查询中包含地点信息时，返回该地点今日真实天气，格式为"天气状况，温度范围，风力等细节"（如"多云转晴，18~26℃，东南风3级"）；无地点信息时为 null
 
 ## 洛丽塔风格特殊规范
@@ -564,8 +564,8 @@ class DayflowService:
         for label, key in [("晨间第一套", "morning_look"), ("午后第二套", "afternoon_look")]:
             look = payload.get(key)
             if isinstance(look, dict):
-                pieces = self._clip_list(look.get("pieces"), max_items=8, max_chars=150)
-                accessories = self._clip_list(look.get("accessories"), max_items=5, max_chars=150)
+                pieces = self._clip_list(look.get("pieces"), max_items=8)
+                accessories = self._clip_list(look.get("accessories"), max_items=5)
                 hair_makeup = str(look.get("hair_makeup") or "").strip()
                 if pieces:
                     lines.append(f"{label}单品：")
@@ -576,7 +576,7 @@ class DayflowService:
                 if hair_makeup:
                     lines.append(f"{label}发妆：{hair_makeup}")
             elif isinstance(look, list):
-                clipped = self._clip_list(look, max_items=8, max_chars=150)
+                clipped = self._clip_list(look, max_items=8)
                 if clipped:
                     lines.append(f"{label}建议：")
                     lines.extend(f"- {item}" for item in clipped)
@@ -740,10 +740,15 @@ class DayflowService:
             return ""
         lines = [
             "",
-            "## 推荐子款式（真实经典款）",
-            "以下两款均为该风格下真实存在的经典搭配，经过验证。请严格基于以下描述进行设计，不得偏离描述中的核心特征。",
-            "搜索时以款式名和描述中的关键词为线索，搜索结果用于补充细节（如具体色号、材质工艺），而非替换设计方案。设计必须忠实于描述中的配色、廓形、材质和风格基调。",
-            "禁止将子款式替换为其他风格——如果子款式的描述是甜美系，则不得出现暗黑、哥特、甜酷等偏离风格。子款式池并不全面，你可以在保持核心特征的基础上做微调，但不得改变风格基调。",
+            "## 指定经典款式（强制遵循）",
+            "以下为该风格下两款真实经典搭配的完整描述。你的穿搭设计必须严格基于对应款式的描述，具体要求：",
+            "1. **一一对应**：晨间穿搭（morning_look）必须基于第一款描述设计，午后穿搭（afternoon_look）必须基于第二款描述设计",
+            "2. **忠实还原**：每套穿搭的单品选择、配色方案、廓形结构、装饰细节必须与对应款式描述一致。描述中提到的每个关键元素（如特定领型、特定装饰、特定图案）都必须在输出中体现",
+            "3. **搜索仅补充**：联网搜索仅用于补充描述中未涉及的细节（如具体色号、材质工艺），不得用搜索结果替换款式描述中的任何设计要素",
+            "4. **禁止泛化**：不得将两款经典款泛化为‘同一风格的通用搭配’。两款之间的差异必须来自两款经典款本身的结构性差异（如抹胸vs齐胸、立体玫瑰vs渐变印花），而非仅换色",
+            "5. **禁止风格偏移**：如果款式描述是甜美系，不得出现暗黑、哥特、甜酷等偏离风格",
+            "6. **详尽度对齐**：输出中每个单品的描述详尽度不得低于对应款式描述中同类单品的详尽度。款式描述中提到的装饰细节、图案元素、层次结构必须在输出中逐项体现，不得笼统概括",
+            "7. **格式优先级**：当本段要求与上方输出格式要求冲突时，以本段为准。款式描述中的单品结构和层次优先于通用格式要求，不必强行拆解为穿着类别开头的列举格式",
             "",
         ]
         if all_day and len(variants) == 1:
@@ -805,8 +810,9 @@ class DayflowService:
         cache_key = self._normalize_style_key(style_name)
         anti_repetition_append = self._build_style_anti_repetition_append(persona_name, style_name)
         has_anti_repetition = bool(anti_repetition_append.strip())
+        has_sub_variants = bool(STYLE_SUB_VARIANTS.get(style_name))
         cached = self._style_research_cache.get(cache_key)
-        if self._is_style_cache_entry_valid(cached) and not has_anti_repetition:
+        if self._is_style_cache_entry_valid(cached) and not has_anti_repetition and not has_sub_variants:
             payload = dict(cached.get("payload") or {})
             sources = list(cached.get("sources") or [])
             summary = str(cached.get("summary") or "")
@@ -2507,7 +2513,7 @@ class DayflowService:
             elif override_item:
                 user_specified_outfit_item = override_item
             if override_style and override_style != outfit_style:
-                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, location=persona_location or None, persona_name=normalized_persona_name)
+                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, location=persona_location or None, persona_name=normalized_persona_name, specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day)
                 if override_weather:
                     real_weather = override_weather
                     today_weather = override_weather
