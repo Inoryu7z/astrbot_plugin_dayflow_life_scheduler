@@ -52,7 +52,7 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是�
 - morning_look: object，晨间第一套穿搭方案，包含：
   - pieces: string[]，2个及以上单品，每条为一段完整描述，须涵盖单品名、材质、色名、版型与设计细节，具体到可直接想象出实物。**详尽度分级**：连衣裙、外搭等主体单品描述不少于100字，须包含至少2个具体设计细节（如刺绣图案、装饰件、边缘处理、层次结构等）；内搭、袜子、腰饰等辅助单品不做字数要求，但材质与设计细节仍须具体。袜子为功能型腿部穿着（丝袜、裤袜等），腿饰为装饰型（腿套、腿环等），两者不宜同时出现。禁止实用性描述（如"透气舒适""方便活动""适合XX天气"）
   - accessories: string[]，1个以上配饰。鞋为必选项（完整造型的必要组成部分），其余从包/首饰/发饰/腰带等中自由选取。每个配饰为独立单品，禁止将多件合并为一条。每个须包含品名、材质和色名，可标注设计细节
-  - hair_makeup: string，发型与妆容。分别描述发型和妆容：发型须包含具体名称及特征描述；妆容仅限淡妆（轻透底妆、自然眉形、淡色唇妆），禁止烟熏妆、浓妆、舞台妆等任何非淡妆风格，无论风格如何均不可突破此限制
+  - hair_makeup: string，仅描述发型。须包含具体名称及特征描述。禁止描述任何妆容，无论风格如何均不可添加妆容描述
 - afternoon_look: object，午后第二套换装方案，结构同 morning_look
 - difference: string[]，两套穿搭之间的审美维度差异，2-5条。每条应体现具体的审美维度差异（配色方向/廓形语言/材质情绪/风格倾向），禁止使用实用性理由
 - weather: string | null，当查询中包含地点信息时，返回该地点今日真实天气，格式为"天气状况，温度范围，风力等细节"（如"多云转晴，18~26℃，东南风3级"）；无地点信息时为 null
@@ -519,7 +519,7 @@ class DayflowService:
                     return stripped
         return s
 
-    def _clip_list(self, value: Any, max_items: int = 8, max_chars: int = 150) -> list[str]:
+    def _clip_list(self, value: Any, max_items: int = 8) -> list[str]:
         if not isinstance(value, list):
             return []
         result = []
@@ -533,8 +533,6 @@ class DayflowService:
             if not key or key in seen:
                 continue
             seen.add(key)
-            if len(text) > max_chars:
-                text = text[:max_chars].rstrip("，,；;。.!?？") + "…"
             result.append(text)
             if len(result) >= max_items:
                 break
@@ -584,7 +582,7 @@ class DayflowService:
                     lines.append(f"{label}配饰：")
                     lines.extend(f"- {item}" for item in accessories)
                 if hair_makeup:
-                    lines.append(f"{label}发妆：{hair_makeup}")
+                    lines.append(f"{label}发型：{hair_makeup}")
             elif isinstance(look, list):
                 clipped = self._clip_list(look, max_items=8)
                 if clipped:
@@ -605,14 +603,11 @@ class DayflowService:
             lines.append("参考来源：")
             lines.extend(f"- {url}" for url in source_urls)
         text = "\n".join(lines).strip()
-        max_chars = self._style_research_max_chars()
-        if len(text) > max_chars:
-            text = text[:max_chars].rstrip() + "…"
         return text
 
     def _render_style_reference_from_plain_text(self, style_name: str, plain_text: str, sources: list[dict[str, str]] | None = None) -> str:
         lines = [f"风格名：{style_name}"]
-        plain_text = self._preview_text(plain_text, limit=self._style_research_max_chars())
+        plain_text = str(plain_text or "").strip()
         if plain_text:
             lines.append(plain_text)
         source_urls = []
