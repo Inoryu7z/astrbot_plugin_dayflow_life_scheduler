@@ -278,6 +278,12 @@
             "editor_language": "markdown",
             "editor_theme": "vs-dark"
           },
+          "hallucination_guard_names": {
+            "type": "list",
+            "description": "防幻觉名字列表",
+            "default": [],
+            "hint": "填入真实用户的名字，日程生成时这些名字禁止被捏造具体行为、话语或决定。留空则不启用防幻觉。"
+          },
           "enable_subdivision": {
             "type": "bool",
             "description": "启用日程细分（双LLM制）",
