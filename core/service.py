@@ -2464,8 +2464,10 @@ class DayflowService:
             }
 
         persona_location = str(persona.get("location") or "").strip()
+        specified_sub_variant_names = None
+        sub_variant_all_day = False
         style_reference, style_payload, style_sources, intent_overrides, real_weather = await self._research_style_reference(
-            outfit_style, extra_requirement=extra_requirement, pool_options=pool_options, location=persona_location or None, persona_name=normalized_persona_name, specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day,
+            outfit_style, extra_requirement=extra_requirement, pool_options=pool_options, location=persona_location or None, persona_name=normalized_persona_name,
         )
 
         if real_weather:
@@ -2475,8 +2477,6 @@ class DayflowService:
         user_specified_outfit_style = None
         user_specified_outfit_item = None
         outfit_adjustments = None
-        specified_sub_variant_names = None
-        sub_variant_all_day = False
         need_reresearch = False
         if intent_overrides:
             override_style = intent_overrides.get("outfit_style")
