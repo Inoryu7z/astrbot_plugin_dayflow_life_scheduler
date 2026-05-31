@@ -644,10 +644,25 @@ class DayflowService:
             validator=lambda obj: hasattr(obj, "_do_search"),
         )
 
-    def _select_sub_variants(self, style_name: str) -> list[dict] | None:
+    def _get_hallucination_guard_names(self, persona_name: str) -> str:
+        persona_config = self.get_persona_config(persona_name)
+        if persona_config:
+            names = persona_config.get("hallucination_guard_names", [])
+            if isinstance(names, list) and names:
+                return "、".join(str(n).strip() for n in names if str(n).strip())
+            elif isinstance(names, str) and names.strip():
+                return names.strip()
+        return ""
+
+    def _select_sub_variants(self, style_name: str, specified_names: list[str] | None = None) -> list[dict] | None:
         variants = STYLE_SUB_VARIANTS.get(style_name)
         if not variants:
             return None
+        specified_names = [n for n in (specified_names or []) if n]
+        specified_variants = [v for v in variants if v.get("name") in specified_names]
+        if len(specified_variants) >= 2:
+            logger.info(f"[dayflow-子款式] 用户指定: style={style_name}, variants={[v['name'] for v in specified_variants[:2]]}")
+            return specified_variants[:2]
         used_names = set()
         cache_key = self._normalize_style_key(style_name)
         usage_history = self._style_research_cache.get("_sub_variants_usage", {})
@@ -660,26 +675,49 @@ class DayflowService:
                     names = entry.get("names", [])
                     if isinstance(names, list):
                         used_names.update(str(n) for n in names)
-        available = [v for v in variants if v.get("name") not in used_names]
-        if len(available) < 2:
-            earliest_used = []
-            for entry in style_history:
-                if isinstance(entry, dict):
-                    for n in entry.get("names", []):
-                        for v in variants:
-                            if v.get("name") == str(n) and v not in available and v not in earliest_used:
-                                earliest_used.append(v)
-                                if len(available) + len(earliest_used) >= 2:
-                                    break
+        for sv in specified_variants:
+            used_names.discard(sv.get("name", ""))
+        available = [v for v in variants if v.get("name") not in used_names and v not in specified_variants]
+        if len(specified_variants) == 1:
+            need = 1
+            if len(available) < need:
+                earliest_used = []
+                for entry in style_history:
+                    if isinstance(entry, dict):
+                        for n in entry.get("names", []):
+                            for v in variants:
+                                if v.get("name") == str(n) and v not in available and v not in specified_variants and v not in earliest_used:
+                                    earliest_used.append(v)
+                                    if len(available) + len(earliest_used) >= need:
+                                        break
+                            if len(available) + len(earliest_used) >= need:
+                                break
+                        if len(available) + len(earliest_used) >= need:
+                            break
+                available.extend(earliest_used)
+            if not available:
+                return None
+            selected = specified_variants + random.sample(available, 1)
+        else:
+            if len(available) < 2:
+                earliest_used = []
+                for entry in style_history:
+                    if isinstance(entry, dict):
+                        for n in entry.get("names", []):
+                            for v in variants:
+                                if v.get("name") == str(n) and v not in available and v not in earliest_used:
+                                    earliest_used.append(v)
+                                    if len(available) + len(earliest_used) >= 2:
+                                        break
+                            if len(available) + len(earliest_used) >= 2:
+                                break
                         if len(available) + len(earliest_used) >= 2:
                             break
-                    if len(available) + len(earliest_used) >= 2:
-                        break
-            available.extend(earliest_used)
-        if len(available) < 2:
-            return None
-        selected = random.sample(available, 2)
-        logger.info(f"[dayflow-子款式] 选中: style={style_name}, variants={[v['name'] for v in selected]}, excluded={used_names}")
+                available.extend(earliest_used)
+            if len(available) < 2:
+                return None
+            selected = random.sample(available, 2)
+        logger.info(f"[dayflow-子款式] 选中: style={style_name}, variants={[v['name'] for v in selected]}, specified={[v['name'] for v in specified_variants]}, excluded={used_names}")
         return selected
 
     def _record_sub_variants_usage(self, style_name: str, variant_names: list[str]):
@@ -694,8 +732,8 @@ class DayflowService:
         self._style_research_cache["_sub_variants_usage"] = usage_history
         self._save_style_research_cache()
 
-    def _build_sub_variants_append(self, style_name: str, variants: list[dict]) -> str:
-        if not variants or len(variants) < 2:
+    def _build_sub_variants_append(self, style_name: str, variants: list[dict], all_day: bool = False) -> str:
+        if not variants or len(variants) < 1:
             return ""
         lines = [
             "",
@@ -705,13 +743,21 @@ class DayflowService:
             "禁止将子款式替换为其他风格——如果子款式的描述是甜美系，则不得出现暗黑、哥特、甜酷等偏离风格。子款式池并不全面，你可以在保持核心特征的基础上做微调，但不得改变风格基调。",
             "",
         ]
-        labels = ["（晨间）", "（午后）"]
-        for i, variant in enumerate(variants[:2]):
-            name = variant.get("name", "")
-            desc = variant.get("description", "")
-            lines.append(f"### {name} {labels[i]}")
+        if all_day and len(variants) == 1:
+            v = variants[0]
+            name = v.get("name", "")
+            desc = v.get("description", "")
+            lines.append(f"### {name}（全天）")
             lines.append(desc)
             lines.append("")
+        else:
+            labels = ["（晨间）", "（午后）"]
+            for i, variant in enumerate(variants[:2]):
+                name = variant.get("name", "")
+                desc = variant.get("description", "")
+                lines.append(f"### {name} {labels[i]}")
+                lines.append(desc)
+                lines.append("")
         return "\n".join(lines)
 
     def _build_style_anti_repetition_append(self, persona_name: str | None, style_name: str) -> str:
@@ -749,7 +795,7 @@ class DayflowService:
             query += f" | 同时查询{str(location).strip()}今日真实天气"
         return query
 
-    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
+    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None, specified_sub_variant_names: list[str] | None = None, sub_variant_all_day: bool = False) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
         style_name = str(style_name or "").strip()
         if not style_name:
             return "", {}, [], None, None
@@ -786,9 +832,9 @@ class DayflowService:
             system_prompt += anti_repetition_append
             logger.info(f"[dayflow-风格研究] 防重复追加 | persona={persona_name} | style={style_name} | history_count={len(self.store.collect_recent_style_outfits(persona_name, style_name, max_occurrences=3))}")
 
-        selected_sub_variants = self._select_sub_variants(style_name)
+        selected_sub_variants = self._select_sub_variants(style_name, specified_names=specified_sub_variant_names)
         if selected_sub_variants:
-            sub_variants_append = self._build_sub_variants_append(style_name, selected_sub_variants)
+            sub_variants_append = self._build_sub_variants_append(style_name, selected_sub_variants, all_day=sub_variant_all_day)
             if sub_variants_append:
                 system_prompt += sub_variants_append
                 logger.info(f"[dayflow-风格研究] 子款式追加 | style={style_name} | variants={[v['name'] for v in selected_sub_variants]}")
@@ -2034,6 +2080,7 @@ class DayflowService:
             "style_reference": style_reference,
             "schedule_variation_level": effective_variation,
             "schedule_variation_definition": self._variation_definition(effective_variation),
+            "hallucination_guard_names": self._get_hallucination_guard_names(normalized_persona_name),
         }
         prompt_template = persona.get("prompt_template") or self.cfg.find_persona(resolved_name).get("prompt_template")
         prompt = render_prompt(prompt_template, replacements)
@@ -2424,8 +2471,38 @@ class DayflowService:
         user_specified_outfit_style = None
         user_specified_outfit_item = None
         outfit_adjustments = None
+        specified_sub_variant_names = None
+        sub_variant_all_day = False
+        need_reresearch = False
         if intent_overrides:
             override_style = intent_overrides.get("outfit_style")
+            override_item = intent_overrides.get("outfit_item")
+            override_period = intent_overrides.get("outfit_item_period")
+            override_afternoon_item = intent_overrides.get("outfit_item_afternoon")
+            matched_variant_name = None
+            if override_item:
+                if override_item in SUB_VARIANT_NAME_TO_STYLE:
+                    matched_variant_name = override_item
+            if matched_variant_name:
+                mapped_style = SUB_VARIANT_NAME_TO_STYLE[matched_variant_name]
+                if not override_style or override_style != mapped_style:
+                    override_style = mapped_style
+                    logger.info(f"[dayflow] 子款式反向索引: item={override_item} -> variant={matched_variant_name} -> style={mapped_style}")
+                user_specified_outfit_item = matched_variant_name
+                if override_period == "all_day":
+                    specified_sub_variant_names = [matched_variant_name]
+                    sub_variant_all_day = True
+                elif override_period == "both" and override_afternoon_item:
+                    if override_afternoon_item in SUB_VARIANT_NAME_TO_STYLE:
+                        specified_sub_variant_names = [matched_variant_name, override_afternoon_item]
+                    else:
+                        specified_sub_variant_names = [matched_variant_name]
+                elif override_period == "afternoon":
+                    specified_sub_variant_names = [None, matched_variant_name]
+                else:
+                    specified_sub_variant_names = [matched_variant_name]
+            elif override_item:
+                user_specified_outfit_item = override_item
             if override_style and override_style != outfit_style:
                 style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, location=persona_location or None, persona_name=normalized_persona_name)
                 if override_weather:
@@ -2437,9 +2514,8 @@ class DayflowService:
             elif override_style:
                 outfit_style = override_style
                 user_specified_outfit_style = override_style
-            override_item = intent_overrides.get("outfit_item")
-            if override_item:
-                user_specified_outfit_item = override_item
+                if specified_sub_variant_names:
+                    need_reresearch = True
             override_main_type = intent_overrides.get("schedule_main_type")
             if override_main_type:
                 schedule_main_type = override_main_type
@@ -2452,8 +2528,16 @@ class DayflowService:
             logger.info(
                 f"[dayflow] 意图覆盖已应用: persona={normalized_persona_name}, "
                 f"outfit_style={outfit_style}, outfit_item={user_specified_outfit_item}, "
-                f"main_type={schedule_main_type}, driver={core_event_driver}, adjustments={outfit_adjustments}"
+                f"main_type={schedule_main_type}, driver={core_event_driver}, adjustments={outfit_adjustments}, "
+                f"sub_variants={specified_sub_variant_names}, all_day={sub_variant_all_day}"
             )
+
+        if need_reresearch:
+            style_reference, style_payload, style_sources, _, _ = await self._research_style_reference(
+                outfit_style, location=persona_location or None, persona_name=normalized_persona_name,
+                specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day,
+            )
+            logger.info(f"[dayflow] 子款式指定重做风格研究: style={outfit_style}, variants={specified_sub_variant_names}, all_day={sub_variant_all_day}")
 
         replacements = {
             "date": date_str,
@@ -2475,6 +2559,7 @@ class DayflowService:
             "style_reference": style_reference,
             "schedule_variation_level": effective_variation,
             "schedule_variation_definition": self._variation_definition(effective_variation),
+            "hallucination_guard_names": self._get_hallucination_guard_names(normalized_persona_name),
         }
         prompt_template = persona.get("prompt_template") or self.cfg.find_persona(normalized_persona_name).get("prompt_template")
         prompt = render_prompt(prompt_template, replacements)
@@ -2485,6 +2570,8 @@ class DayflowService:
                 prompt += f"\n- 穿搭风格：{outfit_style}"
             if user_specified_outfit_item:
                 prompt += f"\n- 具体单品：{user_specified_outfit_item}（属于 {outfit_style} 风格）"
+                if sub_variant_all_day:
+                    prompt += f"\n- 全天穿着此款，不换装"
             if outfit_adjustments:
                 prompt += f"\n- 穿搭调整：{outfit_adjustments}"
 
