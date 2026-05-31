@@ -2483,41 +2483,22 @@ class DayflowService:
             override_item = intent_overrides.get("outfit_item")
             override_period = intent_overrides.get("outfit_item_period")
             override_afternoon_item = intent_overrides.get("outfit_item_afternoon")
-            matched_variant_name = None
-            if override_item:
-                if override_item in SUB_VARIANT_NAME_TO_STYLE:
-                    matched_variant_name = override_item
-                else:
-                    for vname in SUB_VARIANT_NAME_TO_STYLE:
-                        if vname in override_item:
-                            matched_variant_name = vname
-                            break
-            if matched_variant_name:
-                mapped_style = SUB_VARIANT_NAME_TO_STYLE[matched_variant_name]
+            if override_item and override_item in SUB_VARIANT_NAME_TO_STYLE:
+                mapped_style = SUB_VARIANT_NAME_TO_STYLE[override_item]
                 if not override_style or override_style != mapped_style:
                     override_style = mapped_style
-                    logger.info(f"[dayflow] 子款式反向索引: item={override_item} -> variant={matched_variant_name} -> style={mapped_style}")
-                user_specified_outfit_item = matched_variant_name
+                    logger.info(f"[dayflow] 子款式反向索引: item={override_item} -> style={mapped_style}")
+            if override_item and override_item in SUB_VARIANT_NAME_TO_STYLE:
+                user_specified_outfit_item = override_item
                 if override_period == "all_day":
-                    specified_sub_variant_names = [matched_variant_name]
+                    specified_sub_variant_names = [override_item]
                     sub_variant_all_day = True
                 elif override_period == "both" and override_afternoon_item:
-                    matched_afternoon = None
-                    if override_afternoon_item in SUB_VARIANT_NAME_TO_STYLE:
-                        matched_afternoon = override_afternoon_item
-                    else:
-                        for vname in SUB_VARIANT_NAME_TO_STYLE:
-                            if vname in override_afternoon_item:
-                                matched_afternoon = vname
-                                break
-                    if matched_afternoon:
-                        specified_sub_variant_names = [matched_variant_name, matched_afternoon]
-                    else:
-                        specified_sub_variant_names = [matched_variant_name]
+                    specified_sub_variant_names = [override_item, override_afternoon_item]
                 elif override_period == "afternoon":
-                    specified_sub_variant_names = [None, matched_variant_name]
+                    specified_sub_variant_names = [None, override_item]
                 else:
-                    specified_sub_variant_names = [matched_variant_name]
+                    specified_sub_variant_names = [override_item]
             elif override_item:
                 user_specified_outfit_item = override_item
             if override_style and override_style != outfit_style:
