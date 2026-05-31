@@ -11,6 +11,7 @@ from .core.generator import (
     is_schedule_valid,
     render_schedule_display,
 )
+from .core.constants import STYLE_SUB_VARIANTS
 from .core.service import DayflowService
 
 DAYFLOW_INJECTION_HEADER = "<DayFlow-Schedule>"
@@ -497,3 +498,16 @@ class DayflowPlugin(Star):
         except Exception as e:
             logger.warning(f"[dayflow] 生成细分异常: persona={persona_name}: {e}")
             yield event.plain_result(f"⚠️ 细分生成异常：{e}")
+
+    @filter.command("子款式", alias={"dayflow_variants", "查看子款式"})
+    async def show_sub_variants(self, event: AstrMessageEvent):
+        if not STYLE_SUB_VARIANTS:
+            yield event.plain_result("当前没有可用的子款式数据")
+            return
+        lines = ["👗 风格子款式列表", ""]
+        for style_name, variants in STYLE_SUB_VARIANTS.items():
+            names = "；".join(v.get("name", "") for v in variants if v.get("name"))
+            lines.append(f"{style_name}：")
+            lines.append(f"{names}")
+            lines.append("")
+        yield event.plain_result("\n".join(lines))
