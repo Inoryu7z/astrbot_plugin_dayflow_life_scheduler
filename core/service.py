@@ -108,14 +108,16 @@ CUSTOM_SCHEDULE_INTENT_APPEND = """
 ### intent_overrides 填写规则
 
 1. **outfit_style**（string | null）
-   - 用户指定了穿搭风格/单品 → 填写风格大类
-   - 优先使用池中相近值（如"洛丽塔"→"甜系洛丽塔"，"杏花微雨"→"甜系洛丽塔"）
+   - 用户指定了穿搭风格 → 填写风格大类，只能填一个风格，禁止填写多个风格
+   - 优先使用池中相近值（如"洛丽塔"→"甜系洛丽塔"）
+   - 用户指定了具体单品/款式名而非风格大类 → null（由后续流程自动处理）
    - 池中确实无匹配 → 用用户原文
    - 用户只是调整当前风格（如"穿暴露点"）→ null，调整写到 outfit_adjustments
    - 与穿搭无关 → null
 
 2. **outfit_item**（string | null）
-   - 用户指定了具体单品（如"杏花微雨"）→ 填写单品名
+   - 用户指定了具体单品或经典款式名 → 填写名称
+   - **必须使用用户原文中的精确名称**，不得添加后缀或修饰（如用户说"杏花微雨"→填"杏花微雨"，禁止填"杏花微雨连衣裙"）
    - 用户只说了风格大类（如"洛丽塔"）→ null
    - 与穿搭无关 → null
 
@@ -136,6 +138,7 @@ CUSTOM_SCHEDULE_INTENT_APPEND = """
 - outfit_style 和 outfit_item 可同时存在：style 是风格大类，item 是具体单品
 - 如果用户指定了新风格，请基于该风格进行风格研究
 - 如果 outfit_adjustments 非 null，请在 morning_look/afternoon_look 中体现调整
+- intent_overrides 只做字段提取，不要根据搜索结果推断或改写用户原文中的名称
 """
 
 SUBDIVISION_SYSTEM_PROMPT = """你是日程细分编辑。将以下日程的每个时段拆分为更细粒度的活动片段。
