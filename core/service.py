@@ -68,7 +68,7 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是�
    - ✓"加厚裙撑"       ✗"暴力撑"
    - ✓"一体式连衣裙"   ✗"OP连衣裙"
    - ✓"背心式连衣裙"   ✗"JSK连衣裙"
-2. **差异来自经典款本身**：两套穿搭的差异必须来自两款不同经典搭配本身的风格差异（如甜美系洛丽塔 vs 古典系洛丽塔的配色与廓形差异），而非同一搭配的微小变体
+2. **差异来自经典款本身**：若上方已指定经典款式，两套穿搭的差异必须来自两款经典款本身的结构性差异；若未指定经典款式，则两套穿搭的差异须来自配色方向、廓形语言、材质情绪等审美维度的差异，不得通过风格偏移（如甜系→暗黑/哥特）来制造差异
 
 ## 两套穿搭的要求
 1. 同一风格体系，但从配色方向、廓形语言、材质情绪、风格倾向等多维度呈现明显视觉差异——不是换件上衣就完事
@@ -78,7 +78,7 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是�
 
 ## 设计自查
 完成两套穿搭设计后，从以下四个维度逐个审视每套方案，发现不足则调整后再输出：
-1. 层次：是否有至少2个穿搭层次（如内搭→外搭→外套）？最外层单品是否形成了清晰的视觉轮廓？
+1. 层次：穿搭是否有合理的层次结构？单品之间是否形成了清晰的视觉轮廓？外搭/外套仅在风格本身需要时添加，不得为了凑层次而强行叠加
 2. 焦点：是否有一个明确的视觉焦点（一条特别的半裙、一件精致的短外套、一组配饰等）？是否有多余单品在争夺注意力？
 3. 配色：主色是否控制在2-3个以内？点缀色是否起到点睛而非杂乱的作用？
 4. 材质：是否形成了一组有意义的材质对比（光泽×哑光、柔软×硬挺等）？对比是否破坏了风格统一？
@@ -509,6 +509,16 @@ class DayflowService:
     def _normalize_style_key(self, style_name: str) -> str:
         return "".join(str(style_name or "").strip().lower().split())
 
+    @staticmethod
+    def _strip_style_suffix(style_name: str) -> str:
+        s = str(style_name or "").strip()
+        for suffix in ("风格", "风", "系", "装", "服"):
+            if s.endswith(suffix) and len(s) > len(suffix):
+                stripped = s[:-len(suffix)]
+                if stripped in STYLE_SUB_VARIANTS:
+                    return stripped
+        return s
+
     def _clip_list(self, value: Any, max_items: int = 8, max_chars: int = 150) -> list[str]:
         if not isinstance(value, list):
             return []
@@ -658,7 +668,8 @@ class DayflowService:
         return ""
 
     def _select_sub_variants(self, style_name: str, specified_names: list[str] | None = None) -> list[dict] | None:
-        variants = STYLE_SUB_VARIANTS.get(style_name)
+        lookup_name = self._strip_style_suffix(style_name)
+        variants = STYLE_SUB_VARIANTS.get(lookup_name)
         if not variants:
             return None
         specified_names = [n for n in (specified_names or []) if n]
@@ -667,7 +678,8 @@ class DayflowService:
             logger.info(f"[dayflow-子款式] 用户指定: style={style_name}, variants={[v['name'] for v in specified_variants[:2]]}")
             return specified_variants[:2]
         used_names = set()
-        cache_key = self._normalize_style_key(style_name)
+        lookup_name = self._strip_style_suffix(style_name)
+        cache_key = self._normalize_style_key(lookup_name)
         usage_history = self._style_research_cache.get("_sub_variants_usage", {})
         if not isinstance(usage_history, dict):
             usage_history = {}
@@ -724,7 +736,8 @@ class DayflowService:
         return selected
 
     def _record_sub_variants_usage(self, style_name: str, variant_names: list[str]):
-        cache_key = self._normalize_style_key(style_name)
+        lookup_name = self._strip_style_suffix(style_name)
+        cache_key = self._normalize_style_key(lookup_name)
         usage_history = self._style_research_cache.get("_sub_variants_usage", {})
         if not isinstance(usage_history, dict):
             usage_history = {}
@@ -810,7 +823,7 @@ class DayflowService:
         cache_key = self._normalize_style_key(style_name)
         anti_repetition_append = self._build_style_anti_repetition_append(persona_name, style_name)
         has_anti_repetition = bool(anti_repetition_append.strip())
-        has_sub_variants = bool(STYLE_SUB_VARIANTS.get(style_name))
+        has_sub_variants = bool(STYLE_SUB_VARIANTS.get(self._strip_style_suffix(style_name)))
         cached = self._style_research_cache.get(cache_key)
         if self._is_style_cache_entry_valid(cached) and not has_anti_repetition and not has_sub_variants:
             payload = dict(cached.get("payload") or {})
@@ -836,6 +849,7 @@ class DayflowService:
 
         query = self._build_style_research_query(style_name, location=location)
         system_prompt = self._style_research_system_prompt()
+        system_prompt += f"\n\n本次需要设计的风格：「{style_name}」。你的穿搭设计必须严格围绕此风格，不得偏移到其他风格。"
 
         if has_anti_repetition:
             system_prompt += anti_repetition_append
@@ -910,8 +924,6 @@ class DayflowService:
                 self._record_sub_variants_usage(style_name, [v.get("name", "") for v in selected_sub_variants])
             else:
                 self._save_style_research_cache()
-            payload_preview = json.dumps(parsed_payload, ensure_ascii=False, indent=2)
-            logger.info(f"[dayflow-风格研究] 解析结果 | style={style_name} | payload={self._preview_text(payload_preview, limit=1600)}")
             logger.info(f"[dayflow-风格研究] 来源 | style={style_name} | sources={self._render_sources_preview(sources)}")
             self._update_debug_payload({
                 "style_research_cache_hit": False,
