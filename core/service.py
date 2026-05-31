@@ -68,7 +68,7 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是�
    - ✓"加厚裙撑"       ✗"暴力撑"
    - ✓"一体式连衣裙"   ✗"OP连衣裙"
    - ✓"背心式连衣裙"   ✗"JSK连衣裙"
-2. **差异来自经典款本身**：若上方已指定经典款式，两套穿搭的差异必须来自两款经典款本身的结构性差异；若未指定经典款式，则两套穿搭的差异须来自配色方向、廓形语言、材质情绪等审美维度的差异，不得通过风格偏移（如甜系→暗黑/哥特）来制造差异
+2. **差异来自经典款本身**：两套穿搭的差异必须来自两款不同经典搭配本身的结构性差异（如抹胸vs齐胸、立体玫瑰vs渐变印花），而非仅换色
 
 ## 两套穿搭的要求
 1. 同一风格体系，但从配色方向、廓形语言、材质情绪、风格倾向等多维度呈现明显视觉差异——不是换件上衣就完事
@@ -678,7 +678,6 @@ class DayflowService:
             logger.info(f"[dayflow-子款式] 用户指定: style={style_name}, variants={[v['name'] for v in specified_variants[:2]]}")
             return specified_variants[:2]
         used_names = set()
-        lookup_name = self._strip_style_suffix(style_name)
         cache_key = self._normalize_style_key(lookup_name)
         usage_history = self._style_research_cache.get("_sub_variants_usage", {})
         if not isinstance(usage_history, dict):
@@ -930,7 +929,7 @@ class DayflowService:
                 "style_research_query_preview": self._preview_text(query, limit=1200),
                 "style_research_system_prompt_preview": self._preview_text(system_prompt, limit=1200),
                 "style_research_raw_response_preview": self._preview_text(raw_text, limit=1600),
-                "style_research_payload_preview": self._preview_text(payload_preview, limit=1600),
+                "style_research_payload_preview": self._preview_text(json.dumps(parsed_payload, ensure_ascii=False, indent=2), limit=1600),
                 "style_research_sources_preview": self._render_sources_preview(sources),
                 "style_research_weather": real_weather,
             })
