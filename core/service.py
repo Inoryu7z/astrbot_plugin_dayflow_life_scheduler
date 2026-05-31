@@ -667,16 +667,21 @@ class DayflowService:
                 return names.strip()
         return ""
 
-    def _select_sub_variants(self, style_name: str, specified_names: list[str] | None = None) -> list[dict] | None:
+    def _select_sub_variants(self, style_name: str, specified_names: dict[str, str | None] | None = None, all_day: bool = False) -> list[dict] | None:
         lookup_name = self._strip_style_suffix(style_name)
         variants = STYLE_SUB_VARIANTS.get(lookup_name)
         if not variants:
             return None
-        specified_names = [n for n in (specified_names or []) if n]
-        specified_variants = [v for v in variants if v.get("name") in specified_names]
-        if len(specified_variants) >= 2:
-            logger.info(f"[dayflow-子款式] 用户指定: style={style_name}, variants={[v['name'] for v in specified_variants[:2]]}")
-            return specified_variants[:2]
+
+        morning_name = (specified_names or {}).get("morning")
+        afternoon_name = (specified_names or {}).get("afternoon")
+        morning_variant = next((v for v in variants if v.get("name") == morning_name), None) if morning_name else None
+        afternoon_variant = next((v for v in variants if v.get("name") == afternoon_name), None) if afternoon_name else None
+        specified_name_set = set()
+        for v in (morning_variant, afternoon_variant):
+            if v:
+                specified_name_set.add(v.get("name", ""))
+
         used_names = set()
         cache_key = self._normalize_style_key(lookup_name)
         usage_history = self._style_research_cache.get("_sub_variants_usage", {})
@@ -689,50 +694,59 @@ class DayflowService:
                     names = entry.get("names", [])
                     if isinstance(names, list):
                         used_names.update(str(n) for n in names)
-        for sv in specified_variants:
-            used_names.discard(sv.get("name", ""))
-        available = [v for v in variants if v.get("name") not in used_names and v not in specified_variants]
-        if len(specified_variants) == 1:
-            need = 1
-            if len(available) < need:
-                earliest_used = []
-                for entry in style_history:
-                    if isinstance(entry, dict):
-                        for n in entry.get("names", []):
-                            for v in variants:
-                                if v.get("name") == str(n) and v not in available and v not in specified_variants and v not in earliest_used:
-                                    earliest_used.append(v)
-                                    if len(available) + len(earliest_used) >= need:
-                                        break
-                            if len(available) + len(earliest_used) >= need:
-                                break
-                        if len(available) + len(earliest_used) >= need:
-                            break
-                available.extend(earliest_used)
+        for name in specified_name_set:
+            used_names.discard(name)
+
+        available = [v for v in variants if v.get("name") not in used_names and v.get("name") not in specified_name_set]
+
+        def _recycle(additional_need: int) -> list[dict]:
+            recycled = []
+            for entry in style_history:
+                if isinstance(entry, dict):
+                    for n in entry.get("names", []):
+                        for v in variants:
+                            if v.get("name") == str(n) and v not in available and v.get("name") not in specified_name_set and v not in recycled:
+                                recycled.append(v)
+                                if len(recycled) >= additional_need:
+                                    return recycled
+            return recycled
+
+        if all_day:
+            target = morning_variant or afternoon_variant
+            if target:
+                logger.info(f"[dayflow-子款式] 全天模式: style={style_name}, variant={target['name']}")
+                return [target]
+            if not available:
+                available.extend(_recycle(1))
             if not available:
                 return None
-            selected = specified_variants + random.sample(available, 1)
-        else:
-            if len(available) < 2:
-                earliest_used = []
-                for entry in style_history:
-                    if isinstance(entry, dict):
-                        for n in entry.get("names", []):
-                            for v in variants:
-                                if v.get("name") == str(n) and v not in available and v not in earliest_used:
-                                    earliest_used.append(v)
-                                    if len(available) + len(earliest_used) >= 2:
-                                        break
-                            if len(available) + len(earliest_used) >= 2:
-                                break
-                        if len(available) + len(earliest_used) >= 2:
-                            break
-                available.extend(earliest_used)
-            if len(available) < 2:
+            selected = random.sample(available, 1)
+            logger.info(f"[dayflow-子款式] 全天模式(随机): style={style_name}, variant={selected[0]['name']}")
+            return selected
+
+        need_morning = morning_variant is None
+        need_afternoon = afternoon_variant is None
+        need_count = int(need_morning) + int(need_afternoon)
+
+        if need_count > 0 and len(available) < need_count:
+            available.extend(_recycle(need_count - len(available)))
+
+        if need_count > 0 and len(available) < need_count:
+            if not morning_variant and not afternoon_variant:
                 return None
-            selected = random.sample(available, 2)
-        logger.info(f"[dayflow-子款式] 选中: style={style_name}, variants={[v['name'] for v in selected]}, specified={[v['name'] for v in specified_variants]}, excluded={used_names}")
-        return selected
+
+        random_picks = random.sample(available, min(need_count, len(available))) if need_count > 0 else []
+        pick_iter = iter(random_picks)
+
+        result = []
+        result.append(morning_variant if morning_variant else next(pick_iter, None))
+        result.append(afternoon_variant if afternoon_variant else next(pick_iter, None))
+
+        if None in result:
+            return None
+
+        logger.info(f"[dayflow-子款式] 选中: style={style_name}, morning={result[0].get('name')}, afternoon={result[1].get('name')}, specified_morning={morning_name}, specified_afternoon={afternoon_name}, excluded={used_names}")
+        return result
 
     def _record_sub_variants_usage(self, style_name: str, variant_names: list[str]):
         lookup_name = self._strip_style_suffix(style_name)
@@ -750,20 +764,20 @@ class DayflowService:
     def _build_sub_variants_append(self, style_name: str, variants: list[dict], all_day: bool = False) -> str:
         if not variants or len(variants) < 1:
             return ""
-        lines = [
-            "",
-            "## 指定经典款式（强制遵循）",
-            "以下为该风格下两款真实经典搭配的完整描述。你的穿搭设计必须严格基于对应款式的描述，具体要求：",
-            "1. **一一对应**：晨间穿搭（morning_look）必须基于第一款描述设计，午后穿搭（afternoon_look）必须基于第二款描述设计",
-            "2. **忠实还原**：每套穿搭的单品选择、配色方案、廓形结构、装饰细节必须与对应款式描述一致。描述中提到的每个关键元素（如特定领型、特定装饰、特定图案）都必须在输出中体现",
-            "3. **搜索仅补充**：联网搜索仅用于补充描述中未涉及的细节（如具体色号、材质工艺），不得用搜索结果替换款式描述中的任何设计要素",
-            "4. **禁止泛化**：不得将两款经典款泛化为‘同一风格的通用搭配’。两款之间的差异必须来自两款经典款本身的结构性差异（如抹胸vs齐胸、立体玫瑰vs渐变印花），而非仅换色",
-            "5. **禁止风格偏移**：如果款式描述是甜美系，不得出现暗黑、哥特、甜酷等偏离风格",
-            "6. **详尽度对齐**：输出中每个单品的描述详尽度不得低于对应款式描述中同类单品的详尽度。款式描述中提到的装饰细节、图案元素、层次结构必须在输出中逐项体现，不得笼统概括",
-            "7. **格式优先级**：当本段要求与上方输出格式要求冲突时，以本段为准。款式描述中的单品结构和层次优先于通用格式要求，不必强行拆解为穿着类别开头的列举格式",
-            "",
-        ]
         if all_day and len(variants) == 1:
+            lines = [
+                "",
+                "## 指定经典款式（强制遵循）",
+                "以下为该风格下一款真实经典搭配的完整描述，全天穿着此款。你的穿搭设计必须严格基于此款描述，具体要求：",
+                "1. **全天穿着**：晨间穿搭（morning_look）和午后穿搭（afternoon_look）都必须基于此款描述设计，两套穿搭的差异仅来自搭配细节的微调（如配饰更换、发妆变化），不得换为其他款式",
+                "2. **忠实还原**：单品选择、配色方案、廓形结构、装饰细节必须与款式描述一致。描述中提到的每个关键元素都必须在输出中体现",
+                "3. **搜索仅补充**：联网搜索仅用于补充描述中未涉及的细节（如具体色号、材质工艺），不得用搜索结果替换款式描述中的任何设计要素",
+                "4. **禁止泛化**：不得将此经典款泛化为‘同一风格的通用搭配’",
+                "5. **禁止风格偏移**：如果款式描述是甜美系，不得出现暗黑、哥特、甜酷等偏离风格",
+                "6. **详尽度对齐**：输出中每个单品的描述详尽度不得低于款式描述中同类单品的详尽度",
+                "7. **格式优先级**：当本段要求与上方输出格式要求冲突时，以本段为准",
+                "",
+            ]
             v = variants[0]
             name = v.get("name", "")
             desc = v.get("description", "")
@@ -771,6 +785,19 @@ class DayflowService:
             lines.append(desc)
             lines.append("")
         else:
+            lines = [
+                "",
+                "## 指定经典款式（强制遵循）",
+                "以下为该风格下两款真实经典搭配的完整描述。你的穿搭设计必须严格基于对应款式的描述，具体要求：",
+                "1. **一一对应**：晨间穿搭（morning_look）必须基于第一款描述设计，午后穿搭（afternoon_look）必须基于第二款描述设计",
+                "2. **忠实还原**：每套穿搭的单品选择、配色方案、廓形结构、装饰细节必须与对应款式描述一致。描述中提到的每个关键元素（如特定领型、特定装饰、特定图案）都必须在输出中体现",
+                "3. **搜索仅补充**：联网搜索仅用于补充描述中未涉及的细节（如具体色号、材质工艺），不得用搜索结果替换款式描述中的任何设计要素",
+                "4. **禁止泛化**：不得将两款经典款泛化为‘同一风格的通用搭配’。两款之间的差异必须来自两款经典款本身的结构性差异（如抹胸vs齐胸、立体玫瑰vs渐变印花），而非仅换色",
+                "5. **禁止风格偏移**：如果款式描述是甜美系，不得出现暗黑、哥特、甜酷等偏离风格",
+                "6. **详尽度对齐**：输出中每个单品的描述详尽度不得低于对应款式描述中同类单品的详尽度。款式描述中提到的装饰细节、图案元素、层次结构必须在输出中逐项体现，不得笼统概括",
+                "7. **格式优先级**：当本段要求与上方输出格式要求冲突时，以本段为准。款式描述中的单品结构和层次优先于通用格式要求，不必强行拆解为穿着类别开头的列举格式",
+                "",
+            ]
             labels = ["（晨间）", "（午后）"]
             for i, variant in enumerate(variants[:2]):
                 name = variant.get("name", "")
@@ -815,7 +842,7 @@ class DayflowService:
             query += f" | 同时查询{str(location).strip()}今日真实天气"
         return query
 
-    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None, specified_sub_variant_names: list[str] | None = None, sub_variant_all_day: bool = False) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
+    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None, specified_sub_variant_names: dict[str, str | None] | None = None, sub_variant_all_day: bool = False) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
         style_name = str(style_name or "").strip()
         if not style_name:
             return "", {}, [], None, None
@@ -854,7 +881,7 @@ class DayflowService:
             system_prompt += anti_repetition_append
             logger.info(f"[dayflow-风格研究] 防重复追加 | persona={persona_name} | style={style_name} | history_count={len(self.store.collect_recent_style_outfits(persona_name, style_name, max_occurrences=3))}")
 
-        selected_sub_variants = self._select_sub_variants(style_name, specified_names=specified_sub_variant_names)
+        selected_sub_variants = self._select_sub_variants(style_name, specified_names=specified_sub_variant_names, all_day=sub_variant_all_day)
         if selected_sub_variants:
             sub_variants_append = self._build_sub_variants_append(style_name, selected_sub_variants, all_day=sub_variant_all_day)
             if sub_variants_append:
@@ -2510,17 +2537,17 @@ class DayflowService:
                     logger.info(f"[dayflow] 子款式反向索引: item={override_item} -> variant={matched_variant_name} -> style={mapped_style}")
                 user_specified_outfit_item = matched_variant_name
                 if override_period == "all_day":
-                    specified_sub_variant_names = [matched_variant_name]
+                    specified_sub_variant_names = {"morning": matched_variant_name, "afternoon": None}
                     sub_variant_all_day = True
                 elif override_period == "both" and override_afternoon_item:
                     if override_afternoon_item in SUB_VARIANT_NAME_TO_STYLE:
-                        specified_sub_variant_names = [matched_variant_name, override_afternoon_item]
+                        specified_sub_variant_names = {"morning": matched_variant_name, "afternoon": override_afternoon_item}
                     else:
-                        specified_sub_variant_names = [matched_variant_name]
+                        specified_sub_variant_names = {"morning": matched_variant_name, "afternoon": None}
                 elif override_period == "afternoon":
-                    specified_sub_variant_names = [None, matched_variant_name]
+                    specified_sub_variant_names = {"morning": None, "afternoon": matched_variant_name}
                 else:
-                    specified_sub_variant_names = [matched_variant_name]
+                    specified_sub_variant_names = {"morning": matched_variant_name, "afternoon": None}
             elif override_item:
                 user_specified_outfit_item = override_item
             if override_style and override_style != outfit_style:
