@@ -12,7 +12,7 @@ from astrbot.api.message_components import Image as ImageComponent, Plain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .config import DayflowConfig
-from .constants import DEFAULT_VARIATION_LEVEL, VARIATION_LEVEL_DEFINITIONS
+from .constants import DEFAULT_VARIATION_LEVEL, STYLE_SUB_VARIANTS, VARIATION_LEVEL_DEFINITIONS
 from .generator import (
     build_draft_skeleton,
     build_format_priority_append_prompt,
@@ -644,6 +644,75 @@ class DayflowService:
             validator=lambda obj: hasattr(obj, "_do_search"),
         )
 
+    def _select_sub_variants(self, style_name: str) -> list[dict] | None:
+        variants = STYLE_SUB_VARIANTS.get(style_name)
+        if not variants:
+            return None
+        used_names = set()
+        cache_key = self._normalize_style_key(style_name)
+        usage_history = self._style_research_cache.get("_sub_variants_usage", {})
+        if not isinstance(usage_history, dict):
+            usage_history = {}
+        style_history = usage_history.get(cache_key, [])
+        if isinstance(style_history, list):
+            for entry in style_history[-3:]:
+                if isinstance(entry, dict):
+                    names = entry.get("names", [])
+                    if isinstance(names, list):
+                        used_names.update(str(n) for n in names)
+        available = [v for v in variants if v.get("name") not in used_names]
+        if len(available) < 2:
+            earliest_used = []
+            for entry in style_history:
+                if isinstance(entry, dict):
+                    for n in entry.get("names", []):
+                        for v in variants:
+                            if v.get("name") == str(n) and v not in available and v not in earliest_used:
+                                earliest_used.append(v)
+                                if len(available) + len(earliest_used) >= 2:
+                                    break
+                        if len(available) + len(earliest_used) >= 2:
+                            break
+                    if len(available) + len(earliest_used) >= 2:
+                        break
+            available.extend(earliest_used)
+        if len(available) < 2:
+            return None
+        selected = random.sample(available, 2)
+        logger.info(f"[dayflow-子款式] 选中: style={style_name}, variants={[v['name'] for v in selected]}, excluded={used_names}")
+        return selected
+
+    def _record_sub_variants_usage(self, style_name: str, variant_names: list[str]):
+        cache_key = self._normalize_style_key(style_name)
+        usage_history = self._style_research_cache.get("_sub_variants_usage", {})
+        if not isinstance(usage_history, dict):
+            usage_history = {}
+        style_history = usage_history.setdefault(cache_key, [])
+        style_history.append({"names": list(variant_names), "date": datetime.datetime.now().isoformat()})
+        style_history = style_history[-10:]
+        usage_history[cache_key] = style_history
+        self._style_research_cache["_sub_variants_usage"] = usage_history
+        self._save_style_research_cache()
+
+    def _build_sub_variants_append(self, style_name: str, variants: list[dict]) -> str:
+        if not variants or len(variants) < 2:
+            return ""
+        lines = [
+            "",
+            "## 推荐子款式（真实经典款）",
+            "以下两款均为该风格下真实存在的经典搭配，经过验证。请分别作为晨间和午后穿搭方案的设计基础，搜索其详细信息并据此设计。",
+            "切忌望文生义——款式名仅为标识，具体设计须基于搜索结果与以下描述。子款式池并不全面，你可以在保持核心特征的基础上做合理调整。",
+            "",
+        ]
+        labels = ["（晨间）", "（午后）"]
+        for i, variant in enumerate(variants[:2]):
+            name = variant.get("name", "")
+            desc = variant.get("description", "")
+            lines.append(f"### {name} {labels[i]}")
+            lines.append(desc)
+            lines.append("")
+        return "\n".join(lines)
+
     def _build_style_anti_repetition_append(self, persona_name: str | None, style_name: str) -> str:
         if not persona_name:
             return ""
@@ -716,6 +785,13 @@ class DayflowService:
             system_prompt += anti_repetition_append
             logger.info(f"[dayflow-风格研究] 防重复追加 | persona={persona_name} | style={style_name} | history_count={len(self.store.collect_recent_style_outfits(persona_name, style_name, max_occurrences=3))}")
 
+        selected_sub_variants = self._select_sub_variants(style_name)
+        if selected_sub_variants:
+            sub_variants_append = self._build_sub_variants_append(style_name, selected_sub_variants)
+            if sub_variants_append:
+                system_prompt += sub_variants_append
+                logger.info(f"[dayflow-风格研究] 子款式追加 | style={style_name} | variants={[v['name'] for v in selected_sub_variants]}")
+
         intent_overrides = None
         if extra_requirement and pool_options:
             query += f" | 用户定制要求：{extra_requirement}"
@@ -774,7 +850,10 @@ class DayflowService:
                 "raw_response": raw_text,
                 "weather": real_weather or "",
             }
-            self._save_style_research_cache()
+            if selected_sub_variants:
+                self._record_sub_variants_usage(style_name, [v.get("name", "") for v in selected_sub_variants])
+            else:
+                self._save_style_research_cache()
             payload_preview = json.dumps(parsed_payload, ensure_ascii=False, indent=2)
             logger.info(f"[dayflow-风格研究] 解析结果 | style={style_name} | payload={self._preview_text(payload_preview, limit=1600)}")
             logger.info(f"[dayflow-风格研究] 来源 | style={style_name} | sources={self._render_sources_preview(sources)}")
