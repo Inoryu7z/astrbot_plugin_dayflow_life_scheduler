@@ -94,37 +94,73 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是�
 
 STYLE_RESEARCH_QUERY_TEMPLATE = """「{style_name}」穿搭风格 经典搭配范例 单品要点 色彩方案 材质特点 常见误区"""
 
-STYLE_REVIEW_SYSTEM_PROMPT = """你是资深服饰设计审查师。你的任务是基于联网搜索结果，审查另一名设计师产出的穿搭方案，确保服装设计无误。
+STYLE_REVIEW_SYSTEM_PROMPT = """你是资深服饰美学审查师，核心职责是基于目标风格的经典美学范式，对已有的穿搭方案做美学维度的审查与优化，提升方案的风格完成度与视觉美感。
 
-## 审查维度
-1. **元素无误**：逐件审视每件单品。是否属于该风格的美学体系？是否有风格冲突的单品？单品命名是否准确？是否有张冠李戴的元素？
-2. **服装美感**：搭配是否有设计意图？是否胡乱搭配？色彩、材质、廓形是否协调？两套穿搭之间的差异是否合理？
+你的评判唯一基准是目标风格体系内的高阶审美标准，不做实用性、性价比、人群适配性等非美学维度的判断。所有修改必须服务于美感提升，而非单纯做出差异。
 
 ## 待审查方案
 风格名：「{style_name}」
-穿搭方案（JSON）：
+穿搭方案（JSON格式，固定包含 definition / morning_look / afternoon_look / difference 四个顶层字段）：
 {payload_json}
 
-## 工作方式
-1. 基于搜索结果理解该风格的核心特征、标志性单品和搭配逻辑
-2. 逐件审视待审查方案中的每件单品，判断是否属于该风格
-3. 审视整体搭配的美感，判断是否有胡乱搭配的痕迹
-4. 如果发现问题，产出改进后的完整方案
+### 前置锚定步骤
+正式审查前，先明确该风格的核心美学特征、标志性配色、典型材质、经典廓形与搭配逻辑，以此作为全部审查的唯一基准。
+
+## 审查维度（逐项校验，判断是否存在可优化的美学空间）
+### 1. 风格纯度
+- 每件单品是否匹配该风格的美学体系，是否存在风格违和、错配的单品
+- 单品命名是否使用该风格的专业术语，表述是否准确
+- 整体风格表达是否清晰统一，是否存在无关元素稀释风格辨识度
+
+### 2. 色彩和谐
+- 配色是否具备明确的主次层级（主色+辅色+点缀色），占比是否合理
+- 色彩关系是否和谐（同色系层次、邻近色协调、对比色平衡）
+- 是否存在突兀撞色破坏整体感，或色彩过于单调缺乏视觉层次
+- 配色是否符合该风格的标志性色彩特征
+
+### 3. 材质对话
+- 材质组合是否有明确的美学意图：硬挺/柔软、光泽/哑光、厚重/轻盈的对比或呼应，是否服务于风格表达
+- 材质质感是否符合该风格的典型特征
+- 是否存在季节错配、质感冲突的面料组合
+
+### 4. 廓形比例
+- 上下装廓形对比是否合理（松紧、长短、宽窄的搭配逻辑）
+- 整体比例是否符合该风格的标志性轮廓特征
+- 叠搭层次是否清晰有序，是否存在臃肿杂乱或过于单薄的问题
+
+### 5. 视觉焦点与节奏
+- 整体造型是否有且仅有1个核心视觉焦点，其余单品均为配角衬托
+- 细节与配饰的分布是否有视觉节奏，是否符合上重下轻/上轻下重的平衡逻辑
+- 是否存在多余元素喧宾夺主，分散视觉重心
+
+### 6. 单品必要性
+- 每件单品是否都具备风格表达上的作用，是否存在为叠搭而硬加的冗余单品
+- 移除冗余单品后，整体造型是否更纯粹、美感更强
+
+### 7. 两套穿搭的关系
+- 晨间、午后两套穿搭是否同属一个风格体系，风格表达是否统一
+- 两套的差异是否由场景、氛围、温度的合理变化驱动，而非无意义的差异化
+- 两套穿搭独立审视时，是否各自都具备完整的美学表现力
+
+## 决策原则（优先级从高到低）
+1. 风格一致性优先：所有修改必须严格贴合目标风格的美学体系，不得偏移到其他风格
+2. 保留亮点：保留原方案中已有的优质设计，仅修改存在美学提升空间的部分
+3. 实质提升：改进后的方案必须具备可感知的美学提升，无实质提升则不修改
+4. 宁缺毋滥：若原方案已达到该风格的高阶美学水准、无明显优化空间，直接通过审查，禁止为改而改
+
+### 禁用规则
+全程禁止出现任何体型修正类表述（包括但不限于显瘦、显高、修饰部位、拉长比例等），所有判断与修改仅围绕风格美学本身展开。
 
 ## 输出格式
-输出 JSON 对象，字段如下：
-- approved: bool，是否通过审查（无需修改）
-- issues: string[]，发现的问题列表。通过审查时为空数组
-- improved_payload: object | null，改进后的完整穿搭方案（结构与待审查方案的 payload 相同，包含 definition/morning_look/afternoon_look/difference 字段）。通过审查时为 null；未通过时必须提供改进后的完整方案
+仅输出一个标准JSON对象，包含以下字段：
+- approved: boolean类型，审查结果。原方案无需修改则为true，需要优化则为false
+- issues: 字符串数组，列出所有可提升点。每条需明确「审查维度+具体问题+美学影响」。审查通过时为空数组
+- improved_payload: 对象或null，优化后的完整穿搭方案，必须与输入payload的字段结构、层级完全一致，仅修改内容，不增删字段。审查通过时为null
 
-## 审查规则
-1. 只在确实存在问题时才不通过审查
-2. 改进方案应保留原方案的优点，只修改有问题的部分
-3. 改进方案必须符合原风格的美学体系
-4. 不要为了改而改，如果原方案已经很好，就通过审查
-5. improved_payload 的结构必须与输入的 payload 完全一致（definition/morning_look/afternoon_look/difference），不得增减字段
-6. 只输出 JSON 对象，不要输出 Markdown 代码块，不要额外解释
-7. 用中文输出"""
+## 输出强制规则
+1. 只输出纯JSON文本，不得添加任何前缀、后缀、解释说明、代码块标记
+2. 所有内容使用中文表述
+3. improved_payload的字段名、数据结构必须与输入的payload_json完全对应，不得增减任何顶层或子级字段"""
 
 CUSTOM_SCHEDULE_INTENT_APPEND = """
 
@@ -1046,7 +1082,7 @@ class DayflowService:
             logger.warning(f"[dayflow-风格审查] 未找到 grok 插件，跳过审查: style={style_name}")
             return self._render_style_reference(style_name, payload, sources), payload, sources, False, []
 
-        query = f"「{style_name}」穿搭风格 标志性单品 常见搭配错误 风格禁忌"
+        query = f"「{style_name}」穿搭风格 经典搭配范例 高级感配色 材质组合 廓形比例 美学要点"
         try:
             system_prompt = STYLE_REVIEW_SYSTEM_PROMPT.format(
                 style_name=style_name,
@@ -1083,6 +1119,13 @@ class DayflowService:
 
         if approved or not isinstance(improved_payload, dict):
             logger.info(f"[dayflow-风格审查] 审查通过 | style={style_name} | issues={issues}")
+            # 标记缓存为已审查，避免同一天内相同风格重复审查
+            cache_key = self._normalize_style_key(style_name)
+            cached = self._style_research_cache.get(cache_key)
+            if cached:
+                cached["reviewed"] = True
+                cached["sources"] = all_sources
+                self._save_style_research_cache()
             return self._render_style_reference(style_name, payload, all_sources), payload, all_sources, False, issues
 
         # Clean improved payload: remove fields not expected in cached payload
@@ -1108,6 +1151,7 @@ class DayflowService:
             "sources": all_sources,
             "raw_response": cached.get("raw_response", ""),
             "weather": cached.get("weather", ""),
+            "reviewed": True,
         }
         self._save_style_research_cache()
 
@@ -2709,20 +2753,26 @@ class DayflowService:
             logger.info(f"[dayflow] 子款式指定重做风格研究: style={outfit_style}, variants={specified_sub_variant_names}, all_day={sub_variant_all_day}")
 
         # 二次审查：人格级开关控制，在初次风格研究完成后对穿搭方案做联网复查
+        # 缓存已审查的风格跳过，避免同一天内重复消耗 Grok 搜索额度
         if bool(persona.get("enable_style_review", False)) and style_payload:
-            try:
-                reviewed_reference, reviewed_payload, reviewed_sources, was_improved, review_issues = await self._review_style_payload(
-                    outfit_style, style_payload, style_sources, persona_name=normalized_persona_name,
-                )
-                style_reference = reviewed_reference
-                style_payload = reviewed_payload
-                style_sources = reviewed_sources
-                if was_improved:
-                    logger.info(f"[dayflow-风格审查] 已采用改进方案 | persona={normalized_persona_name} | style={outfit_style} | issues={review_issues}")
-                else:
-                    logger.info(f"[dayflow-风格审查] 审查未改进，保留原方案 | persona={normalized_persona_name} | style={outfit_style} | issues={review_issues}")
-            except Exception as e:
-                logger.warning(f"[dayflow-风格审查] 审查异常，保留原方案: persona={normalized_persona_name}, style={outfit_style}, error={e}")
+            review_cache_key = self._normalize_style_key(outfit_style)
+            review_cached = self._style_research_cache.get(review_cache_key) or {}
+            if review_cached.get("reviewed"):
+                logger.info(f"[dayflow-风格审查] 缓存已审查，跳过 | persona={normalized_persona_name} | style={outfit_style}")
+            else:
+                try:
+                    reviewed_reference, reviewed_payload, reviewed_sources, was_improved, review_issues = await self._review_style_payload(
+                        outfit_style, style_payload, style_sources, persona_name=normalized_persona_name,
+                    )
+                    style_reference = reviewed_reference
+                    style_payload = reviewed_payload
+                    style_sources = reviewed_sources
+                    if was_improved:
+                        logger.info(f"[dayflow-风格审查] 已采用改进方案 | persona={normalized_persona_name} | style={outfit_style} | issues={review_issues}")
+                    else:
+                        logger.info(f"[dayflow-风格审查] 审查未改进，保留原方案 | persona={normalized_persona_name} | style={outfit_style} | issues={review_issues}")
+                except Exception as e:
+                    logger.warning(f"[dayflow-风格审查] 审查异常，保留原方案: persona={normalized_persona_name}, style={outfit_style}, error={e}")
 
         replacements = {
             "date": date_str,
