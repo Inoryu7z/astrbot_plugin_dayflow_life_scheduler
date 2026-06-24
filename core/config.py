@@ -96,6 +96,7 @@ class DayflowConfig:
                 "prompt_template_override": prompt_template_override,
                 "prompt_template": effective_prompt_template,
                 "enable_subdivision": bool(item.get("enable_subdivision", False)),
+                "enable_style_review": bool(item.get("enable_style_review", False)),
             })
         return normalized
 
