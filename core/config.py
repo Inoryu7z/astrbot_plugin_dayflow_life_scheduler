@@ -17,6 +17,14 @@ class DayflowConfig:
     def default_prompt_template(self) -> str:
         return str(self.config.get("default_prompt_template") or DEFAULT_PROMPT_TEMPLATE)
 
+    def style_research_system_prompt(self) -> str:
+        value = str(self.config.get("style_research_system_prompt") or "").strip()
+        return value or ""
+
+    def style_review_system_prompt(self) -> str:
+        value = str(self.config.get("style_review_system_prompt") or "").strip()
+        return value or ""
+
     def _normalize_persona_token(self, value: Any) -> str:
         text = str(value or "").strip()
         if not text:
@@ -47,6 +55,14 @@ class DayflowConfig:
             raw_prompt_template = item.get("prompt_template")
             prompt_template_override = str(raw_prompt_template).strip() if raw_prompt_template is not None else ""
             effective_prompt_template = prompt_template_override or default_prompt_template
+            global_style_research_prompt = self.style_research_system_prompt()
+            raw_style_research_prompt = item.get("style_research_prompt_template")
+            style_research_prompt_override = str(raw_style_research_prompt).strip() if raw_style_research_prompt is not None else ""
+            effective_style_research_prompt = style_research_prompt_override or global_style_research_prompt
+            global_style_review_prompt = self.style_review_system_prompt()
+            raw_style_review_prompt = item.get("style_review_prompt_template")
+            style_review_prompt_override = str(raw_style_review_prompt).strip() if raw_style_review_prompt is not None else ""
+            effective_style_review_prompt = style_review_prompt_override or global_style_review_prompt
             aliases = []
             for candidate in [
                 item.get("alias"),
@@ -95,6 +111,10 @@ class DayflowConfig:
                 "retry_count": self._to_int(item.get("retry_count"), 2),
                 "prompt_template_override": prompt_template_override,
                 "prompt_template": effective_prompt_template,
+                "style_research_prompt_override": style_research_prompt_override,
+                "style_research_prompt_template": effective_style_research_prompt,
+                "style_review_prompt_override": style_review_prompt_override,
+                "style_review_prompt_template": effective_style_review_prompt,
                 "enable_subdivision": bool(item.get("enable_subdivision", False)),
                 "enable_style_review": bool(item.get("enable_style_review", False)),
             })

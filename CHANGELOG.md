@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.6.9 - 2026-06-27
+
+**🔧 模板人格级覆盖**
+
+* 新增全局配置项 `style_review_system_prompt`：将二次审查提示词从硬编码常量暴露为用户可编辑的配置项，与 `style_research_system_prompt` 和 `default_prompt_template` 保持一致
+* 新增人格级覆盖字段 `style_research_prompt_template`：可为人格单独配置风格研究模板，优先级高于全局风格研究系统提示词，留空则继承全局模板
+* 新增人格级覆盖字段 `style_review_prompt_template`：可为人格单独配置二次审查模板，优先级高于全局二次审查系统提示词，留空则继承全局模板
+* 三类模板（日程生成 / 风格研究 / 二次审查）现已统一支持「全局默认 + 人格级覆盖」的配置模式
+
+---
+
 ## v1.6.8 - 2026-06-24
 
 **🔍 风格研究二次审查**
