@@ -950,11 +950,13 @@ class DayflowService:
             system_prompt += anti_repetition_append
             logger.info(f"[dayflow-风格研究] 防重复追加 | persona={persona_name} | style={style_name} | history_count={len(self.store.collect_recent_style_outfits(persona_name, style_name, max_occurrences=3))}")
 
+        injected_sub_variants = ""
         selected_sub_variants = self._select_sub_variants(style_name, specified_names=specified_sub_variant_names, all_day=sub_variant_all_day)
         if selected_sub_variants:
             sub_variants_append = self._build_sub_variants_append(style_name, selected_sub_variants, all_day=sub_variant_all_day)
             if sub_variants_append:
                 system_prompt += sub_variants_append
+                injected_sub_variants = sub_variants_append
                 logger.info(f"[dayflow-风格研究] 子款式追加 | style={style_name} | variants={[v['name'] for v in selected_sub_variants]}")
 
         intent_overrides = None
@@ -1014,6 +1016,7 @@ class DayflowService:
                 "sources": sources,
                 "raw_response": raw_text,
                 "weather": real_weather or "",
+                "injected_sub_variants": injected_sub_variants,
             }
             if selected_sub_variants:
                 self._record_sub_variants_usage(style_name, [v.get("name", "") for v in selected_sub_variants])
@@ -1042,6 +1045,7 @@ class DayflowService:
                 "sources": sources,
                 "raw_response": raw_text,
                 "weather": "",
+                "injected_sub_variants": injected_sub_variants,
             }
             self._save_style_research_cache()
             self._update_debug_payload({
@@ -1096,6 +1100,27 @@ class DayflowService:
         except Exception as e:
             logger.warning(f"[dayflow-风格审查] 系统提示词格式化失败: {e}")
             return self._render_style_reference(style_name, payload, sources), payload, sources, False, []
+
+        # 注入初次风格研究阶段的预置款式描述与防重复上下文，避免审查时错误纠正特殊款式（如 cosplay、洛丽塔等）
+        review_inject_parts = []
+        review_cache_key = self._normalize_style_key(style_name)
+        review_cached = self._style_research_cache.get(review_cache_key) or {}
+        injected_sub_variants = str(review_cached.get("injected_sub_variants") or "").strip()
+        if injected_sub_variants:
+            review_inject_parts.append(injected_sub_variants)
+        has_anti_repetition_review = False
+        if persona_name:
+            anti_repetition_append = self._build_style_anti_repetition_append(persona_name, style_name)
+            if anti_repetition_append.strip():
+                review_inject_parts.append(anti_repetition_append)
+                has_anti_repetition_review = True
+        if review_inject_parts:
+            system_prompt += (
+                "\n\n## 初次风格研究阶段的指定经典款式（审查基准，必须遵守）\n"
+                + "\n\n".join(review_inject_parts)
+                + "\n\n**重要约束**：上述内容为初次风格研究阶段注入的指定经典款式描述与防重复约束，待审查方案正是基于这些描述设计的。审查与改进必须以此为基准，不得将方案纠正为偏离这些描述的其他风格或泛化为通用搭配。改进只能在忠于上述款式描述的前提下优化美学细节。"
+            )
+            logger.info(f"[dayflow-风格审查] 注入上下文 | style={style_name} | has_sub_variants={bool(injected_sub_variants)} | has_anti_repetition={has_anti_repetition_review}")
 
         logger.info(f"[dayflow-风格审查] 查询 | style={style_name} | persona={persona_name} | query={query}")
         result = await grok._do_search(query=query, system_prompt=system_prompt, use_retry=True, prefer_quality=True)
@@ -1156,6 +1181,7 @@ class DayflowService:
             "sources": all_sources,
             "raw_response": cached.get("raw_response", ""),
             "weather": cached.get("weather", ""),
+            "injected_sub_variants": cached.get("injected_sub_variants", ""),
             "reviewed": True,
         }
         self._save_style_research_cache()
