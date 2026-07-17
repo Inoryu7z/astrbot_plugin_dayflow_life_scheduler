@@ -212,6 +212,7 @@ class PluginPageApi:
         return self._ok({
             "name": result.get("name", ""),
             "description": result.get("description", ""),
+            "critique": result.get("critique", ""),
             "style_name": style_name,
             "original_name": original_name,
             "note": "审核师已产出修改版本，可继续迭代或通过入库",
