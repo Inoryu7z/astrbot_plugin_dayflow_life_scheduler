@@ -348,7 +348,17 @@ class PluginPageApi:
     # ------------------------------------------------------------------
     async def get_or_set_prompts(self):
         if self._method() != "POST":
-            return self._ok(self.curated_store.get_prompts())
+            # GET：返回用户配置 + 内置默认提示词（供前端展示参考）
+            from .designer import DEFAULT_DESIGNER_PROMPT, DEFAULT_REVIEWER_PROMPT
+            prompts = self.curated_store.get_prompts()
+            return self._ok({
+                "designer": prompts.get("designer") or "",
+                "reviewer": prompts.get("reviewer") or "",
+                "default_designer": DEFAULT_DESIGNER_PROMPT,
+                "default_reviewer": DEFAULT_REVIEWER_PROMPT,
+                "designer_is_default": not bool(prompts.get("designer")),
+                "reviewer_is_default": not bool(prompts.get("reviewer")),
+            })
         data = await self._body()
         designer = data.get("designer")
         reviewer = data.get("reviewer")
@@ -361,7 +371,16 @@ class PluginPageApi:
         )
         if not ok:
             return self._err(msg)
-        return self._ok({"message": msg, "prompts": self.curated_store.get_prompts()})
+        from .designer import DEFAULT_DESIGNER_PROMPT, DEFAULT_REVIEWER_PROMPT
+        prompts = self.curated_store.get_prompts()
+        return self._ok({
+            "message": msg,
+            "prompts": prompts,
+            "default_designer": DEFAULT_DESIGNER_PROMPT,
+            "default_reviewer": DEFAULT_REVIEWER_PROMPT,
+            "designer_is_default": not bool(prompts.get("designer")),
+            "reviewer_is_default": not bool(prompts.get("reviewer")),
+        })
 
     # ------------------------------------------------------------------
     # 概览 tab
