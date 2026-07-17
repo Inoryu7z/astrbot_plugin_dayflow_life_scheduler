@@ -12,6 +12,7 @@ from .core.generator import (
     render_schedule_display,
 )
 from .core.constants import STYLE_SUB_VARIANTS
+from .core.page_api import PluginPageApi
 from .core.service import DayflowService
 
 DAYFLOW_INJECTION_HEADER = "<DayFlow-Schedule>"
@@ -91,6 +92,17 @@ class DayflowPlugin(Star):
 
     async def initialize(self):
         await self.service.initialize()
+        # 注册优秀穿搭库 webui 后端 API
+        self.page_api = PluginPageApi(
+            context=self.context,
+            curated_store=self.service.curated_store,
+            outfit_designer=self.service.outfit_designer,
+            service=self.service,
+        )
+        try:
+            self.page_api.register()
+        except Exception as e:
+            logger.warning(f"[dayflow] 优秀库 webui API 注册失败: {e}")
 
     async def terminate(self):
         await self.service.terminate()

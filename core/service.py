@@ -13,6 +13,8 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .config import DayflowConfig
 from .constants import DEFAULT_VARIATION_LEVEL, STYLE_SUB_VARIANTS, SUB_VARIANT_NAME_TO_STYLE, VARIATION_LEVEL_DEFINITIONS
+from .curated_store import CuratedStore
+from .designer import OutfitDesigner
 from .generator import (
     build_draft_skeleton,
     build_format_priority_append_prompt,
@@ -277,6 +279,17 @@ class DayflowService:
         self.data_dir = base_data_dir / "plugin_data" / self.PLUGIN_NAME
         retention_days = self._schedule_retention_days()
         self.store = DayflowStore(data_dir=self.data_dir, retention_days=retention_days)
+        # 优秀穿搭库：webui 工作流写入，运行时风格研究概率性注入读取
+        self.curated_store = CuratedStore(data_dir=self.data_dir)
+        # 设计师/审核师：webui 工作流的 LLM 调用
+        self.outfit_designer = OutfitDesigner(
+            context=context,
+            curated_store=self.curated_store,
+            designer_provider_id=self.cfg.designer_provider_id(),
+            reviewer_provider_id=self.cfg.reviewer_provider_id(),
+            fallback_provider_getter=self._get_designer_fallback_provider,
+            llm_timeout_seconds=self._llm_timeout_seconds(),
+        )
         self.scheduler_task: asyncio.Task | None = None
         self._scheduler_running = False
         self._last_debug_payload: dict[str, Any] = {}
@@ -378,6 +391,19 @@ class DayflowService:
     def _final_fallback_provider_id(self) -> str | None:
         value = str(self.config.get("final_fallback_provider") or "").strip()
         return value or None
+
+    def _get_designer_fallback_provider(self) -> str:
+        """webui 设计师/审核师 provider 未配置时的兜底回调。
+
+        优先使用 final_fallback_provider；都没有则返回空字符串（_call_llm 会抛错）。
+        """
+        return str(self.config.get("final_fallback_provider") or "").strip()
+
+    def refresh_curated_designer_providers(self) -> None:
+        """配置变更后刷新 outfit_designer 的 provider 引用（热重载时调用）。"""
+        self.outfit_designer.designer_provider_id = self.cfg.designer_provider_id()
+        self.outfit_designer.reviewer_provider_id = self.cfg.reviewer_provider_id()
+        self.outfit_designer._llm_timeout_seconds = self._llm_timeout_seconds()
 
     def _schedule_retention_days(self) -> int:
         try:
@@ -959,6 +985,35 @@ class DayflowService:
                 injected_sub_variants = sub_variants_append
                 logger.info(f"[dayflow-风格研究] 子款式追加 | style={style_name} | variants={[v['name'] for v in selected_sub_variants]}")
 
+        # 优秀穿搭库概率注入（独立于内置子款式，复用 _build_sub_variants_append 机制）
+        # 100% 调用 Grok，但以概率 P 将优秀设计作为「指定经典款式」注入
+        # cosplay 默认 P=1.0，其他风格默认 P=0.5（可在 webui 单独配置）
+        injected_curated_names: list[str] = []
+        curated_probability = self.curated_store.get_probability(style_name)
+        curated_roll = random.random()
+        if curated_roll < curated_probability:
+            # 排除已被内置子款式占用的名称，避免重复
+            builtin_names = [v.get("name", "") for v in (selected_sub_variants or [])]
+            curated_variants = self.curated_store.select_for_injection(
+                style_name, count=2, exclude_names=builtin_names,
+            )
+            if curated_variants:
+                curated_append = self._build_sub_variants_append(
+                    style_name, curated_variants, all_day=(len(curated_variants) == 1),
+                )
+                if curated_append:
+                    system_prompt += curated_append
+                    injected_curated_names = [v.get("name", "") for v in curated_variants]
+                    logger.info(
+                        f"[dayflow-风格研究] 优秀库注入 | style={style_name} | roll={curated_roll:.2f} | "
+                        f"prob={curated_probability} | curated={injected_curated_names}"
+                    )
+        else:
+            logger.debug(
+                f"[dayflow-风格研究] 优秀库跳过 | style={style_name} | "
+                f"roll={curated_roll:.2f} | prob={curated_probability}"
+            )
+
         intent_overrides = None
         if extra_requirement and pool_options:
             query += f" | 用户定制要求：{extra_requirement}"
@@ -1022,6 +1077,9 @@ class DayflowService:
                 self._record_sub_variants_usage(style_name, [v.get("name", "") for v in selected_sub_variants])
             else:
                 self._save_style_research_cache()
+            # 优秀库注入成功后，增加被注入条目的使用计数
+            if injected_curated_names:
+                await self.curated_store.increment_use_counts(style_name, injected_curated_names)
             logger.info(f"[dayflow-风格研究] 来源 | style={style_name} | sources={self._render_sources_preview(sources)}")
             self._update_debug_payload({
                 "style_research_cache_hit": False,

@@ -25,6 +25,17 @@ class DayflowConfig:
         value = str(self.config.get("style_review_system_prompt") or "").strip()
         return value or ""
 
+    def final_fallback_provider(self) -> str:
+        return str(self.config.get("final_fallback_provider") or "").strip()
+
+    def designer_provider_id(self) -> str:
+        """优秀库 webui 设计师 provider。留空时由 service 回退到 final_fallback_provider。"""
+        return str(self.config.get("designer_provider") or "").strip()
+
+    def reviewer_provider_id(self) -> str:
+        """优秀库 webui 审核师 provider。留空时由 service 回退到 final_fallback_provider。"""
+        return str(self.config.get("reviewer_provider") or "").strip()
+
     def _normalize_persona_token(self, value: Any) -> str:
         text = str(value or "").strip()
         if not text:

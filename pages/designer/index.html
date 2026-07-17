@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>优秀穿搭库</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          优秀穿搭库
+          <span class="sidebar-brand-sub">Dayflow Designer</span>
+        </div>
+        <nav class="sidebar-nav" id="nav">
+          <button class="nav-item active" data-page="design">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 19l7-7 3 3-7 7-3-3z"/>
+              <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>
+              <path d="M2 2l7.586 7.586"/>
+              <circle cx="11" cy="11" r="2"/>
+            </svg>
+            <span>设计</span>
+          </button>
+          <button class="nav-item" data-page="library">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            <span>优秀库</span>
+            <span class="nav-badge" id="badge-library" style="display:none">0</span>
+          </button>
+          <button class="nav-item" data-page="prompts">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="9" y1="13" x2="15" y2="13"/>
+              <line x1="9" y1="17" x2="13" y2="17"/>
+            </svg>
+            <span>提示词</span>
+          </button>
+          <button class="nav-item" data-page="overview">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="7" height="9"/>
+              <rect x="14" y="3" width="7" height="5"/>
+              <rect x="14" y="12" width="7" height="9"/>
+              <rect x="3" y="16" width="7" height="5"/>
+            </svg>
+            <span>概览</span>
+          </button>
+        </nav>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-footer">
+          <button class="nav-item" id="theme-toggle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" id="theme-icon-dark">
+              <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+            </svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" id="theme-icon-light" class="hidden">
+              <circle cx="12" cy="12" r="4"/>
+              <path d="M12 2v2m0 16v2m-6.93-15.07 1.41 1.41m11.04 11.04 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+            </svg>
+            <span>主题</span>
+          </button>
+          <div class="sidebar-info" id="footer-info">加载中...</div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+
+        <!-- 设计 Tab -->
+        <section class="page active" id="page-design">
+          <header class="page-header">
+            <span class="page-title">设计穿搭</span>
+            <div class="page-actions">
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-styles-design">刷新风格</button>
+            </div>
+          </header>
+
+          <div class="card">
+            <div class="card-title">选择风格</div>
+            <div class="form-group">
+              <label class="form-label">风格名称</label>
+              <div class="style-selector">
+                <input
+                  type="text"
+                  class="form-input"
+                  id="design-style-input"
+                  placeholder="选择已有风格或输入新风格名..."
+                  autocomplete="off"
+                />
+                <div class="style-dropdown" id="design-style-dropdown"></div>
+              </div>
+              <div class="form-hint">
+                风格来源：默认池 / 人格池 / 内置子款式 / 优秀库已入库。也可手动输入新风格名。
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">用户要求（可选，优先级最高）</label>
+              <textarea
+                class="form-textarea"
+                id="design-user-input"
+                placeholder="例如：这套衣服应该可爱一点 / 我希望有蝴蝶结元素 / 也可以直接输入一套较成品的穿搭描述，让设计师优化..."
+                rows="4"
+              ></textarea>
+              <div class="form-hint">
+                用户意见优先级最高。可输入设计要求、参考穿搭、或具体调整方向。
+              </div>
+            </div>
+
+            <div class="page-actions">
+              <button class="btn btn-primary" id="btn-design" disabled>
+                <span class="btn-text">让设计师设计</span>
+              </button>
+            </div>
+          </div>
+
+          <div id="design-result-area"></div>
+
+          <div id="iteration-history-area"></div>
+        </section>
+
+        <!-- 优秀库 Tab -->
+        <section class="page" id="page-library">
+          <header class="page-header">
+            <span class="page-title">优秀穿搭库</span>
+            <div class="page-actions">
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-library">刷新</button>
+              <button class="btn btn-secondary btn-sm" id="btn-export">导出</button>
+              <button class="btn btn-secondary btn-sm" id="btn-import">导入</button>
+            </div>
+          </header>
+
+          <div class="filter-bar" id="library-filters">
+            <button class="filter-btn active" data-style="">全部</button>
+          </div>
+
+          <div id="library-list">
+            <div class="loading"><span class="spinner"></span>加载中...</div>
+          </div>
+        </section>
+
+        <!-- 提示词 Tab -->
+        <section class="page" id="page-prompts">
+          <header class="page-header">
+            <span class="page-title">提示词配置</span>
+            <div class="page-actions">
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-prompts">重新加载</button>
+              <button class="btn btn-primary btn-sm" id="btn-save-prompts">保存</button>
+            </div>
+          </header>
+
+          <div class="card">
+            <div class="card-title">设计师提示词</div>
+            <div class="form-group">
+              <label class="form-label">系统提示词（留空使用内置默认）</label>
+              <textarea
+                class="form-textarea form-textarea-large"
+                id="prompt-designer"
+                placeholder="留空使用内置默认设计师提示词..."
+                rows="20"
+              ></textarea>
+              <div class="form-hint">
+                散文输出（不需要 JSON 字段）。占位符：{style_name}。已有优秀设计与用户要求会作为追加段自动拼接。
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">二次审核师提示词</div>
+            <div class="form-group">
+              <label class="form-label">系统提示词（留空使用内置默认）</label>
+              <textarea
+                class="form-textarea form-textarea-large"
+                id="prompt-reviewer"
+                placeholder="留空使用内置默认审核师提示词..."
+                rows="20"
+              ></textarea>
+              <div class="form-hint">
+                散文输出。占位符：{style_name}、{original_name}、{original_description}、{user_feedback}。用户意见优先级最高。
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 概览 Tab -->
+        <section class="page" id="page-overview">
+          <header class="page-header">
+            <span class="page-title">风格概览</span>
+            <div class="page-actions">
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-overview">刷新</button>
+            </div>
+          </header>
+
+          <div class="overview-stats" id="overview-stats">
+            <div class="loading"><span class="spinner"></span>加载中...</div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">所有风格</div>
+            <table class="data-table" id="overview-table">
+              <thead>
+                <tr>
+                  <th>风格名</th>
+                  <th class="col-count">条目数</th>
+                  <th class="col-prob">注入概率</th>
+                  <th class="col-num">平均使用</th>
+                  <th class="col-num">最少使用</th>
+                  <th class="col-num">最多使用</th>
+                </tr>
+              </thead>
+              <tbody id="overview-tbody">
+                <tr><td colspan="6" style="text-align:center;color:var(--text-tertiary);padding:40px">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast-container"></div>
+    <div id="modal-container"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
