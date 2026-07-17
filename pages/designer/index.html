@@ -151,14 +151,21 @@
           </header>
 
           <div class="card">
-            <div class="card-title">设计师提示词</div>
+            <div class="card-title-row">
+              <div class="card-title">设计师提示词</div>
+              <span class="badge badge-default" id="badge-designer-status">使用默认</span>
+            </div>
+            <details class="default-prompt-collapse" open>
+              <summary>内置默认设计师提示词（参考）</summary>
+              <pre class="default-prompt-pre" id="default-designer-prompt">加载中...</pre>
+            </details>
             <div class="form-group">
-              <label class="form-label">系统提示词（留空使用内置默认）</label>
+              <label class="form-label">自定义提示词（留空使用内置默认）</label>
               <textarea
                 class="form-textarea form-textarea-large"
                 id="prompt-designer"
-                placeholder="留空使用内置默认设计师提示词..."
-                rows="20"
+                placeholder="留空使用上方内置默认设计师提示词..."
+                rows="14"
               ></textarea>
               <div class="form-hint">
                 散文输出（不需要 JSON 字段）。占位符：{style_name}。已有优秀设计与用户要求会作为追加段自动拼接。
@@ -167,14 +174,21 @@
           </div>
 
           <div class="card">
-            <div class="card-title">二次审核师提示词</div>
+            <div class="card-title-row">
+              <div class="card-title">二次审核师提示词</div>
+              <span class="badge badge-default" id="badge-reviewer-status">使用默认</span>
+            </div>
+            <details class="default-prompt-collapse" open>
+              <summary>内置默认审核师提示词（参考）</summary>
+              <pre class="default-prompt-pre" id="default-reviewer-prompt">加载中...</pre>
+            </details>
             <div class="form-group">
-              <label class="form-label">系统提示词（留空使用内置默认）</label>
+              <label class="form-label">自定义提示词（留空使用内置默认）</label>
               <textarea
                 class="form-textarea form-textarea-large"
                 id="prompt-reviewer"
-                placeholder="留空使用内置默认审核师提示词..."
-                rows="20"
+                placeholder="留空使用上方内置默认审核师提示词..."
+                rows="14"
               ></textarea>
               <div class="form-hint">
                 散文输出。占位符：{style_name}、{original_name}、{original_description}、{user_feedback}。用户意见优先级最高。

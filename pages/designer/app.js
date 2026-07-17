@@ -883,22 +883,317 @@ function openProbabilityModal(style, currentProb) {
 }
 
 async function exportData() {
-  try {
-    const res = await api.get("export");
-    const json = JSON.stringify(res, null, 2);
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `dayflow_curated_outfits_${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    toast("已导出", "success");
-  } catch (e) {
-    toast(`导出失败: ${e.message}`, "error");
+  // 确保数据已加载
+  if (!state.libraryData) {
+    try {
+      const res = await api.get("outfits");
+      state.libraryData = res || { styles: [], total: 0 };
+    } catch (e) {
+      toast(`加载数据失败: ${e.message}`, "error");
+      return;
+    }
   }
+  const styles = ((state.libraryData && state.libraryData.styles) || []).filter(
+    (s) => s.items && s.items.length > 0
+  );
+  if (styles.length === 0) {
+    toast("优秀库为空，无可导出内容", "warning");
+    return;
+  }
+
+  // 选中状态：Map<styleIndex, Set<itemIndex>>；默认全选
+  const selected = new Map();
+  styles.forEach((s, si) => {
+    selected.set(si, new Set(s.items.map((_, ii) => ii)));
+  });
+
+  const bodyHtml = `
+    <div class="export-toolbar">
+      <div class="export-toolbar-left">
+        <button class="btn btn-sm btn-secondary" id="export-select-all">全选</button>
+        <button class="btn btn-sm btn-secondary" id="export-select-none">全不选</button>
+      </div>
+      <div class="export-toolbar-right">
+        <label class="export-checkbox-label">
+          <input type="checkbox" id="export-include-prompts" checked />
+          <span>包含提示词配置</span>
+        </label>
+        <span class="export-stat" id="export-stat">已选 0 套</span>
+      </div>
+    </div>
+    <div class="form-hint export-hint">
+      勾选风格可一次选中该风格下全部条目；勾选具体条目则只导出选中项。导出文件由浏览器自动下载到默认下载目录。
+    </div>
+    <div class="export-tree" id="export-tree"></div>
+  `;
+  const footerHtml = `
+    <button class="btn btn-secondary" data-modal-cancel>取消</button>
+    <button class="btn btn-primary" data-modal-confirm>导出选中</button>
+  `;
+
+  showModal({
+    title: "导出优秀库",
+    bodyHtml,
+    footerHtml,
+    onMount: (container, close) => {
+      container.querySelector("[data-modal-cancel]").addEventListener("click", close);
+
+      const treeEl = container.querySelector("#export-tree");
+      const statEl = container.querySelector("#export-stat");
+
+      const countSelected = () => {
+        let n = 0;
+        selected.forEach((set) => (n += set.size));
+        return n;
+      };
+      const updateStat = () => {
+        if (statEl) statEl.textContent = `已选 ${countSelected()} 套`;
+      };
+
+      const renderTree = () => {
+        treeEl.innerHTML = styles
+          .map((s, si) => {
+            const set = selected.get(si);
+            const selCount = set ? set.size : 0;
+            const isAll = selCount === s.items.length && selCount > 0;
+            const itemsHtml = s.items
+              .map((item, ii) => {
+                const checked = set && set.has(ii) ? "checked" : "";
+                const desc = String(item.description || "");
+                const preview = desc.slice(0, 80);
+                const ellipsis = desc.length > 80 ? "…" : "";
+                return `
+                <div class="export-item-row" data-style-idx="${si}" data-item-idx="${ii}">
+                  <label class="export-checkbox-label export-item-label">
+                    <input type="checkbox" class="export-item-checkbox" ${checked} />
+                    <span class="export-item-name">${esc(item.name)}</span>
+                  </label>
+                  <div class="export-item-preview">${esc(preview)}${ellipsis}</div>
+                </div>`;
+              })
+              .join("");
+            return `
+            <div class="export-style-group" data-style-idx="${si}">
+              <div class="export-style-header">
+                <label class="export-checkbox-label export-style-label">
+                  <input type="checkbox" class="export-style-checkbox" ${isAll ? "checked" : ""} />
+                  <span class="export-style-name">${esc(s.style)}</span>
+                  <span class="export-style-count">${selCount}/${s.items.length}</span>
+                </label>
+              </div>
+              <div class="export-items">${itemsHtml}</div>
+            </div>`;
+          })
+          .join("");
+        bindTreeEvents();
+        // 设置 indeterminate 状态
+        styles.forEach((s, si) => {
+          const set = selected.get(si);
+          const selCount = set ? set.size : 0;
+          const groupEl = treeEl.querySelector(`.export-style-group[data-style-idx="${si}"]`);
+          if (!groupEl) return;
+          const cb = groupEl.querySelector(".export-style-checkbox");
+          if (cb) cb.indeterminate = selCount > 0 && selCount < s.items.length;
+        });
+      };
+
+      const bindTreeEvents = () => {
+        // 风格级勾选
+        treeEl.querySelectorAll(".export-style-group").forEach((groupEl) => {
+          const si = Number(groupEl.dataset.styleIdx);
+          const styleCheckbox = groupEl.querySelector(".export-style-checkbox");
+          const countEl = groupEl.querySelector(".export-style-count");
+          styleCheckbox.addEventListener("change", () => {
+            const styleGroup = styles[si];
+            if (!styleGroup) return;
+            if (styleCheckbox.checked) {
+              selected.set(si, new Set(styleGroup.items.map((_, ii) => ii)));
+            } else {
+              selected.delete(si);
+            }
+            const set = selected.get(si);
+            const selCount = set ? set.size : 0;
+            if (countEl) countEl.textContent = `${selCount}/${styleGroup.items.length}`;
+            groupEl.querySelectorAll(".export-item-checkbox").forEach((cb) => {
+              cb.checked = styleCheckbox.checked;
+            });
+            styleCheckbox.indeterminate = false;
+            updateStat();
+          });
+        });
+        // 条目级勾选
+        treeEl.querySelectorAll(".export-item-row").forEach((itemEl) => {
+          const si = Number(itemEl.dataset.styleIdx);
+          const ii = Number(itemEl.dataset.itemIdx);
+          const itemCheckbox = itemEl.querySelector(".export-item-checkbox");
+          itemCheckbox.addEventListener("change", () => {
+            if (!selected.has(si)) selected.set(si, new Set());
+            const set = selected.get(si);
+            if (itemCheckbox.checked) set.add(ii);
+            else set.delete(ii);
+            if (set.size === 0) selected.delete(si);
+            // 更新风格级 checkbox 状态
+            const styleGroup = styles[si];
+            const groupEl = treeEl.querySelector(`.export-style-group[data-style-idx="${si}"]`);
+            if (groupEl && styleGroup) {
+              const styleCheckbox = groupEl.querySelector(".export-style-checkbox");
+              const countEl = groupEl.querySelector(".export-style-count");
+              const selCount = set ? set.size : 0;
+              const total = styleGroup.items.length;
+              if (countEl) countEl.textContent = `${selCount}/${total}`;
+              if (styleCheckbox) {
+                styleCheckbox.checked = selCount === total && selCount > 0;
+                styleCheckbox.indeterminate = selCount > 0 && selCount < total;
+              }
+            }
+            updateStat();
+          });
+        });
+      };
+
+      renderTree();
+      updateStat();
+
+      // 全选/全不选
+      container.querySelector("#export-select-all").addEventListener("click", () => {
+        selected.clear();
+        styles.forEach((s, si) => {
+          selected.set(si, new Set(s.items.map((_, ii) => ii)));
+        });
+        renderTree();
+        updateStat();
+      });
+      container.querySelector("#export-select-none").addEventListener("click", () => {
+        selected.clear();
+        renderTree();
+        updateStat();
+      });
+
+      // 导出按钮
+      container.querySelector("[data-modal-confirm]").addEventListener("click", async () => {
+        const includePrompts = container.querySelector("#export-include-prompts").checked;
+        const outfits = {};
+        const probabilities = {};
+        let totalCount = 0;
+        selected.forEach((itemIdxSet, si) => {
+          const styleGroup = styles[si];
+          if (!styleGroup || !styleGroup.items) return;
+          const items = [];
+          itemIdxSet.forEach((ii) => {
+            const item = styleGroup.items[ii];
+            if (item) items.push(item);
+          });
+          if (items.length === 0) return;
+          outfits[styleGroup.style] = items;
+          probabilities[styleGroup.style] = styleGroup.probability;
+          totalCount += items.length;
+        });
+        if (totalCount === 0) {
+          toast("未勾选任何条目", "warning");
+          return;
+        }
+        const payload = { outfits, probabilities };
+        if (includePrompts) {
+          payload.prompts = state.promptsData || { designer: "", reviewer: "" };
+        }
+        const json = JSON.stringify(payload, null, 2);
+        const styleCount = Object.keys(outfits).length;
+        const filename = `dayflow_curated_outfits_${new Date().toISOString().slice(0, 10)}.json`;
+
+        // 优先用 File System Access API 让用户选保存路径
+        if (window.showSaveFilePicker) {
+          try {
+            const fileHandle = await window.showSaveFilePicker({
+              suggestedName: filename,
+              types: [
+                {
+                  description: "JSON 文件",
+                  accept: { "application/json": [".json"] },
+                },
+              ],
+            });
+            const writable = await fileHandle.createWritable();
+            await writable.write(json);
+            await writable.close();
+            toast(`已导出 ${totalCount} 套穿搭（${styleCount} 个风格）到所选路径`, "success");
+            close();
+            return;
+          } catch (e) {
+            if (e && e.name === "AbortError") {
+              // 用户取消选择，不报错
+              return;
+            }
+            // 其他错误降级到下面的展示模式
+            console.warn("showSaveFilePicker 失败，降级到展示模式:", e);
+          }
+        }
+
+        // 降级：在新 modal 中展示 JSON 内容，提供复制按钮和下载按钮
+        close();
+        showExportResultModal(json, filename, totalCount, styleCount);
+      });
+    },
+  });
+}
+
+// 导出结果展示 modal（降级方案：showSaveFilePicker 不可用时使用）
+function showExportResultModal(json, filename, totalCount, styleCount) {
+  const bodyHtml = `
+    <div class="form-hint export-hint">
+      当前环境不支持文件保存对话框，请复制下方 JSON 内容保存到任意位置，或点击「下载」按钮触发浏览器下载。
+    </div>
+    <div class="export-result-actions" style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-primary btn-sm" id="export-copy-btn">复制到剪贴板</button>
+      <button class="btn btn-secondary btn-sm" id="export-download-btn">下载文件</button>
+    </div>
+    <textarea class="form-textarea form-textarea-large export-result-textarea" id="export-result-text" readonly>${esc(json)}</textarea>
+    <div class="form-hint" style="margin-top:8px">
+      已选 ${totalCount} 套穿搭（${styleCount} 个风格）。建议文件名：<code>${esc(filename)}</code>
+    </div>
+  `;
+  const footerHtml = `
+    <button class="btn btn-secondary" data-modal-close>关闭</button>
+  `;
+  showModal({
+    title: "导出结果",
+    bodyHtml,
+    footerHtml,
+    onMount: (container, closeModal) => {
+      container.querySelector("[data-modal-close]").addEventListener("click", closeModal);
+
+      // 复制到剪贴板
+      container.querySelector("#export-copy-btn").addEventListener("click", async () => {
+        const textEl = container.querySelector("#export-result-text");
+        try {
+          await navigator.clipboard.writeText(textEl.value);
+          toast("已复制到剪贴板", "success");
+        } catch (e) {
+          // 降级：选中文本让用户手动复制
+          textEl.select();
+          try {
+            document.execCommand("copy");
+            toast("已复制到剪贴板", "success");
+          } catch {
+            toast("复制失败，请手动选择文本复制", "error");
+          }
+        }
+      });
+
+      // 下载文件（浏览器原生下载，可能保存到默认下载目录）
+      container.querySelector("#export-download-btn").addEventListener("click", () => {
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast("已触发浏览器下载，请查看下载目录", "success");
+      });
+    },
+  });
 }
 
 function openImportModal() {
@@ -998,15 +1293,45 @@ async function loadPrompts() {
   state.promptsLoading = true;
   try {
     const res = await api.get("prompts");
-    state.promptsData = res || { designer: "", reviewer: "" };
+    state.promptsData = res || {};
     const designerEl = $("prompt-designer");
     const reviewerEl = $("prompt-reviewer");
-    if (designerEl) designerEl.value = state.promptsData.designer || "";
-    if (reviewerEl) reviewerEl.value = state.promptsData.reviewer || "";
+    if (designerEl) designerEl.value = res.designer || "";
+    if (reviewerEl) reviewerEl.value = res.reviewer || "";
+    // 填充默认提示词展示区
+    const defaultDesignerEl = $("default-designer-prompt");
+    const defaultReviewerEl = $("default-reviewer-prompt");
+    if (defaultDesignerEl) defaultDesignerEl.textContent = res.default_designer || "";
+    if (defaultReviewerEl) defaultReviewerEl.textContent = res.default_reviewer || "";
+    // 更新状态徽章
+    updatePromptStatusBadges(res);
   } catch (e) {
     toast(`加载提示词失败: ${e.message}`, "error");
   } finally {
     state.promptsLoading = false;
+  }
+}
+
+function updatePromptStatusBadges(data) {
+  const designerBadge = $("badge-designer-status");
+  const reviewerBadge = $("badge-reviewer-status");
+  if (designerBadge) {
+    if (data.designer_is_default) {
+      designerBadge.textContent = "使用默认";
+      designerBadge.className = "badge badge-default";
+    } else {
+      designerBadge.textContent = "已自定义";
+      designerBadge.className = "badge badge-custom";
+    }
+  }
+  if (reviewerBadge) {
+    if (data.reviewer_is_default) {
+      reviewerBadge.textContent = "使用默认";
+      reviewerBadge.className = "badge badge-default";
+    } else {
+      reviewerBadge.textContent = "已自定义";
+      reviewerBadge.className = "badge badge-custom";
+    }
   }
 }
 
@@ -1022,7 +1347,14 @@ async function savePrompts() {
   }
   try {
     const res = await api.post("prompts", { designer, reviewer });
-    state.promptsData = res || { designer, reviewer };
+    // res 包含 message + prompts + default_*  + *_is_default
+    state.promptsData = res || {};
+    // 更新默认提示词展示区与状态徽章
+    const defaultDesignerEl = $("default-designer-prompt");
+    const defaultReviewerEl = $("default-reviewer-prompt");
+    if (defaultDesignerEl && res.default_designer) defaultDesignerEl.textContent = res.default_designer;
+    if (defaultReviewerEl && res.default_reviewer) defaultReviewerEl.textContent = res.default_reviewer;
+    updatePromptStatusBadges(res);
     toast("提示词已保存", "success");
   } catch (e) {
     toast(`保存失败: ${e.message}`, "error");

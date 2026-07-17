@@ -50,6 +50,9 @@ class CuratedStore:
             "prompts": {"designer": "", "reviewer": ""},
         }
         self.load()
+        # 首次启动：数据文件不存在时，预填内置子款式作为初始优秀库
+        if not self._file_path.exists() or not self._data["outfits"]:
+            self._seed_builtin_variants()
 
     # ------------------------------------------------------------------
     # 持久化
@@ -107,6 +110,49 @@ class CuratedStore:
             )
         except Exception as e:
             logger.warning(f"[dayflow-优秀库] 保存失败: {e}")
+
+    def _seed_builtin_variants(self) -> None:
+        """首次启动时预填内置子款式（STYLE_SUB_VARIANTS）作为初始优秀库。
+
+        - 把中华风洛丽塔、甜系洛丽塔、cosplay 三组内置子款式全部写入
+        - 标记为 builtin（use_count 初始为 0，iterations 为 -1 表示内置）
+        - 设置默认概率：cosplay=1.0，其他=0.5
+        - 持久化到 curated_outfits.json
+        """
+        try:
+            from .constants import STYLE_SUB_VARIANTS  # 延迟导入避免循环依赖
+        except Exception as e:
+            logger.warning(f"[dayflow-优秀库] 预填内置子款式失败：无法导入 STYLE_SUB_VARIANTS: {e}")
+            return
+        seeded_count = 0
+        for style_name, variants in STYLE_SUB_VARIANTS.items():
+            if not isinstance(variants, list):
+                continue
+            existing_names = {i.get("name") for i in self._data["outfits"].get(style_name, [])}
+            items = self._data["outfits"].setdefault(style_name, [])
+            for v in variants:
+                if not isinstance(v, dict):
+                    continue
+                name = str(v.get("name") or "").strip()
+                desc = str(v.get("description") or "").strip()
+                if not name or not desc or name in existing_names:
+                    continue
+                items.append({
+                    "name": name,
+                    "description": desc,
+                    "created_at": _now_iso(),
+                    "iterations": -1,  # -1 表示内置预填
+                    "use_count": 0,
+                })
+                seeded_count += 1
+            # 设置默认概率
+            if style_name == COSPLAY_STYLE_KEY:
+                self._data["probabilities"].setdefault(style_name, COSPLAY_DEFAULT_PROBABILITY)
+            else:
+                self._data["probabilities"].setdefault(style_name, DEFAULT_PROBABILITY)
+        if seeded_count > 0:
+            self._save_locked()
+            logger.info(f"[dayflow-优秀库] 首次启动预填内置子款式: {seeded_count} 套")
 
     async def save(self) -> None:
         async with self._lock:
