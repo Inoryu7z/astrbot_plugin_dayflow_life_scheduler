@@ -1,6 +1,11 @@
 // 优秀穿搭库 WebUI 前端逻辑
 // 对接 core/page_api.py 的 13 个路由
 // 4 个 tab：设计 / 优秀库 / 提示词 / 概览
+//
+// 重要：Bridge SDK 会自动解包响应
+// - 成功时：bridge.apiGet/apiPost 返回的就是后端 _ok(data) 中的 data 字段内容
+// - 失败时：bridge 抛出 Error(message)，不会返回 {status, error}
+// 因此前端直接使用返回值，错误用 try/catch 处理
 
 // ── API Client ────────────────────────────────────────────────
 class ApiClient {
@@ -43,10 +48,12 @@ const api = new ApiClient();
 // ── 全局状态 ──────────────────────────────────────────────────
 const state = {
   currentPage: "design",
-  theme: localStorage.getItem("dayflow-designer-theme") || "light",
+  theme: "light",
   // 设计 tab
   styles: [],                // /styles 返回的列表
   stylesLoaded: false,
+  selectedStyleName: "",     // 当前选中的风格名
+  styleSearchText: "",       // 搜索过滤文本
   designSession: null,       // { styleName, userInput, history: [{role, name, description, userFeedback?}] }
   designLoading: false,
   reviewLoading: false,
@@ -61,6 +68,13 @@ const state = {
   overviewData: null,
   overviewLoading: false,
 };
+
+// 主题初始化（sandbox 中 localStorage 可能不可用，需 try/catch 保护）
+try {
+  state.theme = localStorage.getItem("dayflow-designer-theme") || "light";
+} catch (e) {
+  state.theme = "light";
+}
 
 // ── 工具函数 ──────────────────────────────────────────────────
 function $(id) {
@@ -93,7 +107,6 @@ function toast(message, type = "info") {
   el.className = `toast ${type}`;
   el.textContent = String(message || "");
   container.appendChild(el);
-  // CSS animation: toast-in 自动播放
   const duration = type === "error" ? 5000 : 3000;
   setTimeout(() => {
     el.classList.add("hiding");
@@ -110,35 +123,31 @@ function showLoading(target, text = "加载中...") {
 function showEmpty(target, text = "暂无数据") {
   if (typeof target === "string") target = $(target);
   if (!target) return;
-  target.innerHTML = `<div class="empty-state"><div class="empty-state-icon">∅</div><div>${esc(text)}</div></div>`;
+  target.innerHTML = `<div class="empty-state"><div>∅</div><div>${esc(text)}</div></div>`;
 }
 
 // ── Modal 对话框 ──────────────────────────────────────────────
 function showModal({ title, bodyHtml, footerHtml, onMount, onClose }) {
   const container = $("modal-container");
   if (!container) return null;
-  const backdrop = document.createElement("div");
-  backdrop.className = "modal-backdrop";
-  backdrop.innerHTML = `
-    <div class="modal-dialog">
-      <div class="modal-header">
-        <div class="modal-title">${esc(title || "")}</div>
-        <button class="btn btn-ghost btn-sm" data-modal-close>×</button>
+  container.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <div class="modal-title">${esc(title || "")}</div>
+          <button class="btn btn-ghost btn-sm" data-modal-close>×</button>
+        </div>
+        <div class="modal-body">${bodyHtml || ""}</div>
+        ${footerHtml ? `<div class="modal-footer">${footerHtml}</div>` : ""}
       </div>
-      <div class="modal-body">${bodyHtml || ""}</div>
-      ${footerHtml ? `<div class="modal-footer">${footerHtml}</div>` : ""}
     </div>
   `;
-  container.appendChild(backdrop);
-  // 激活容器（CSS 默认 display:none，需要 .active 才显示）
+  const backdrop = container.querySelector(".modal-backdrop");
   container.classList.add("active");
-  // 关闭逻辑
+
   const close = () => {
-    backdrop.remove();
-    // 没有更多 modal 时关闭容器
-    if (!container.children.length) {
-      container.classList.remove("active");
-    }
+    container.innerHTML = "";
+    container.classList.remove("active");
     if (typeof onClose === "function") onClose();
   };
   backdrop.addEventListener("click", (e) => {
@@ -146,7 +155,6 @@ function showModal({ title, bodyHtml, footerHtml, onMount, onClose }) {
       close();
     }
   });
-  // ESC 关闭
   const escHandler = (e) => {
     if (e.key === "Escape") {
       close();
@@ -154,11 +162,10 @@ function showModal({ title, bodyHtml, footerHtml, onMount, onClose }) {
     }
   };
   document.addEventListener("keydown", escHandler);
-  // 挂载回调（用于绑定内部事件）
   if (typeof onMount === "function") {
-    onMount(backdrop, close);
+    onMount(container, close);
   }
-  return { close, backdrop };
+  return { close, container };
 }
 
 function confirmModal({ title, message, confirmText = "确认", cancelText = "取消", danger = false, onConfirm }) {
@@ -167,14 +174,14 @@ function confirmModal({ title, message, confirmText = "确认", cancelText = "�
     <button class="btn ${danger ? "btn-danger" : "btn-primary"}" data-modal-confirm>${esc(confirmText)}</button>
   `;
   const body = `<div style="line-height:1.6;color:var(--text-primary)">${esc(message)}</div>`;
-  const modal = showModal({
+  showModal({
     title,
     bodyHtml: body,
     footerHtml: footer,
-    onMount: (backdrop, close) => {
-      backdrop.querySelector("[data-modal-cancel]").addEventListener("click", close);
-      backdrop.querySelector("[data-modal-confirm]").addEventListener("click", async () => {
-        const btn = backdrop.querySelector("[data-modal-confirm]");
+    onMount: (container, close) => {
+      container.querySelector("[data-modal-cancel]").addEventListener("click", close);
+      container.querySelector("[data-modal-confirm]").addEventListener("click", async () => {
+        const btn = container.querySelector("[data-modal-confirm]");
         btn.disabled = true;
         btn.textContent = "处理中...";
         try {
@@ -187,15 +194,15 @@ function confirmModal({ title, message, confirmText = "确认", cancelText = "�
       });
     },
   });
-  return modal;
 }
 
 // ── 主题切换 ──────────────────────────────────────────────────
 function applyTheme(theme) {
   state.theme = theme;
   document.documentElement.setAttribute("data-theme", theme);
-  localStorage.setItem("dayflow-designer-theme", theme);
-  // 切换图标显示
+  try {
+    localStorage.setItem("dayflow-designer-theme", theme);
+  } catch (e) {}
   const iconDark = $("theme-icon-dark");
   const iconLight = $("theme-icon-light");
   if (iconDark && iconLight) {
@@ -216,52 +223,48 @@ function toggleTheme() {
 // ── 页面切换 ──────────────────────────────────────────────────
 function switchPage(pageName) {
   state.currentPage = pageName;
-  // 更新 nav 激活状态
   document.querySelectorAll(".nav-item[data-page]").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.page === pageName);
   });
-  // 更新 page 显隐
   document.querySelectorAll(".page").forEach((page) => {
     page.classList.toggle("active", page.id === `page-${pageName}`);
   });
-  // 按需懒加载
   if (pageName === "library" && !state.libraryData) loadLibrary();
   if (pageName === "prompts" && !state.promptsData) loadPrompts();
   if (pageName === "overview" && !state.overviewData) loadOverview();
 }
 
-// ── 设计 Tab ──────────────────────────────────────────────────
+// ── 设计 Tab：风格网格 ────────────────────────────────────────
 
 async function loadStyles() {
+  const grid = $("design-style-grid");
+  if (grid) showLoading(grid, "加载风格中...");
   try {
     const res = await api.get("styles");
-    if (res.status === "ok") {
-      state.styles = (res.data && res.data.styles) || [];
-      state.stylesLoaded = true;
-      renderStylesDropdown("");
-      updateLibraryBadge();
-    } else {
-      toast(res.message || "加载风格列表失败", "error");
-    }
+    // Bridge 自动解包：res 直接就是 {styles: [...], total: N}
+    state.styles = (res && res.styles) || [];
+    state.stylesLoaded = true;
+    renderStyleGrid();
+    updateLibraryBadge();
   } catch (e) {
-    toast(`加载风格列表失败: ${e.message}`, "error");
+    if (grid) grid.innerHTML = `<div class="style-grid-empty">加载失败: ${esc(e.message)}</div>`;
   }
 }
 
-function renderStylesDropdown(filterText) {
-  const dropdown = $("design-style-dropdown");
-  if (!dropdown) return;
-  const filter = (filterText || "").trim().toLowerCase();
+function renderStyleGrid() {
+  const grid = $("design-style-grid");
+  if (!grid) return;
+  const filter = state.styleSearchText.trim().toLowerCase();
   const filtered = filter
     ? state.styles.filter((s) => s.name.toLowerCase().includes(filter))
     : state.styles;
   if (filtered.length === 0) {
-    dropdown.innerHTML = `<div class="style-option" style="color:var(--text-tertiary);cursor:default">无匹配风格（可直接输入新名称）</div>`;
-    dropdown.classList.add("open");
+    grid.innerHTML = `<div class="style-grid-empty">${filter ? "无匹配风格" : "暂无可用风格"}</div>`;
     return;
   }
-  dropdown.innerHTML = filtered
+  grid.innerHTML = filtered
     .map((s) => {
+      const selected = s.name === state.selectedStyleName ? " selected" : "";
       const tags = (s.sources || [])
         .map((src) => `<span class="source-tag ${esc(src)}">${esc(src)}</span>`)
         .join("");
@@ -269,45 +272,37 @@ function renderStylesDropdown(filterText) {
         ? `<span class="source-tag curated">已入库 ${s.curated_count || 0}</span>`
         : "";
       return `
-        <div class="style-option" data-style-name="${esc(s.name)}">
-          <div class="style-option-name">${esc(s.name)}</div>
-          <div class="style-option-meta">${tags}${curatedBadge}</div>
+        <div class="style-card${selected}" data-style-name="${esc(s.name)}">
+          <div class="style-card-name">${esc(s.name)}</div>
+          <div class="style-card-meta">${tags}${curatedBadge}</div>
         </div>
       `;
     })
     .join("");
-  dropdown.classList.add("open");
-  // 绑定点击
-  dropdown.querySelectorAll(".style-option[data-style-name]").forEach((opt) => {
-    opt.addEventListener("click", () => {
-      const name = opt.dataset.styleName;
-      const input = $("design-style-input");
-      if (input) input.value = name;
-      dropdown.classList.remove("open");
+  grid.querySelectorAll(".style-card[data-style-name]").forEach((card) => {
+    card.addEventListener("click", () => {
+      state.selectedStyleName = card.dataset.styleName;
+      renderStyleGrid();
       updateDesignButtonState();
     });
   });
 }
 
 function updateDesignButtonState() {
-  const input = $("design-style-input");
   const btn = $("btn-design");
-  if (!input || !btn) return;
-  const hasStyle = input.value.trim().length > 0;
+  if (!btn) return;
+  const hasStyle = state.selectedStyleName.length > 0;
   btn.disabled = !hasStyle || state.designLoading;
 }
 
 async function designOutfit() {
-  const input = $("design-style-input");
-  const userInputEl = $("design-user-input");
-  if (!input) return;
-  const styleName = input.value.trim();
+  const styleName = state.selectedStyleName;
   if (!styleName) {
-    toast("请先选择或输入风格名称", "warning");
+    toast("请先选择一个风格", "warning");
     return;
   }
+  const userInputEl = $("design-user-input");
   const userInput = userInputEl ? userInputEl.value.trim() : "";
-  // 重置会话
   state.designSession = {
     styleName,
     userInput,
@@ -316,23 +311,22 @@ async function designOutfit() {
   state.designLoading = true;
   updateDesignButtonState();
   setDesignButtonLoading(true, "设计中...");
-  // 清空旧结果区
   $("design-result-area").innerHTML = "";
   $("iteration-history-area").innerHTML = "";
   try {
     const res = await api.post("design", { style_name: styleName, user_input: userInput || null });
-    if (res.status === "ok") {
-      const data = res.data || {};
+    // Bridge 自动解包：res 直接就是 {name, description, success?}
+    if (res && res.name) {
       state.designSession.history.push({
         role: "designer",
-        name: data.name || "",
-        description: data.description || "",
+        name: res.name || "",
+        description: res.description || "",
       });
       renderDesignResult();
       renderIterationHistory();
       toast("设计完成", "success");
     } else {
-      toast(res.message || "设计失败", "error");
+      toast("设计返回异常：" + JSON.stringify(res), "error");
       state.designSession = null;
     }
   } catch (e) {
@@ -456,10 +450,10 @@ function openIterationModal() {
     title: "迭代 — 交由审核师修改",
     bodyHtml,
     footerHtml,
-    onMount: (backdrop, close) => {
-      backdrop.querySelector("[data-modal-cancel]").addEventListener("click", close);
-      const confirmBtn = backdrop.querySelector("[data-modal-confirm]");
-      const feedbackEl = backdrop.querySelector("#modal-iteration-feedback");
+    onMount: (container, close) => {
+      container.querySelector("[data-modal-cancel]").addEventListener("click", close);
+      const confirmBtn = container.querySelector("[data-modal-confirm]");
+      const feedbackEl = container.querySelector("#modal-iteration-feedback");
       confirmBtn.addEventListener("click", async () => {
         const feedback = feedbackEl.value.trim();
         if (!feedback) {
@@ -495,19 +489,19 @@ async function runReview(userFeedback) {
       original_description: current.description,
       user_feedback: userFeedback,
     });
-    if (res.status === "ok") {
-      const data = res.data || {};
+    // Bridge 自动解包
+    if (res && res.name) {
       session.history.push({
         role: "reviewer",
-        name: data.name || "",
-        description: data.description || "",
+        name: res.name || "",
+        description: res.description || "",
         userFeedback,
       });
       renderDesignResult();
       renderIterationHistory();
       toast("审核师已产出修改版", "success");
     } else {
-      toast(res.message || "审核失败", "error");
+      toast("审核返回异常：" + JSON.stringify(res), "error");
     }
   } catch (e) {
     toast(`审核失败: ${e.message}`, "error");
@@ -552,11 +546,11 @@ async function approveDesign() {
     title: "通过 — 入库到优秀库",
     bodyHtml,
     footerHtml,
-    onMount: (backdrop, close) => {
-      backdrop.querySelector("[data-modal-cancel]").addEventListener("click", close);
-      const confirmBtn = backdrop.querySelector("[data-modal-confirm]");
-      const nameEl = backdrop.querySelector("#modal-approve-name");
-      const descEl = backdrop.querySelector("#modal-approve-desc");
+    onMount: (container, close) => {
+      container.querySelector("[data-modal-cancel]").addEventListener("click", close);
+      const confirmBtn = container.querySelector("[data-modal-confirm]");
+      const nameEl = container.querySelector("#modal-approve-name");
+      const descEl = container.querySelector("#modal-approve-desc");
       confirmBtn.addEventListener("click", async () => {
         const name = nameEl.value.trim();
         const desc = descEl.value.trim();
@@ -567,28 +561,21 @@ async function approveDesign() {
         confirmBtn.disabled = true;
         confirmBtn.textContent = "入库中...";
         try {
-          const res = await api.post("outfits/add", {
+          await api.post("outfits/add", {
             style_name: session.styleName,
             name,
             description: desc,
             iterations,
           });
-          if (res.status === "ok") {
-            toast("已入库到优秀库", "success");
-            // 重置设计会话
-            state.designSession = null;
-            $("design-result-area").innerHTML = "";
-            $("iteration-history-area").innerHTML = "";
-            close();
-            // 刷新相关数据
-            loadStyles();
-            loadLibrary();
-            loadOverview();
-          } else {
-            toast(res.message || "入库失败", "error");
-            confirmBtn.disabled = false;
-            confirmBtn.textContent = "确认入库";
-          }
+          // Bridge 成功时不抛错；失败时抛错
+          toast("已入库到优秀库", "success");
+          state.designSession = null;
+          $("design-result-area").innerHTML = "";
+          $("iteration-history-area").innerHTML = "";
+          close();
+          loadStyles();
+          loadLibrary();
+          loadOverview();
         } catch (e) {
           toast(`入库失败: ${e.message}`, "error");
           confirmBtn.disabled = false;
@@ -606,13 +593,9 @@ async function loadLibrary() {
   showLoading("library-list", "加载优秀库...");
   try {
     const res = await api.get("outfits");
-    if (res.status === "ok") {
-      state.libraryData = res.data || { styles: [], total: 0 };
-      renderLibrary();
-      updateLibraryBadge();
-    } else {
-      $("library-list").innerHTML = `<div class="empty-state">${esc(res.message || "加载失败")}</div>`;
-    }
+    state.libraryData = res || { styles: [], total: 0 };
+    renderLibrary();
+    updateLibraryBadge();
   } catch (e) {
     $("library-list").innerHTML = `<div class="empty-state">加载失败: ${esc(e.message)}</div>`;
   } finally {
@@ -624,9 +607,7 @@ function renderLibrary() {
   if (!state.libraryData) return;
   const data = state.libraryData;
   const styles = data.styles || [];
-  // 渲染 filter bar
   renderLibraryFilters(styles);
-  // 渲染列表
   const listEl = $("library-list");
   if (!listEl) return;
   const filter = state.libraryFilter;
@@ -648,7 +629,6 @@ function renderLibrary() {
     return;
   }
   listEl.innerHTML = `<div class="outfit-list">${items.map((item) => renderOutfitItem(item)).join("")}</div>`;
-  // 绑定事件
   listEl.querySelectorAll("[data-action]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -662,7 +642,6 @@ function renderLibrary() {
       else if (action === "use-count") openUseCountModal(item);
     });
   });
-  // 绑定风格级别的概率配置按钮
   listEl.querySelectorAll("[data-action-prob]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -701,7 +680,8 @@ function renderOutfitItem(item) {
 function renderLibraryFilters(styles) {
   const bar = $("library-filters");
   if (!bar) return;
-  const allBtn = `<button class="filter-btn ${state.libraryFilter === "" ? "active" : ""}" data-style="">全部 ${styles.reduce((sum, s) => sum + (s.count || 0), 0)}</button>`;
+  const totalCount = styles.reduce((sum, s) => sum + (s.count || 0), 0);
+  const allBtn = `<button class="filter-btn ${state.libraryFilter === "" ? "active" : ""}" data-style="">全部 ${totalCount}</button>`;
   const styleBtns = styles
     .filter((s) => s.count > 0)
     .map((s) => `<button class="filter-btn ${state.libraryFilter === s.style ? "active" : ""}" data-style="${esc(s.style)}">${esc(s.style)} (${s.count})</button>`)
@@ -738,11 +718,11 @@ function openEditOutfitModal(item) {
     title: "编辑条目",
     bodyHtml,
     footerHtml,
-    onMount: (backdrop, close) => {
-      backdrop.querySelector("[data-modal-cancel]").addEventListener("click", close);
-      const confirmBtn = backdrop.querySelector("[data-modal-confirm]");
-      const nameEl = backdrop.querySelector("#modal-edit-name");
-      const descEl = backdrop.querySelector("#modal-edit-desc");
+    onMount: (container, close) => {
+      container.querySelector("[data-modal-cancel]").addEventListener("click", close);
+      const confirmBtn = container.querySelector("[data-modal-confirm]");
+      const nameEl = container.querySelector("#modal-edit-name");
+      const descEl = container.querySelector("#modal-edit-desc");
       confirmBtn.addEventListener("click", async () => {
         const newName = nameEl.value.trim();
         const newDesc = descEl.value.trim();
@@ -753,22 +733,16 @@ function openEditOutfitModal(item) {
         confirmBtn.disabled = true;
         confirmBtn.textContent = "保存中...";
         try {
-          const res = await api.post("outfits/update", {
+          await api.post("outfits/update", {
             style_name: item.style,
             old_name: item.name,
             new_name: newName,
             new_description: newDesc,
           });
-          if (res.status === "ok") {
-            toast("已更新", "success");
-            close();
-            loadLibrary();
-            loadOverview();
-          } else {
-            toast(res.message || "更新失败", "error");
-            confirmBtn.disabled = false;
-            confirmBtn.textContent = "保存";
-          }
+          toast("已更新", "success");
+          close();
+          loadLibrary();
+          loadOverview();
         } catch (e) {
           toast(`更新失败: ${e.message}`, "error");
           confirmBtn.disabled = false;
@@ -786,19 +760,19 @@ function confirmDeleteOutfit(item) {
     confirmText: "删除",
     danger: true,
     onConfirm: async (close) => {
-      const res = await api.post("outfits/delete", {
-        style_name: item.style,
-        name: item.name,
-      });
-      if (res.status === "ok") {
+      try {
+        await api.post("outfits/delete", {
+          style_name: item.style,
+          name: item.name,
+        });
         toast("已删除", "success");
         close();
         loadLibrary();
         loadOverview();
         loadStyles();
-      } else {
-        toast(res.message || "删除失败", "error");
-        throw new Error(res.message || "删除失败");
+      } catch (e) {
+        toast(`删除失败: ${e.message}`, "error");
+        throw e;
       }
     },
   });
@@ -824,10 +798,10 @@ function openUseCountModal(item) {
     title: "调整使用计数",
     bodyHtml,
     footerHtml,
-    onMount: (backdrop, close) => {
-      backdrop.querySelector("[data-modal-cancel]").addEventListener("click", close);
-      const confirmBtn = backdrop.querySelector("[data-modal-confirm]");
-      const countEl = backdrop.querySelector("#modal-use-count");
+    onMount: (container, close) => {
+      container.querySelector("[data-modal-cancel]").addEventListener("click", close);
+      const confirmBtn = container.querySelector("[data-modal-confirm]");
+      const countEl = container.querySelector("#modal-use-count");
       confirmBtn.addEventListener("click", async () => {
         const count = parseInt(countEl.value, 10);
         if (isNaN(count) || count < 0) {
@@ -837,21 +811,15 @@ function openUseCountModal(item) {
         confirmBtn.disabled = true;
         confirmBtn.textContent = "保存中...";
         try {
-          const res = await api.post("outfits/use_count", {
+          await api.post("outfits/use_count", {
             style_name: item.style,
             name: item.name,
             count,
           });
-          if (res.status === "ok") {
-            toast("已更新", "success");
-            close();
-            loadLibrary();
-            loadOverview();
-          } else {
-            toast(res.message || "更新失败", "error");
-            confirmBtn.disabled = false;
-            confirmBtn.textContent = "保存";
-          }
+          toast("已更新", "success");
+          close();
+          loadLibrary();
+          loadOverview();
         } catch (e) {
           toast(`更新失败: ${e.message}`, "error");
           confirmBtn.disabled = false;
@@ -886,30 +854,24 @@ function openProbabilityModal(style, currentProb) {
     title: "配置注入概率",
     bodyHtml,
     footerHtml,
-    onMount: (backdrop, close) => {
-      backdrop.querySelector("[data-modal-cancel]").addEventListener("click", close);
-      const slider = backdrop.querySelector("#modal-prob-slider");
-      const valueEl = backdrop.querySelector("#modal-prob-value");
+    onMount: (container, close) => {
+      container.querySelector("[data-modal-cancel]").addEventListener("click", close);
+      const slider = container.querySelector("#modal-prob-slider");
+      const valueEl = container.querySelector("#modal-prob-value");
       slider.addEventListener("input", () => {
         valueEl.textContent = `${(parseFloat(slider.value) * 100).toFixed(0)}%`;
       });
-      const confirmBtn = backdrop.querySelector("[data-modal-confirm]");
+      const confirmBtn = container.querySelector("[data-modal-confirm]");
       confirmBtn.addEventListener("click", async () => {
         const probability = parseFloat(slider.value);
         confirmBtn.disabled = true;
         confirmBtn.textContent = "保存中...";
         try {
-          const res = await api.post("probability", { style, probability });
-          if (res.status === "ok") {
-            toast("已更新", "success");
-            close();
-            loadLibrary();
-            loadOverview();
-          } else {
-            toast(res.message || "更新失败", "error");
-            confirmBtn.disabled = false;
-            confirmBtn.textContent = "保存";
-          }
+          await api.post("probability", { style, probability });
+          toast("已更新", "success");
+          close();
+          loadLibrary();
+          loadOverview();
         } catch (e) {
           toast(`更新失败: ${e.message}`, "error");
           confirmBtn.disabled = false;
@@ -923,21 +885,17 @@ function openProbabilityModal(style, currentProb) {
 async function exportData() {
   try {
     const res = await api.get("export");
-    if (res.status === "ok") {
-      const json = JSON.stringify(res.data, null, 2);
-      const blob = new Blob([json], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `dayflow_curated_outfits_${new Date().toISOString().slice(0, 10)}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      toast("已导出", "success");
-    } else {
-      toast(res.message || "导出失败", "error");
-    }
+    const json = JSON.stringify(res, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dayflow_curated_outfits_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast("已导出", "success");
   } catch (e) {
     toast(`导出失败: ${e.message}`, "error");
   }
@@ -970,12 +928,12 @@ function openImportModal() {
     title: "导入数据",
     bodyHtml,
     footerHtml,
-    onMount: (backdrop, close) => {
-      backdrop.querySelector("[data-modal-cancel]").addEventListener("click", close);
-      const confirmBtn = backdrop.querySelector("[data-modal-confirm]");
-      const modeEl = backdrop.querySelector("#modal-import-mode");
-      const fileEl = backdrop.querySelector("#modal-import-file");
-      const textEl = backdrop.querySelector("#modal-import-text");
+    onMount: (container, close) => {
+      container.querySelector("[data-modal-cancel]").addEventListener("click", close);
+      const confirmBtn = container.querySelector("[data-modal-confirm]");
+      const modeEl = container.querySelector("#modal-import-mode");
+      const fileEl = container.querySelector("#modal-import-file");
+      const textEl = container.querySelector("#modal-import-text");
       confirmBtn.addEventListener("click", async () => {
         let payload = null;
         const text = textEl.value.trim();
@@ -1003,19 +961,13 @@ function openImportModal() {
         confirmBtn.textContent = "导入中...";
         try {
           const res = await api.post("import", { data: payload, mode: modeEl.value });
-          if (res.status === "ok") {
-            const d = res.data || {};
-            toast(`导入完成：新增 ${d.added || 0}，跳过 ${d.skipped || 0}，覆盖 ${d.overwritten || 0}`, "success");
-            close();
-            loadLibrary();
-            loadOverview();
-            loadStyles();
-            loadPrompts();
-          } else {
-            toast(res.message || "导入失败", "error");
-            confirmBtn.disabled = false;
-            confirmBtn.textContent = "导入";
-          }
+          const d = res || {};
+          toast(`导入完成：新增 ${d.added || 0}，跳过 ${d.skipped || 0}，覆盖 ${d.overwritten || 0}`, "success");
+          close();
+          loadLibrary();
+          loadOverview();
+          loadStyles();
+          loadPrompts();
         } catch (e) {
           toast(`导入失败: ${e.message}`, "error");
           confirmBtn.disabled = false;
@@ -1046,15 +998,11 @@ async function loadPrompts() {
   state.promptsLoading = true;
   try {
     const res = await api.get("prompts");
-    if (res.status === "ok") {
-      state.promptsData = res.data || { designer: "", reviewer: "" };
-      const designerEl = $("prompt-designer");
-      const reviewerEl = $("prompt-reviewer");
-      if (designerEl) designerEl.value = state.promptsData.designer || "";
-      if (reviewerEl) reviewerEl.value = state.promptsData.reviewer || "";
-    } else {
-      toast(res.message || "加载提示词失败", "error");
-    }
+    state.promptsData = res || { designer: "", reviewer: "" };
+    const designerEl = $("prompt-designer");
+    const reviewerEl = $("prompt-reviewer");
+    if (designerEl) designerEl.value = state.promptsData.designer || "";
+    if (reviewerEl) reviewerEl.value = state.promptsData.reviewer || "";
   } catch (e) {
     toast(`加载提示词失败: ${e.message}`, "error");
   } finally {
@@ -1074,12 +1022,8 @@ async function savePrompts() {
   }
   try {
     const res = await api.post("prompts", { designer, reviewer });
-    if (res.status === "ok") {
-      state.promptsData = res.data.prompts || { designer, reviewer };
-      toast("提示词已保存", "success");
-    } else {
-      toast(res.message || "保存失败", "error");
-    }
+    state.promptsData = res || { designer, reviewer };
+    toast("提示词已保存", "success");
   } catch (e) {
     toast(`保存失败: ${e.message}`, "error");
   } finally {
@@ -1099,12 +1043,8 @@ async function loadOverview() {
   if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-tertiary);padding:40px">加载中...</td></tr>`;
   try {
     const res = await api.get("overview");
-    if (res.status === "ok") {
-      state.overviewData = res.data || { styles: [], prompts_configured: {} };
-      renderOverview();
-    } else {
-      $("overview-stats").innerHTML = `<div class="empty-state">${esc(res.message || "加载失败")}</div>`;
-    }
+    state.overviewData = res || { styles: [], prompts_configured: {} };
+    renderOverview();
   } catch (e) {
     $("overview-stats").innerHTML = `<div class="empty-state">加载失败: ${esc(e.message)}</div>`;
   } finally {
@@ -1121,7 +1061,6 @@ function renderOverview() {
   const totalUseCount = styles.reduce((sum, s) => sum + (s.avg_use_count * s.count || 0), 0);
   const promptsConfigured = data.prompts_configured || {};
 
-  // 统计卡片
   const statsEl = $("overview-stats");
   statsEl.innerHTML = `
     <div class="stat-card">
@@ -1142,7 +1081,6 @@ function renderOverview() {
     </div>
   `;
 
-  // 表格
   const tbody = $("overview-tbody");
   if (!tbody) return;
   if (styles.length === 0) {
@@ -1175,34 +1113,18 @@ function setupEventListeners() {
   const themeBtn = $("theme-toggle");
   if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
 
-  // 设计 tab
-  const designBtn = $("btn-design");
-  if (designBtn) designBtn.addEventListener("click", designOutfit);
-
-  const styleInput = $("design-style-input");
-  if (styleInput) {
-    styleInput.addEventListener("input", () => {
-      updateDesignButtonState();
-      renderStylesDropdown(styleInput.value);
-    });
-    styleInput.addEventListener("focus", () => {
-      renderStylesDropdown(styleInput.value);
-    });
-    styleInput.addEventListener("click", () => {
-      renderStylesDropdown(styleInput.value);
+  // 设计 tab：风格搜索
+  const searchInput = $("design-style-search");
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      state.styleSearchText = searchInput.value;
+      renderStyleGrid();
     });
   }
 
-  // 点击外部关闭 dropdown
-  document.addEventListener("click", (e) => {
-    const dropdown = $("design-style-dropdown");
-    const input = $("design-style-input");
-    if (dropdown && dropdown.classList.contains("open")) {
-      if (!dropdown.contains(e.target) && e.target !== input) {
-        dropdown.classList.remove("open");
-      }
-    }
-  });
+  // 设计按钮
+  const designBtn = $("btn-design");
+  if (designBtn) designBtn.addEventListener("click", designOutfit);
 
   const refreshStylesBtn = $("btn-refresh-styles-design");
   if (refreshStylesBtn) refreshStylesBtn.addEventListener("click", loadStyles);
@@ -1232,22 +1154,30 @@ async function init() {
   applyTheme(state.theme);
   setupEventListeners();
 
-  // footer 信息
   const footer = $("footer-info");
   if (footer) footer.textContent = "Dayflow Designer v1.0";
 
-  // 检查 bridge
+  // 等待 Bridge 就绪（失败不阻断，只警告）
   try {
     await api.ready();
   } catch (e) {
-    toast(`Bridge 不可用: ${e.message}`, "error");
+    console.warn("[DayflowDesigner] Bridge 初始化警告:", e);
     if (footer) footer.textContent = "Bridge 不可用";
-    return;
   }
 
-  // 并行加载初始数据
-  await loadStyles();
-  // 其他 tab 数据懒加载
+  // 加载首页数据
+  try {
+    await loadStyles();
+  } catch (e) {
+    console.error("[DayflowDesigner] 加载风格失败:", e);
+  }
 }
 
-init();
+// 捕获 init 的未处理异常，避免静默卡在"加载中"
+init().catch((e) => {
+  console.error("[DayflowDesigner] 初始化失败:", e);
+  const grid = $("design-style-grid");
+  if (grid) {
+    grid.innerHTML = `<div class="style-grid-empty">初始化失败: ${esc(e.message || String(e))}</div>`;
+  }
+});
