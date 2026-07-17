@@ -382,12 +382,14 @@ function renderDesignResult() {
         <div class="design-result-actions">
           <button class="btn btn-success btn-sm" id="btn-approve">通过 — 入库</button>
           <button class="btn btn-warning btn-sm" id="btn-iterate">迭代 — 交审核师</button>
+          <button class="btn btn-danger btn-sm" id="btn-discard">废弃</button>
         </div>
       </div>
     </div>
   `;
   $("btn-approve").addEventListener("click", approveDesign);
   $("btn-iterate").addEventListener("click", () => openIterationModal());
+  $("btn-discard").addEventListener("click", discardDesign);
 }
 
 function renderIterationHistory() {
@@ -524,6 +526,21 @@ async function runReview(userFeedback) {
     state.reviewLoading = false;
     setDesignButtonLoading(false);
   }
+}
+
+function discardDesign() {
+  const session = state.designSession;
+  if (!session) {
+    toast("没有可废弃的方案", "warning");
+    return;
+  }
+  state.designSession = null;
+  state.selectedStyleName = "";
+  $("design-result-area").innerHTML = "";
+  $("iteration-history-area").innerHTML = "";
+  renderStyleGrid();
+  updateDesignButtonState();
+  toast("已废弃当前方案", "info");
 }
 
 async function approveDesign() {
