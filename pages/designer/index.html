@@ -80,22 +80,21 @@
           <div class="card">
             <div class="card-title">选择风格</div>
             <div class="form-group">
-              <label class="form-label">风格名称</label>
-              <div class="style-selector">
-                <input
-                  type="text"
-                  class="form-input"
-                  id="design-style-input"
-                  placeholder="选择已有风格或输入新风格名..."
-                  autocomplete="off"
-                />
-                <div class="style-dropdown" id="design-style-dropdown"></div>
-              </div>
+              <label class="form-label">搜索过滤</label>
+              <input
+                type="text"
+                class="form-input"
+                id="design-style-search"
+                placeholder="输入关键词过滤风格..."
+                autocomplete="off"
+              />
               <div class="form-hint">
-                风格来源：默认池 / 人格池 / 内置子款式 / 优秀库已入库。也可手动输入新风格名。
+                从已有风格中选择一个。来源：默认池 / 人格池 / 内置子款式 / 优秀库已入库。
               </div>
             </div>
-
+            <div class="style-grid" id="design-style-grid">
+              <div class="loading"><span class="spinner"></span>加载风格中...</div>
+            </div>
             <div class="form-group">
               <label class="form-label">用户要求（可选，优先级最高）</label>
               <textarea
