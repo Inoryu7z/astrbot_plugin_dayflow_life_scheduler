@@ -366,11 +366,18 @@ function renderDesignResult() {
     return;
   }
   const isReviewer = current.role === "reviewer";
+  const critiqueHtml = (isReviewer && current.critique)
+    ? `<div class="design-result-critique">
+         <div class="critique-label">审核师批评理由</div>
+         <div class="critique-text">${esc(current.critique)}</div>
+       </div>`
+    : "";
   area.innerHTML = `
     <div class="card">
       <div class="card-title">${isReviewer ? "审核师修改版" : "设计师初版"}</div>
       <div class="design-result">
         <div class="design-result-name">${esc(current.name)}</div>
+        ${critiqueHtml}
         <div class="design-result-description">${esc(current.description)}</div>
         <div class="design-result-actions">
           <button class="btn btn-success btn-sm" id="btn-approve">通过 — 入库</button>
@@ -398,10 +405,17 @@ function renderIterationHistory() {
       const feedbackHtml = entry.userFeedback
         ? `<div class="text-small text-muted" style="margin-top:6px">用户意见：${esc(entry.userFeedback)}</div>`
         : "";
+      const critiqueHtml = (entry.role === "reviewer" && entry.critique)
+        ? `<div class="iteration-entry-critique">
+             <span class="critique-tag">批评</span>
+             <span class="critique-text-inline">${esc(entry.critique)}</span>
+           </div>`
+        : "";
       return `
         <div class="iteration-entry">
           <div class="iteration-entry-role ${roleClass}">${roleLabel} #${idx + 1}</div>
           <div class="iteration-entry-name">${esc(entry.name)}</div>
+          ${critiqueHtml}
           <div class="design-result-description">${esc(entry.description)}</div>
           ${feedbackHtml}
         </div>
@@ -495,6 +509,7 @@ async function runReview(userFeedback) {
         role: "reviewer",
         name: res.name || "",
         description: res.description || "",
+        critique: res.critique || "",
         userFeedback,
       });
       renderDesignResult();

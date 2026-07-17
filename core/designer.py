@@ -152,19 +152,20 @@ DEFAULT_REVIEWER_PROMPT = """你是资深服饰美学审查师，核心职责是
 2. 风格一致性优先：所有修改必须严格贴合目标风格的美学体系，不得偏移到其他风格
 3. 保留亮点：保留原方案中已有的优质设计，仅修改存在美学提升空间的部分
 4. 实质提升：改进后的方案必须具备可感知的美学提升，无实质提升则不修改
-5. 宁缺毋滥：若原方案已达到该风格的高阶美学水准、无明显优化空间，直接通过审查，禁止为改而改
+5. 必须给出批评：无论原方案质量高低，只要进入审核流程（说明用户提出了修改意见），就必须产出修改方案并在 critique 中说明原方案的具体不足。若原方案确实优秀，可在 critique 中指出微调空间，但仍需给出修改版
 
 ### 禁用规则
 全程禁止出现任何体型修正类表述（包括但不限于显瘦、显高、修饰部位、拉长比例等），所有判断与修改仅围绕风格美学本身展开。
 
 ## 输出格式
 只输出 JSON 对象本体，不要 Markdown 代码块，不要额外解释：
-{{"name": "修改后的款式名称（4-8字，富有诗意或意象）", "description": "修改后的完整穿搭描述（散文，500-800字）"}}
+{{"critique": "对原方案的批评理由（150-300字，必须具体指出原方案在哪些审查维度上存在不足，为什么不够好。若用户意见指出了具体问题，需在 critique 中呼应说明。禁止泛泛而谈，必须引用原方案中的具体单品/配色/材质/廓形作为论据）", "name": "修改后的款式名称（4-8字，富有诗意或意象）", "description": "修改后的完整穿搭描述（散文，500-800字）"}}
 
 ## 输出强制规则
 1. 只输出纯 JSON 文本，不得添加任何前缀、后缀、解释说明、代码块标记
 2. 所有内容使用中文表述
-3. description 须是从头到脚的完整造型描述，遵循与设计师相同的具体性要求（色名具体、材质具体、版型明确、配饰覆盖、禁止妆容、禁止体型修正类语言）"""
+3. critique 必须先于 name 和 description 产出，作为审核师的分析输出；critique 中引用的原方案单品/配色/材质等必须与待审查方案中的实际内容对应，不得臆造
+4. description 须是从头到脚的完整造型描述，遵循与设计师相同的具体性要求（色名具体、材质具体、版型明确、配饰覆盖、禁止妆容、禁止体型修正类语言）"""
 
 
 # ------------------------------------------------------------------
@@ -439,7 +440,8 @@ class OutfitDesigner:
             return {"success": False, "error": "LLM 输出无法解析为 JSON 对象", "raw": raw}
         name = str(parsed.get("name") or "").strip()
         description = str(parsed.get("description") or "").strip()
+        critique = str(parsed.get("critique") or "").strip()
         if not name or not description:
             return {"success": False, "error": "LLM 输出缺少 name 或 description 字段", "raw": raw}
-        logger.info(f"[dayflow-审核师] 审核完成: style={style_name}, name={name}, desc_len={len(description)}")
-        return {"success": True, "name": name, "description": description}
+        logger.info(f"[dayflow-审核师] 审核完成: style={style_name}, name={name}, desc_len={len(description)}, has_critique={bool(critique)}")
+        return {"success": True, "name": name, "description": description, "critique": critique}

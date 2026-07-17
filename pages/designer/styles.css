@@ -885,6 +885,83 @@ button, input, textarea, select {
   border-top: 1px dashed var(--border-light);
 }
 
+/* ----- Critique 审核师批评理由 --------------------------------- */
+.design-result-critique {
+  margin: var(--space-3) 0;
+  padding: var(--space-4) var(--space-5);
+  background: linear-gradient(135deg, var(--warning-light) 0%, var(--accent-light) 100%);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-md);
+  position: relative;
+}
+
+.critique-label {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--warning);
+  margin-bottom: var(--space-2);
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.critique-label::before {
+  content: "!";
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  background: var(--warning);
+  color: var(--text-inverse);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-sans);
+}
+
+.critique-text {
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 迭代历史中的批评（紧凑版） */
+.iteration-entry-critique {
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--warning-light);
+  border-radius: var(--radius-sm);
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.critique-tag {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  background: var(--warning);
+  color: var(--text-inverse);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.critique-text-inline {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  word-break: break-word;
+  flex: 1;
+}
+
 /* ----- Tables -------------------------------------------------- */
 .data-table {
   width: 100%;
