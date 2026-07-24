@@ -376,7 +376,7 @@ class OutfitDesigner:
             existing_outfits=existing,
             user_input=user_input,
         )
-        logger.info(f"[dayflow-设计师] 触发设计: style={style_name}, has_user_input={bool(user_input)}, existing_count={len(existing)}")
+        logger.info(f"[dayflow-设计师] 触发设计: style={style_name}, user_input={bool(user_input)}, existing={len(existing)}")
         try:
             raw = await self._call_llm(prompt, self.designer_provider_id)
         except Exception as e:
@@ -386,13 +386,13 @@ class OutfitDesigner:
             return {"success": False, "error": "LLM 返回为空"}
         parsed = _extract_json_object(raw)
         if not parsed:
-            logger.warning(f"[dayflow-设计师] 输出解析失败: {raw[:300]}")
+            logger.warning(f"[dayflow-设计师] 输出解析失败: {raw[:200]}")
             return {"success": False, "error": "LLM 输出无法解析为 JSON 对象", "raw": raw}
         name = str(parsed.get("name") or "").strip()
         description = str(parsed.get("description") or "").strip()
         if not name or not description:
             return {"success": False, "error": "LLM 输出缺少 name 或 description 字段", "raw": raw}
-        logger.info(f"[dayflow-设计师] 设计完成: style={style_name}, name={name}, desc_len={len(description)}")
+        logger.info(f"[dayflow-设计师] 设计完成: style={style_name}, name={name}")
         return {"success": True, "name": name, "description": description}
 
     # ------------------------------------------------------------------
@@ -436,12 +436,12 @@ class OutfitDesigner:
             return {"success": False, "error": "LLM 返回为空"}
         parsed = _extract_json_object(raw)
         if not parsed:
-            logger.warning(f"[dayflow-审核师] 输出解析失败: {raw[:300]}")
+            logger.warning(f"[dayflow-审核师] 输出解析失败: {raw[:200]}")
             return {"success": False, "error": "LLM 输出无法解析为 JSON 对象", "raw": raw}
         name = str(parsed.get("name") or "").strip()
         description = str(parsed.get("description") or "").strip()
         critique = str(parsed.get("critique") or "").strip()
         if not name or not description:
             return {"success": False, "error": "LLM 输出缺少 name 或 description 字段", "raw": raw}
-        logger.info(f"[dayflow-审核师] 审核完成: style={style_name}, name={name}, desc_len={len(description)}, has_critique={bool(critique)}")
+        logger.info(f"[dayflow-审核师] 审核完成: style={style_name}, name={name}")
         return {"success": True, "name": name, "description": description, "critique": critique}

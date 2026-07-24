@@ -66,7 +66,7 @@ class DayflowStore:
                 if now - ts > self._generation_stale_timeout
             ]
             for k in stale:
-                logger.warning(f"[dayflow] 清除过期生成锁: persona={k}, 已持有 {now - self.generating_personas[k]:.0f}s")
+                logger.warning(f"[dayflow] 清除过期生成锁: persona={k}, held={now - self.generating_personas[k]:.0f}s")
                 del self.generating_personas[k]
             if persona_name in self.generating_personas:
                 return False
@@ -89,7 +89,7 @@ class DayflowStore:
         history.append(copy.deepcopy(data_copy))
         self.history_store[store_key] = history
         if removed_count > 0:
-            logger.info(f"[dayflow] save_schedule: store_key={store_key}, date={date_str}, 已移除 {removed_count} 条旧记录，历史共 {len(history)} 条")
+            logger.debug(f"[dayflow] save_schedule 覆盖旧记录: persona={store_key}, date={date_str}, removed={removed_count}")
         self.prune_expired()
         await self.async_save_state()
 

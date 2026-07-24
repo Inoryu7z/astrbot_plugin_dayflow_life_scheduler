@@ -122,7 +122,7 @@ class DayflowPlugin(Star):
 
             req.system_prompt, removed = _remove_dayflow_injection(req.system_prompt)
             if removed:
-                logger.debug(f"[dayflow] 已清理上次日程注入: session={session_id}")
+                logger.debug(f"[dayflow] 已清理上次注入: session={session_id}")
 
             resolved_ctx = await self.service._resolve_persona_context_internal(session_id=session_id)
             persona_cfg = self.service.get_persona_config(resolved_ctx.get("persona_name"), resolved_ctx.get("persona_id"))
@@ -158,7 +158,7 @@ class DayflowPlugin(Star):
                     injection_flags.append("细分")
 
             if injection_flags:
-                logger.info(f"[dayflow] 注入: {', '.join(injection_flags)} | session={session_id}")
+                logger.info(f"[dayflow] 注入: {', '.join(injection_flags)}, session={session_id}")
         except Exception as e:
             logger.warning(f"[dayflow] on_llm_request 注入失败: {e}")
 
@@ -182,8 +182,7 @@ class DayflowPlugin(Star):
         if self._should_send_image(persona_name):
             image_bytes = await self.service._render_push_image(data, persona_name)
             if image_bytes is not None:
-                logger.info(f"[dayflow] 图片渲染成功，同时输出文字日志: {persona_name}")
-                logger.info(f"[dayflow] 日程内容:\n{text}")
+                logger.info(f"[dayflow] 图片渲染成功: persona={persona_name}")
                 yield event.chain_result([ImageComponent.fromBytes(image_bytes)])
                 return
         yield event.plain_result(text)
@@ -481,7 +480,7 @@ class DayflowPlugin(Star):
             if sub_events:
                 data["sub_events"] = sub_events
                 await self.service.save_generated(store_key, data)
-                logger.info(f"[dayflow] 细分重新生成成功: persona={persona_name}, 子事件数={len(sub_events)}")
+                logger.info(f"[dayflow] 细分重新生成成功: persona={persona_name}, count={len(sub_events)}")
 
                 timeline = data.get("timeline") or []
                 lines = [f"✅ {persona_name} 今日细分已重新生成 ({today})", ""]
@@ -508,7 +507,7 @@ class DayflowPlugin(Star):
             else:
                 yield event.plain_result(f"⚠️ {persona_name} 细分生成失败，请稍后重试")
         except Exception as e:
-            logger.warning(f"[dayflow] 生成细分异常: persona={persona_name}: {e}")
+            logger.warning(f"[dayflow] 生成细分异常: persona={persona_name}, error={e}")
             yield event.plain_result(f"⚠️ 细分生成异常：{e}")
 
     @filter.command("子款式", alias={"dayflow_variants", "查看子款式"})

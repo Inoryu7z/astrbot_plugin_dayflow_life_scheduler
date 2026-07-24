@@ -380,7 +380,7 @@ class CuratedStore:
                     changed = True
             if changed:
                 self._save_locked()
-                logger.info(f"[dayflow-优秀库] 使用计数+1: style={style}, names={list(name_set)}")
+                logger.debug(f"[dayflow-优秀库] 使用计数+1: style={style}, names={list(name_set)}")
 
     async def set_prompts(self, designer: str | None = None, reviewer: str | None = None) -> tuple[bool, str]:
         async with self._lock:
