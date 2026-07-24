@@ -146,7 +146,7 @@ class ScheduleRenderer:
 
         for path in candidates:
             if path.exists() and path.stat().st_size > 100_000:
-                logger.info(f"[ScheduleRenderer] 使用系统字体: {path}")
+                logger.debug(f"[ScheduleRenderer] 使用系统字体: {path}")
                 return path
 
         return None
@@ -168,10 +168,10 @@ class ScheduleRenderer:
                     return target
                 else:
                     tmp.unlink(missing_ok=True)
-                    logger.warning(f"[ScheduleRenderer] 下载的字体文件过小，尝试下一个源: {url}")
+                    logger.warning(f"[ScheduleRenderer] 字体文件过小，尝试下一个源: {url}")
             except Exception as e:
                 tmp.unlink(missing_ok=True)
-                logger.warning(f"[ScheduleRenderer] 从 {url} 下载字体失败: {e}")
+                logger.warning(f"[ScheduleRenderer] 下载字体失败: {url}, error={e}")
 
         logger.error("[ScheduleRenderer] 所有字体下载源均失败")
         return None
@@ -206,7 +206,7 @@ class ScheduleRenderer:
 
         for path in candidates:
             if path.exists():
-                logger.info(f"[ScheduleRenderer] 使用系统 Emoji 字体: {path}")
+                logger.debug(f"[ScheduleRenderer] 使用系统 Emoji 字体: {path}")
                 return path
 
         return None
@@ -228,10 +228,10 @@ class ScheduleRenderer:
                     return target
                 else:
                     tmp.unlink(missing_ok=True)
-                    logger.warning(f"[ScheduleRenderer] 下载的 Emoji 字体文件过小，尝试下一个源")
+                    logger.warning(f"[ScheduleRenderer] Emoji 字体文件过小，尝试下一个源")
             except Exception as e:
                 tmp.unlink(missing_ok=True)
-                logger.warning(f"[ScheduleRenderer] 从 {url} 下载 Emoji 字体失败: {e}")
+                logger.warning(f"[ScheduleRenderer] 下载 Emoji 字体失败: {url}, error={e}")
 
         logger.warning("[ScheduleRenderer] 所有 Emoji 字体下载源均失败，将使用纯文本替代")
         return None
