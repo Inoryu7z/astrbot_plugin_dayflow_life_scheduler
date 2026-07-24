@@ -209,6 +209,13 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _preview_text(text: Any, limit: int = 1600) -> str:
+    content = str(text or "").strip()
+    if len(content) <= limit:
+        return content
+    return content[:limit].rstrip() + "…"
+
+
 def _format_designer_prompt(
     template: str,
     style_name: str,
@@ -384,6 +391,7 @@ class OutfitDesigner:
             return {"success": False, "error": f"LLM 调用失败：{e}"}
         if not raw:
             return {"success": False, "error": "LLM 返回为空"}
+        logger.debug(f"[dayflow-设计师] 原始回复: style={style_name}, content={_preview_text(raw, limit=1600)}")
         parsed = _extract_json_object(raw)
         if not parsed:
             logger.warning(f"[dayflow-设计师] 输出解析失败: {raw[:200]}")
@@ -434,6 +442,7 @@ class OutfitDesigner:
             return {"success": False, "error": f"LLM 调用失败：{e}"}
         if not raw:
             return {"success": False, "error": "LLM 返回为空"}
+        logger.debug(f"[dayflow-审核师] 原始回复: style={style_name}, content={_preview_text(raw, limit=1600)}")
         parsed = _extract_json_object(raw)
         if not parsed:
             logger.warning(f"[dayflow-审核师] 输出解析失败: {raw[:200]}")
