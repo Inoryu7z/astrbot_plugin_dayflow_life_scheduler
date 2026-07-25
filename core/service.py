@@ -1945,13 +1945,13 @@ class DayflowService:
         )
         try:
             final_prompt = prompt
-            if ctx.best_partial and ctx.best_partial.get("raw_text") and ctx.best_partial.get("reason"):
+            if ctx.best_partial and ctx.best_partial.get("reason"):
                 final_prompt = build_repair_prompt(
-                    prompt, ctx.best_partial["raw_text"], ctx.best_partial["reason"],
+                    prompt, ctx.best_partial.get("raw_text") or "", ctx.best_partial["reason"],
                     ctx.validate_persona, retry_index=1,
                 )
                 logger.debug(
-                    f"[dayflow] 最终回退使用修复提示词: 来源={ctx.best_partial.get('provider_id')}, 原因={ctx.best_partial.get('reason')}"
+                    f"[dayflow] 最终回退使用修复提示词: 来源={ctx.best_partial.get('provider_id')}, 原因={ctx.best_partial.get('reason')}, has_raw={bool(ctx.best_partial.get('raw_text'))}"
                 )
             raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
                 final_prompt, final_provider_id, None, retry_count=0,

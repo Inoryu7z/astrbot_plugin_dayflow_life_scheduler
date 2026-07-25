@@ -301,13 +301,39 @@ def build_repair_prompt(
     required_style = str(persona.get("outfit_style") or "").strip()
     required_main_type = str(persona.get("schedule_main_type") or "").strip()
     required_driver = str(persona.get("core_event_driver") or "").strip()
-    return (
+
+    bad_text_clean = str(bad_text or "").strip()
+    # 判断上次输出是否有效（有内容且包含 JSON 起始符号或关键字段）
+    has_valid_output = bool(bad_text_clean) and (
+        "{" in bad_text_clean or "outfit" in bad_text_clean.lower()
+    )
+
+    if has_valid_output:
+        mode_intro = (
+            "【修复模式】\n"
+            f"这是你第 {retry_index} 次因校验失败被退回修复。\n"
+            "上次输出已基本成型，请基于上次输出做最小修改：只改出错的部分，保留已正确的字段。\n"
+            "不要重新生成完整 JSON，不要改动已正确的字段。\n"
+        )
+    else:
+        mode_intro = (
+            "【重新生成】\n"
+            f"这是你第 {retry_index} 次因校验失败被退回重写。\n"
+            "上次输出为空或不可用，请从零生成完整 JSON。\n"
+        )
+
+    result = (
         f"{original_prompt}\n\n"
         "---\n"
-        "【重写校验批注】\n"
-        f"这是你第 {retry_index} 次因格式/结构校验失败而被退回重写。\n"
+        f"{mode_intro}"
         f"最近一次失败原因：{reason}\n"
-        "本轮重写时，格式正确是最高优先级，优先级高于内容表现、语言美感、角色氛围和细节发挥。\n"
+        "请根据失败原因和上次输出（如果有），自行判断需要小修小补还是从零重写："
+        "大多数情况下上次输出只有小问题，做最小修改即可；"
+        "仅当上次输出完全不可用、严重乱码或严重偏离要求时才从零重写。\n"
+    )
+
+    result += (
+        "格式正确是最高优先级，优先级高于内容表现、语言美感、角色氛围和细节发挥。\n"
         f"必须使用穿搭风格：{required_style}\n"
         f"必须遵循日程主线类型：{required_main_type}\n"
         f"必须遵循核心事件驱动：{required_driver}\n"
@@ -318,9 +344,11 @@ def build_repair_prompt(
         "JSON 必须包含 timeline 数组，每个元素含 time_start、time_end、title、detail、outfit_change。\n"
         "title 禁止出现“核心事件”、“XX驱动”等元标签。\n"
         "如果格式与内容表达发生冲突，必须优先满足格式要求。\n"
-        "之前的不合格输出如下（仅供修复参考）：\n"
-        f"{bad_text}"
     )
+
+    if has_valid_output:
+        result += "上次的不合格输出如下（请在它基础上修复，保留已正确的字段；若严重不可用则从零重写）：\n" + bad_text_clean
+    return result
 
 
 def extract_timeline(schedule: str | dict) -> list[dict[str, str]]:

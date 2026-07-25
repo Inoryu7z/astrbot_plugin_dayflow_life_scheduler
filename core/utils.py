@@ -38,4 +38,4 @@ class GenerationContext:
     validate_persona: dict[str, Any] = field(default_factory=dict)
     racing_provider_ids: list[str] | None = None
     best_partial: dict | None = None
-    max_repair_retries: int = 1
+    max_repair_retries: int = 2
