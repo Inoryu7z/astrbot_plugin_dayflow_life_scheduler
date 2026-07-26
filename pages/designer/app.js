@@ -568,6 +568,14 @@ async function approveDesign() {
       <label class="form-label">款式描述（可修改）</label>
       <textarea id="modal-approve-desc" class="form-textarea" rows="8">${esc(current.description)}</textarea>
     </div>
+    <div class="form-group">
+      <label class="form-label">分级</label>
+      <select id="modal-approve-tier" class="form-input">
+        <option value="normal" selected>经典款（允许审查微调）</option>
+        <option value="starred">★ 标星收藏款（绝对正确，仅措辞可调）</option>
+      </select>
+      <div class="form-hint">标星款：二次审查不得修改外观，仅可润色措辞。仅在你完全信任该设计时使用。</div>
+    </div>
     <div class="form-hint">迭代次数：${iterations} 次（入库后可在优秀库中继续编辑）</div>
   `;
   const footerHtml = `
@@ -583,6 +591,7 @@ async function approveDesign() {
       const confirmBtn = container.querySelector("[data-modal-confirm]");
       const nameEl = container.querySelector("#modal-approve-name");
       const descEl = container.querySelector("#modal-approve-desc");
+      const tierEl = container.querySelector("#modal-approve-tier");
       confirmBtn.addEventListener("click", async () => {
         const name = nameEl.value.trim();
         const desc = descEl.value.trim();
@@ -598,6 +607,7 @@ async function approveDesign() {
             name,
             description: desc,
             iterations,
+            tier: tierEl.value,
           });
           // Bridge 成功时不抛错；失败时抛错
           toast("已入库到优秀库", "success");
@@ -672,6 +682,7 @@ function renderLibrary() {
       if (action === "edit") openEditOutfitModal(item);
       else if (action === "delete") confirmDeleteOutfit(item);
       else if (action === "use-count") openUseCountModal(item);
+      else if (action === "tier") toggleOutfitTier(item, btn.dataset.tier);
     });
   });
   listEl.querySelectorAll("[data-action-prob]").forEach((btn) => {
@@ -687,12 +698,20 @@ function renderLibrary() {
 function renderOutfitItem(item) {
   const useCount = Number(item.use_count || 0);
   const iterations = Number(item.iterations || 0);
+  const isStarred = String(item.tier || "").toLowerCase() === "starred";
+  const tierBadge = isStarred
+    ? `<span class="outfit-tier-badge outfit-tier-starred" title="标星收藏款：绝对正确，审查时仅措辞可调，外观不得修改">★ 标星收藏款</span>`
+    : `<span class="outfit-tier-badge outfit-tier-normal" title="经典款：审查时允许简单微调，大体不能改">经典款</span>`;
+  const tierBtn = isStarred
+    ? `<button class="btn btn-ghost btn-sm" data-action="tier" data-style="${esc(item.style)}" data-name="${esc(item.name)}" data-tier="normal">取消标星</button>`
+    : `<button class="btn btn-ghost btn-sm" data-action="tier" data-style="${esc(item.style)}" data-name="${esc(item.name)}" data-tier="starred">★ 标为收藏款</button>`;
   return `
     <div class="outfit-item">
       <div class="outfit-item-header">
         <div class="outfit-name">${esc(item.name)}</div>
         <div class="outfit-meta">
           <span class="outfit-style-badge">${esc(item.style)}</span>
+          ${tierBadge}
           <span class="outfit-use-count">使用 ${useCount} 次</span>
           ${iterations > 0 ? `<span class="text-small text-muted">迭代 ${iterations} 次</span>` : ""}
           <span class="text-small text-muted">${esc(formatDateTime(item.created_at))}</span>
@@ -702,6 +721,7 @@ function renderOutfitItem(item) {
       <div class="outfit-actions">
         <button class="btn btn-secondary btn-sm" data-action="edit" data-style="${esc(item.style)}" data-name="${esc(item.name)}">编辑</button>
         <button class="btn btn-secondary btn-sm" data-action="use-count" data-style="${esc(item.style)}" data-name="${esc(item.name)}">使用计数</button>
+        ${tierBtn}
         <button class="btn btn-danger btn-sm" data-action="delete" data-style="${esc(item.style)}" data-name="${esc(item.name)}">删除</button>
         <button class="btn btn-ghost btn-sm" data-action-prob data-style="${esc(item.style)}" data-prob="${item.probability}">注入概率: ${(Number(item.probability || 0) * 100).toFixed(0)}%</button>
       </div>
@@ -781,6 +801,34 @@ function openEditOutfitModal(item) {
           confirmBtn.textContent = "保存";
         }
       });
+    },
+  });
+}
+
+function toggleOutfitTier(item, nextTier) {
+  const targetTier = String(nextTier || "").toLowerCase() === "starred" ? "starred" : "normal";
+  const label = targetTier === "starred" ? "标星收藏款" : "经典款";
+  const message = targetTier === "starred"
+    ? `将「${item.name}」标为收藏款。此后二次审查对该款基于研究师输出的方案仅允许措辞调整，不得修改外观。`
+    : `将「${item.name}」降为经典款。二次审查将允许对该款方案做简单微调。`;
+  confirmModal({
+    title: `切换为${label}`,
+    message,
+    confirmText: "确认",
+    onConfirm: async (close) => {
+      try {
+        await api.post("outfits/tier", {
+          style_name: item.style,
+          name: item.name,
+          tier: targetTier,
+        });
+        toast(`已切换为${label}`, "success");
+        close();
+        loadLibrary();
+      } catch (e) {
+        toast(`切换失败: ${e.message}`, "error");
+        throw e;
+      }
     },
   });
 }

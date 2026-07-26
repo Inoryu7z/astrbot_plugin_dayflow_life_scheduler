@@ -873,7 +873,9 @@ class DayflowService:
             v = variants[0]
             name = v.get("name", "")
             desc = v.get("description", "")
-            lines.append(f"### {name}（全天）")
+            # 内置子款式（STYLE_SUB_VARIANTS）无 tier 字段时默认为 starred（绝对正确基准）
+            tier_label = "【标星收藏款】" if str(v.get("tier") or "starred").lower() == "starred" else "【经典款】"
+            lines.append(f"### {name}（全天）{tier_label}")
             lines.append(desc)
             lines.append("")
         else:
@@ -894,7 +896,9 @@ class DayflowService:
             for i, variant in enumerate(variants[:2]):
                 name = variant.get("name", "")
                 desc = variant.get("description", "")
-                lines.append(f"### {name} {labels[i]}")
+                # 内置子款式（STYLE_SUB_VARIANTS）无 tier 字段时默认为 starred（绝对正确基准）
+                tier_label = "【标星收藏款】" if str(variant.get("tier") or "starred").lower() == "starred" else "【经典款】"
+                lines.append(f"### {name} {labels[i]}{tier_label}")
                 lines.append(desc)
                 lines.append("")
         return "\n".join(lines)
@@ -979,7 +983,7 @@ class DayflowService:
             sub_variants_append = self._build_sub_variants_append(style_name, selected_sub_variants, all_day=sub_variant_all_day)
             if sub_variants_append:
                 system_prompt += sub_variants_append
-                injected_sub_variants = sub_variants_append
+                injected_sub_variants += sub_variants_append
                 logger.debug(f"[dayflow-风格研究] 子款式追加: style={style_name}, variants={[v['name'] for v in selected_sub_variants]}")
 
         # 优秀穿搭库概率注入（独立于内置子款式，复用 _build_sub_variants_append 机制）
@@ -1000,6 +1004,9 @@ class DayflowService:
                 )
                 if curated_append:
                     system_prompt += curated_append
+                    # 同步累加到 injected_sub_variants，使二次审查阶段能看到经典库注入内容，
+                    # 避免审查师误判研究师"忠实复刻经典库"为"自创但完成度不足"
+                    injected_sub_variants += curated_append
                     injected_curated_names = [v.get("name", "") for v in curated_variants]
                     logger.info(
                         f"[dayflow-风格研究] 优秀库注入: style={style_name}, curated={injected_curated_names}"
@@ -1042,7 +1049,7 @@ class DayflowService:
                 logger.warning(f"[dayflow] 风格研究搜索失败: style={style_name}, reason={last_reason}")
         else:
             raw_text = str(result.get("content") or "").strip()
-            logger.debug(f"[dayflow-风格研究] 原始响应: style={style_name}, content={self._preview_text(raw_text, limit=1600)}")
+            logger.info(f"[dayflow-风格研究] 原始响应: style={style_name}, content={self._preview_text(raw_text, limit=1600)}")
             parsed = safe_json_loads(raw_text)
             if isinstance(parsed, dict) and parsed.get("definition"):
                 parsed_payload = parsed
@@ -1170,6 +1177,10 @@ class DayflowService:
                 "\n\n## 初次风格研究阶段的指定经典款式（审查基准，必须遵守）\n"
                 + "\n\n".join(review_inject_parts)
                 + "\n\n**重要约束**：上述内容为初次风格研究阶段注入的指定经典款式描述与防重复约束，待审查方案正是基于这些描述设计的。审查与改进必须以此为基准，不得将方案纠正为偏离这些描述的其他风格或泛化为通用搭配。改进只能在忠于上述款式描述的前提下优化美学细节。"
+                "\n\n## 分级审查规则（按款式标题中的分级标记适用）\n"
+                "每个款式标题后会标注分级标记，审查时严格按分级行使修改权限：\n\n"
+                "- **【标星收藏款】**：绝对正确的设计基准，研究师输出已严格基于此款。审查时仅允许调整 description 的措辞表达（如将干巴巴的列举转换为流畅的散文段落、润色描述语言），**禁止任何外观层面的修改**——不得替换单品、改变配色、调整廓形、增减配饰、改变材质组合。若研究师输出已忠实还原此款，应直接通过审查（approved=true，issues 为空）。\n"
+                "- **【经典款】**：经典参考方案，研究师输出基于此款设计。审查时允许简单微调（如配饰小幅度替换、点缀色调整、材质质感优化），但**大体结构不得改动**——核心单品、主配色、主体廓形、标志性装饰必须保留。微调必须服务于美感提升，不得为改而改。\n"
             )
             logger.debug(f"[dayflow-风格审查] 注入上下文: style={style_name}, has_sub_variants={bool(injected_sub_variants)}, has_anti_repetition={has_anti_repetition_review}")
 
@@ -1185,7 +1196,7 @@ class DayflowService:
         review_sources = list(result.get("sources") or [])
         all_sources = sources + [s for s in review_sources if s not in sources]
 
-        logger.debug(f"[dayflow-风格审查] 原始响应: style={style_name}, content={self._preview_text(raw_text, limit=1600)}")
+        logger.info(f"[dayflow-风格审查] 原始响应: style={style_name}, content={self._preview_text(raw_text, limit=1600)}")
 
         parsed = safe_json_loads(raw_text)
         if not isinstance(parsed, dict):
