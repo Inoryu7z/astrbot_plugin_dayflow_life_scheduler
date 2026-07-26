@@ -824,6 +824,27 @@ button, input, textarea, select {
   letter-spacing: 0.02em;
 }
 
+.outfit-tier-badge {
+  display: inline-block;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--border-light);
+}
+
+.outfit-tier-starred {
+  background: linear-gradient(135deg, #fff7e0 0%, #ffe9b0 100%);
+  color: #b8860b;
+  border-color: #f5c542;
+}
+
+.outfit-tier-normal {
+  background: var(--bg-input);
+  color: var(--text-tertiary);
+}
+
 .source-tag {
   display: inline-block;
   padding: 2px var(--space-2);

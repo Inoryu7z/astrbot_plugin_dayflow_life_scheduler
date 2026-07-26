@@ -7,12 +7,16 @@
 {
   "outfits": {
     "法式浪漫风": [
-      {"name": "薰衣草晨曦", "description": "...", "created_at": "...", "iterations": 0, "use_count": 0}
+      {"name": "薰衣草晨曦", "description": "...", "created_at": "...", "iterations": 0, "use_count": 0, "tier": "normal"}
     ]
   },
   "probabilities": {"法式浪漫风": 0.5, "cosplay": 1.0},
   "prompts": {"designer": "...", "reviewer": "..."}
 }
+
+tier 字段取值：
+- "starred": 标星收藏款（绝对正确，仅措辞可调，外观不得调整；内置子款式默认为此档）
+- "normal": 经典款（允许简单微调，大体不能改）
 """
 
 from __future__ import annotations
@@ -90,12 +94,17 @@ class CuratedStore:
                         continue
                     if not item.get("name") or not item.get("description"):
                         continue
+                    # tier 字段迁移：显式值优先；缺省时 iterations=-1（内置预填）视为 starred，其余视为 normal
+                    tier_value = str(item.get("tier") or "").strip().lower()
+                    if tier_value not in ("starred", "normal"):
+                        tier_value = "starred" if int(item.get("iterations") or 0) == -1 else "normal"
                     normalized.append({
                         "name": str(item["name"]).strip(),
                         "description": str(item["description"]).strip(),
                         "created_at": str(item.get("created_at") or ""),
                         "iterations": int(item.get("iterations") or 0),
                         "use_count": int(item.get("use_count") or 0),
+                        "tier": tier_value,
                     })
                 self._data["outfits"][style] = normalized
         except Exception as e:
@@ -143,6 +152,7 @@ class CuratedStore:
                     "created_at": _now_iso(),
                     "iterations": -1,  # -1 表示内置预填
                     "use_count": 0,
+                    "tier": "starred",  # 内置子款式默认为标星收藏款（绝对正确，仅措辞可调）
                 })
                 seeded_count += 1
             # 设置默认概率
@@ -259,12 +269,15 @@ class CuratedStore:
     # ------------------------------------------------------------------
     # 写操作（均加锁）
     # ------------------------------------------------------------------
-    async def add_outfit(self, style_name: str, name: str, description: str, iterations: int = 0) -> tuple[bool, str]:
+    async def add_outfit(self, style_name: str, name: str, description: str, iterations: int = 0, tier: str = "normal") -> tuple[bool, str]:
         style = str(style_name or "").strip()
         name = str(name or "").strip()
         description = str(description or "").strip()
         if not style or not name or not description:
             return False, "风格名、款式名、描述均不能为空"
+        tier_value = str(tier or "").strip().lower()
+        if tier_value not in ("starred", "normal"):
+            tier_value = "normal"
         async with self._lock:
             items = self._data["outfits"].setdefault(style, [])
             if any(i.get("name") == name for i in items):
@@ -275,9 +288,10 @@ class CuratedStore:
                 "created_at": _now_iso(),
                 "iterations": int(iterations),
                 "use_count": 0,
+                "tier": tier_value,
             })
             self._save_locked()
-            logger.info(f"[dayflow-优秀库] 入库: style={style}, name={name}, iterations={iterations}")
+            logger.info(f"[dayflow-优秀库] 入库: style={style}, name={name}, iterations={iterations}, tier={tier_value}")
             return True, "已入库"
 
     async def update_outfit(
@@ -365,6 +379,28 @@ class CuratedStore:
                     return True, "已更新"
             return False, f"未找到风格「{style}」下的「{name}」"
 
+    async def set_tier(self, style_name: str, name: str, tier: str) -> tuple[bool, str]:
+        """切换条目分级。tier: starred=标星收藏款（绝对正确，仅措辞可调），normal=经典款（允许简单微调）。"""
+        style = str(style_name or "").strip()
+        name = str(name or "").strip()
+        if not style or not name:
+            return False, "风格名与款式名不能为空"
+        tier_value = str(tier or "").strip().lower()
+        if tier_value not in ("starred", "normal"):
+            return False, "分级必须为 starred 或 normal"
+        async with self._lock:
+            items = self._data["outfits"].get(style, [])
+            for item in items:
+                if item.get("name") == name:
+                    old_tier = item.get("tier")
+                    if old_tier == tier_value:
+                        return True, "分级未变更"
+                    item["tier"] = tier_value
+                    self._save_locked()
+                    logger.info(f"[dayflow-优秀库] 分级切换: style={style}, name={name}, {old_tier}->{tier_value}")
+                    return True, "已更新"
+            return False, f"未找到风格「{style}」下的「{name}」"
+
     async def increment_use_counts(self, style_name: str, names: list[str]) -> None:
         """运行时注入后调用：增加被注入条目的 use_count。"""
         style = str(style_name or "").strip()
@@ -433,6 +469,8 @@ class CuratedStore:
                         "created_at": str(item.get("created_at") or _now_iso()),
                         "iterations": int(item.get("iterations") or 0),
                         "use_count": int(item.get("use_count") or 0),
+                        "tier": (str(item.get("tier") or "").strip().lower() or
+                                 ("starred" if int(item.get("iterations") or 0) == -1 else "normal")),
                     }
                     if name in current_map:
                         if mode == "overwrite":

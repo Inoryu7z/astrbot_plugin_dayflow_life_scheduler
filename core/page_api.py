@@ -62,6 +62,7 @@ class PluginPageApi:
             (f"{PAGE_API_PREFIX}/outfits/update", self.update_outfit, ["POST"], "dayflow 优秀库：编辑条目"),
             (f"{PAGE_API_PREFIX}/outfits/delete", self.delete_outfit, ["POST"], "dayflow 优秀库：删除条目"),
             (f"{PAGE_API_PREFIX}/outfits/use_count", self.set_use_count, ["POST"], "dayflow 优秀库：调整使用计数"),
+            (f"{PAGE_API_PREFIX}/outfits/tier", self.set_outfit_tier, ["POST"], "dayflow 优秀库：切换分级（starred/normal）"),
             (f"{PAGE_API_PREFIX}/probability", self.get_or_set_probability, ["GET", "POST"], "dayflow 优秀库：概率配置"),
             (f"{PAGE_API_PREFIX}/export", self.export_data, ["GET"], "dayflow 优秀库：导出全部数据"),
             (f"{PAGE_API_PREFIX}/import", self.import_data, ["POST"], "dayflow 优秀库：导入数据"),
@@ -254,8 +255,9 @@ class PluginPageApi:
             iterations = int(data.get("iterations") or 0)
         except Exception:
             iterations = 0
+        tier = str(data.get("tier") or "normal").strip().lower()
         ok, msg = await self.curated_store.add_outfit(
-            style_name=style_name, name=name, description=description, iterations=iterations,
+            style_name=style_name, name=name, description=description, iterations=iterations, tier=tier,
         )
         if not ok:
             return self._err(msg)
@@ -298,6 +300,23 @@ class PluginPageApi:
         if not ok:
             return self._err(msg)
         return self._ok({"style": style_name, "name": name, "use_count": count, "message": msg})
+
+    async def set_outfit_tier(self):
+        """切换条目分级。body: {style_name, name, tier}，tier 取值 starred/normal。"""
+        data = await self._body()
+        style_name = str(data.get("style_name") or "").strip()
+        name = str(data.get("name") or "").strip()
+        tier = str(data.get("tier") or "").strip().lower()
+        if not style_name or not name:
+            return self._err("风格名与款式名不能为空")
+        if tier not in ("starred", "normal"):
+            return self._err("tier 必须为 starred 或 normal")
+        ok, msg = await self.curated_store.set_tier(
+            style_name=style_name, name=name, tier=tier,
+        )
+        if not ok:
+            return self._err(msg)
+        return self._ok({"style": style_name, "name": name, "tier": tier, "message": msg})
 
     async def get_or_set_probability(self):
         """GET: 读取（?style=xxx 指定单风格，无则返回全部）
