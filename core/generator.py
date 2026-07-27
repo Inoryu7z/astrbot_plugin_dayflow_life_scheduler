@@ -303,9 +303,10 @@ def build_repair_prompt(
     required_driver = str(persona.get("core_event_driver") or "").strip()
 
     bad_text_clean = str(bad_text or "").strip()
-    # 判断上次输出是否有效（有内容且包含 JSON 起始符号或关键字段）
-    has_valid_output = bool(bad_text_clean) and (
-        "{" in bad_text_clean or "outfit" in bad_text_clean.lower()
+    # 判断上次输出是否有效：必须有 JSON 起始符号，且包含 timeline 或 schedule 核心字段
+    # 仅含 outfit 但缺 timeline/schedule 的残缺输出不应走"修复模式"，否则 LLM 会被 outfit 内容带偏，只重新生成 outfit 而不补 timeline
+    has_valid_output = bool(bad_text_clean) and "{" in bad_text_clean and (
+        "timeline" in bad_text_clean.lower() or "schedule" in bad_text_clean.lower()
     )
 
     if has_valid_output:
