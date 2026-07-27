@@ -1,1100 +1,887 @@
 # Changelog
 
-## v1.7.2 - 2026-07-27
+### v1.7.2 - 2026-07-27
 
 **🏷️ 经典方案分级管控 + 注入丢失修复 + 日志恢复**
 
-* **新增**：经典库条目分级机制（tier 字段），支持将设计方案分为两档
-  - **标星收藏款（starred）**：绝对正确的设计基准，二次审查时仅允许调整 description 措辞（如将干巴巴的列举转换为流畅散文），**禁止任何外观层面修改**——不得替换单品、改变配色、调整廓形、增减配饰、改变材质组合；研究师输出已忠实还原则直接通过审查
-  - **经典款（normal）**：经典参考方案，二次审查允许简单微调（配饰小幅度替换、点缀色调整、材质质感优化），但大体结构不得改动
-* **新增**：webui 优秀库条目卡片显示分级徽章（标星款金色高亮），支持"★ 标为收藏款 / 取消标星"按钮切换分级；入库 modal 加分级下拉选择（默认经典款）
-* **新增**：API 路由 `POST /outfits/tier` 用于切换条目分级；`add_outfit` API 支持 tier 参数；查询接口返回 tier 字段
-* **修复**：经典库（优秀穿搭库）注入丢失问题——`_research_style_reference` 中 `injected_sub_variants` 只承载了内置子款式，经典库的 `curated_append` 拼完就丢，导致二次审查 `_review_style_payload` 从缓存取不到经典库注入内容，审查师误判研究师"忠实复刻经典库"为"自创但完成度不足"
-* **修复**：内置子款式（`STYLE_SUB_VARIANTS` 常量）无 tier 字段时被错误判为"经典款"的 bug——默认值改为 "starred"，与内置子款式作为绝对正确基准的定义一致
-* **修复**：风格研究师"原始响应"日志丢失问题——`a07793c` 提交曾将其从 info 降级到 debug，加之研究师常走缓存命中分支不打印回复，造成 info 级别完全看不到研究师回复；现恢复到 info 级别，与审查师日志对齐
-* **数据迁移**：旧的 `curated_outfits.json` 加载时自动迁移 tier 字段——`iterations == -1`（内置预填）视为 starred，其余视为 normal；导入数据时也兼容 tier 字段
-* 注入文本格式：每个款式标题后标注【标星收藏款】/【经典款】分级标记；审查师注入段追加分级审查规则说明
+**1. 📊 经典库条目分级机制**
+
+* 新增经典库条目分级：标星收藏款（starred）与经典款（normal）。
+* 标星款为绝对设计基准，二次审查仅允许调整描述措辞，禁止外观修改。
+* 经典款允许简单微调（配饰小幅度替换、点缀色调整、材质质感优化），大体结构不得改动。
+
+**2. 🖥️ webui 分级展示**
+
+* 优秀库条目卡片显示分级徽章，标星款金色高亮。
+* 支持"★ 标为收藏款 / 取消标星"按钮切换分级。
+* 入库 modal 新增分级下拉选择，默认经典款。
+
+**3. 🔌 分级 API**
+
+* 新增 `POST /outfits/tier` 路由切换条目分级。
+* `add_outfit` API 支持 tier 参数，查询接口返回 tier 字段。
+
+**4. 🐛 修复经典库注入丢失**
+
+* 修复经典库条目在二次审查时取不到注入内容、审查师误判研究师"忠实复刻"为"完成度不足"的问题。
+
+**5. 🐛 修复内置子款式分级默认值**
+
+* 内置子款式无 tier 字段时默认改为 starred，与基准定义一致。
+
+**6. 🐛 恢复风格研究师日志**
+
+* 恢复风格研究师"原始响应"日志到 info 级别。
+
+**7. 📦 数据迁移**
+
+* 旧 `curated_outfits.json` 加载时自动迁移 tier 字段。
 
 ---
 
-## v1.7.1 - 2026-07-25
+### v1.7.1 - 2026-07-25
 
 **🛡️ 最终兜底回退机制增强**
 
-* 修复 `_try_final_fallback` 的 `best_partial` 条件过严问题：之前要求 `raw_text` 和 `reason` 都非空才构建修复提示词，导致 LLM 调用抛异常（如 `Expecting value`、`utf-8 codec` 等框架层错误）时 `exception_best_partial` 的 `raw_text` 为空，条件不成立，兜底首次调用只能用原始 prompt，模型不知道前面错在哪
-* 现在只要 `best_partial` 有 `reason` 就构建修复提示词，把上次失败原因告诉兜底模型，提升修复成功率
-* `build_repair_prompt` 优化：`bad_text` 为空时不输出"之前的不合格输出如下"那段，避免空字段污染提示词
-* `max_repair_retries` 默认值从 1 提升到 2：总调用从 2 次增至 3 次（首次 + 2 次重试），多点容错
-* `build_repair_prompt` 引导方式调整：移除针对"timeline 为空"等特定错误类型的条件分支注入，避免错误归类（如乱码被当成缺字段强制小补丁）；改为通用引导，把失败原因和上次输出交给模型，由模型自行判断是小修小补还是从零重写（大多数情况只需小修复）
-* 调试日志增强：`最终回退使用修复提示词` 日志新增 `has_raw` 字段，便于排查是否带上了上次输出
+* 修复兜底回退条件过严，LLM 调用异常时无法构建修复提示词的问题。
+* 只要 `best_partial` 有失败原因即可构建修复提示词，把上次失败原因告诉兜底模型。
+* `max_repair_retries` 默认值从 1 提升到 2，总调用从 2 次增至 3 次。
+* 修复提示词引导方式调整为通用引导，由模型自行判断小修小补还是从零重写。
+* `bad_text` 为空时不再输出"之前的不合格输出"段落，避免空字段污染提示词。
 
 ---
 
-## v1.7.0 - 2026-07-17
+### v1.7.0 - 2026-07-17
 
 **🎨 优秀穿搭库 webui 设计系统**
 
-* 新增内置 Plugin Pages webui（"优秀穿搭库"页面），将"服装设计"步骤从运行时提前到手动工作流，让用户能为任意风格品类积累内置优秀设计
-* **设计 tab**：选择已有风格（聚合默认池 / 人格池 / 内置子款式 / 已入库四种来源，支持手动输入新名称）→ 可选填用户要求（优先级最高，支持参考穿搭输入）→ 调用设计师 LLM 产出方案 → 通过入库或交由严厉审核师迭代（支持无限次迭代，每次均可附加修改意见）
-* **优秀库 tab**：条目列表与风格筛选、编辑/删除/使用计数调整、按风格配置注入概率（滑块）、全量导入/导出（JSON 文件，支持 merge/overwrite 两种模式）
-* **提示词 tab**：设计师与审核师系统提示词可在 webui 中配置（散文输出，无需 JSON 字段），留空使用内置默认
-* **概览 tab**：统计卡片（风格数/条目数/总注入次数/提示词配置状态）+ 所有风格的条目数、概率、使用计数明细表
-* 运行时集成：风格研究 100% 调用 Grok，但按概率（默认 0.5，cosplay 默认 1.0）将优秀库设计作为"指定经典款式"注入给 Grok 提示词，注入优先选使用计数低的设计，注入后自增计数
-* 新增配置项 `designer_provider` 与 `reviewer_provider`：分别为 webui 设计师与审核师指定独立 LLM 提供商，留空回退到 `final_fallback_provider`
-* 风格聚合确保 A 人格的自定义风格（如"女仆自定义风"）在 webui 中也能选到
-* 数据持久化于 `plugin_data/astrbot_plugin_dayflow_life_scheduler/curated_outfits.json`
+**1. 🖥️ webui 优秀穿搭库页面**
+
+* 新增内置 Plugin Pages webui（"优秀穿搭库"页面）。
+* 将"服装设计"步骤从运行时提前到手动工作流，可为任意风格品类积累内置优秀设计。
+
+**2. 🎨 设计 tab**
+
+* 选择已有风格（默认池 / 人格池 / 内置子款式 / 已入库四种来源，支持手动输入新名称）。
+* 可选填用户要求（优先级最高，支持参考穿搭输入）。
+* 调用设计师 LLM 产出方案，可入库或交由审核师迭代（支持无限次迭代，每次可附加修改意见）。
+
+**3. 📚 优秀库 tab**
+
+* 条目列表与风格筛选、编辑/删除/使用计数调整。
+* 按风格配置注入概率（滑块）。
+* 全量导入/导出（JSON 文件，支持 merge/overwrite 两种模式）。
+
+**4. ⚙️ 提示词与概览 tab**
+
+* 设计师与审核师系统提示词可在 webui 中配置（散文输出，无需 JSON 字段），留空使用内置默认。
+* 概览 tab 展示风格数/条目数/总注入次数/提示词配置状态及所有风格明细表。
+
+**5. 🔗 运行时集成**
+
+* 风格研究按概率（默认 0.5，cosplay 默认 1.0）将优秀库设计作为"指定经典款式"注入给 Grok 提示词。
+* 注入优先选使用计数低的设计，注入后自增计数。
+* 风格聚合确保 A 人格的自定义风格在 webui 中也能选到。
+
+**6. ⚙️ 新增配置项**
+
+* 新增 `designer_provider` 与 `reviewer_provider`，分别为 webui 设计师与审核师指定独立 LLM 提供商，留空回退到 `final_fallback_provider`。
 
 ---
 
-## v1.6.9 - 2026-06-27
+### v1.6.9 - 2026-06-27
 
 **🔧 模板人格级覆盖**
 
-* 新增全局配置项 `style_review_system_prompt`：将二次审查提示词从硬编码常量暴露为用户可编辑的配置项，与 `style_research_system_prompt` 和 `default_prompt_template` 保持一致
-* 新增人格级覆盖字段 `style_research_prompt_template`：可为人格单独配置风格研究模板，优先级高于全局风格研究系统提示词，留空则继承全局模板
-* 新增人格级覆盖字段 `style_review_prompt_template`：可为人格单独配置二次审查模板，优先级高于全局二次审查系统提示词，留空则继承全局模板
-* 三类模板（日程生成 / 风格研究 / 二次审查）现已统一支持「全局默认 + 人格级覆盖」的配置模式
+* 新增全局配置项 `style_review_system_prompt`，二次审查提示词从硬编码常量暴露为用户可编辑。
+* 新增人格级覆盖字段 `style_research_prompt_template`，可为人格单独配置风格研究模板，留空继承全局。
+* 新增人格级覆盖字段 `style_review_prompt_template`，可为人格单独配置二次审查模板，留空继承全局。
+* 三类模板（日程生成 / 风格研究 / 二次审查）统一支持「全局默认 + 人格级覆盖」配置模式。
 
 ---
 
-## v1.6.8 - 2026-06-24
+### v1.6.8 - 2026-06-24
 
 **🔍 风格研究二次审查**
 
-* 新增人格级配置项 `enable_style_review`（bool，默认关闭）：开启后，在初次 Grok 风格研究完成后，额外调用一次 Grok 联网审查穿搭方案
-* 审查使命：让当日搭配做到最好看——不是单纯挑错，而是追求美感极致
-* 审查维度（7 项）：风格纯度、色彩和谐、材质对话、廓形比例、视觉焦点与节奏、单品必要性、两套穿搭关系
-* 如发现可提升空间，将使用改进后的方案作为最终结果输入给日程模型；原方案已足够美则通过审查
-* 新增 `reviewed` 缓存标记：审查完成（无论通过或改进）后标记缓存，同一天内相同风格不会重复审查，避免浪费 Grok 搜索额度
-* 审查失败（grok 不可用、搜索失败、解析失败）时静默降级，保留原方案不影响日程生成
-* `describe_personas` 输出新增「风格审查」标记，便于查看哪些人格启用了审查
-* 新增 `STYLE_REVIEW_SYSTEM_PROMPT` 常量与 `_review_style_payload` 方法
+* 新增人格级配置项 `enable_style_review`（默认关闭），开启后在初次风格研究完成后额外调用一次 Grok 联网审查穿搭方案。
+* 审查维度 7 项：风格纯度、色彩和谐、材质对话、廓形比例、视觉焦点与节奏、单品必要性、两套穿搭关系。
+* 发现可提升空间则使用改进后的方案作为最终结果，原方案已足够美则通过审查。
+* 审查完成后标记缓存，同一天内相同风格不会重复审查。
+* 审查失败时静默降级，保留原方案不影响日程生成。
+* `describe_personas` 输出新增「风格审查」标记。
 
 ---
 
-## v1.6.7 - 2026-06-01
+### v1.6.7 - 2026-06-01
 
-**🎭 cosplay风格与子款式**
+**🎭 cosplay 风格与子款式**
 
-* 默认风格池新增"cosplay"风格
-* 新增18个cosplay子款式数据（原神/星铁/王者荣耀/碧蓝航线角色cos服）
-* 修复风格名后缀导致子款式查找失败的bug（如"甜系洛丽塔风格"无法匹配"甜系洛丽塔"）
-* 修复设计自查强制要求外搭导致洛丽塔被硬加皮外套的问题
-* 修复风格名未注入system prompt导致LLM跑偏到其他风格的问题
-* 修复上一轮引入的payload_preview NameError崩溃
-* 删除风格研究中与"原始响应"重复的"解析结果"日志
+* 默认风格池新增 cosplay 风格。
+* 新增 cosplay 子款式数据。
+* 修复风格名后缀导致子款式查找失败的 bug（如"甜系洛丽塔风格"无法匹配"甜系洛丽塔"）。
+* 修复设计自查强制要求外搭导致洛丽塔被硬加皮外套的问题。
+* 修复风格名未注入 system prompt 导致 LLM 跑偏到其他风格的问题。
+* 修复上一轮引入的 payload_preview NameError 崩溃。
+* 删除风格研究中与"原始响应"重复的"解析结果"日志。
 
 ---
 
-## v1.6.6 - 2026-05-31
+### v1.6.6 - 2026-05-31
 
 **🎨 风格子款式池（Beta）**
 
-* 新增风格子款式池（`STYLE_SUB_VARIANTS`）：为部分风格添加真实经典子款式数据，每个子款式包含名称与完整描述
-* 新增子款式选择机制（`_select_sub_variants`）：随机选取2个子款式（晨间+午后），排除最近3次已使用的子款式，不足时补充最早使用的
-* 新增子款式防重复追踪（`_record_sub_variants_usage`）：在风格研究缓存中记录子款式使用历史，跨轮次避免重复
-* 新增子款式提示词注入（`_build_sub_variants_append`）：将选中的子款式完整描述注入风格研究系统提示词，标注为真实经典款
-* 风格池移除"暗黑洛丽塔"
+* 新增风格子款式池，为部分风格添加真实经典子款式数据。
+* 新增子款式选择机制，随机选取 2 个子款式（晨间+午后），排除最近 3 次已使用的。
+* 新增子款式防重复追踪，在风格研究缓存中记录使用历史，跨轮次避免重复。
+* 新增子款式提示词注入，将选中子款式完整描述注入风格研究系统提示词。
+* 风格池移除"暗黑洛丽塔"。
 
 ---
 
-## v1.6.5 - 2026-05-29
+### v1.6.5 - 2026-05-29
 
 **👗 风格研究防重复机制**
 
-* 新增风格研究防重复机制：当同一风格在近3次日程中出现时，风格研究会获取这些历史穿搭记录，并在产出新穿搭方案时要求做出差异化设计
-* `DayflowStore` 新增 `collect_recent_style_outfits()` 方法：从历史记录中收集同一风格的穿搭数据（晨间穿搭+所有午后换装）
-* `DayflowService` 新增 `_build_style_anti_repetition_append()` 方法：将历史穿搭格式化为防重复提示文本
-* `_research_style_reference()` 新增 `persona_name` 参数：有防重复数据时绕过缓存重新调用风格研究，确保防重复信息被注入
-* 防重复只作用于风格研究提供商（system prompt 追加），不影响主日程生成模型
+* 新增风格研究防重复机制：同一风格在近 3 次日程中出现时，风格研究会获取历史穿搭记录并要求做出差异化设计。
+* 有防重复数据时绕过缓存重新调用风格研究，确保防重复信息被注入。
+* 防重复只作用于风格研究提供商，不影响主日程生成模型。
 
 ---
 
-## v1.6.4 - 2026-05-17
+### v1.6.4 - 2026-05-17
 
 **🔗 风格研究接入 Grok 质量优先链路 + 适配插件重命名**
 
-* 风格研究调用 grok._do_search() 时新增 prefer_quality=True 参数，使后台研究场景走 Grok 插件的质量优先提供商链路（quality_chain），而非速度优先链路
-* GROK_PLUGIN_NAME 从 `astrbot_plugin_grok_web_search` 更新为 `astrbot_plugin_grok_web_search_Inoryu7z`，与 Grok 插件重命名同步
+* 风格研究走 Grok 插件的质量优先提供商链路，而非速度优先链路。
+* 适配 Grok 插件重命名。
 
 ---
 
-## v1.6.3 - 2026-05-05
+### v1.6.3 - 2026-05-05
 
 **🔧 细分校验放宽 + 日志改进 + save_generated 提前**
 
-* 细分校验放宽：移除 items 数量上限限制（原 2-4 个），改为仅检查非空；移除子事件最短 10 分钟时长限制；移除子事件总时长必须等于父时段时长的精确匹配校验；移除必须覆盖所有 timeline 索引的要求
-* 细分日志改进：新增提供商配置日志、单提供商返回状态日志、多提供商竞速模式日志、竞速无胜出状态日志、最终回退成功日志、解析开始日志
-* `/今日日程` 滞后问题修复：`save_generated` 提前到主日程生成完立即执行（不等细分），细分生成后追加更新。修复了主日程已生成但细分期间 `/今日日程` 显示无日程的问题
+**1. 🔧 细分校验放宽**
+
+* 移除 items 数量上限限制（原 2-4 个），改为仅检查非空。
+* 移除子事件最短 10 分钟时长限制。
+* 移除子事件总时长必须等于父时段时长的精确匹配校验。
+* 移除必须覆盖所有 timeline 索引的要求。
+
+**2. 📝 细分日志改进**
+
+* 新增提供商配置日志、单提供商返回状态日志、多提供商竞速模式日志、最终回退成功日志等。
+
+**3. 🐛 修复 /今日日程 滞后问题**
+
+* `save_generated` 提前到主日程生成完立即执行，修复主日程已生成但细分期间 `/今日日程` 显示无日程的问题。
 
 ---
 
-## v1.6.2 - 2026-04-30
+### v1.6.2 - 2026-04-30
 
 **🔄 提供商逻辑精简 + 日志优化 + 新增细分生成指令**
 
-* 移除对话提供商（session/default provider）回退逻辑，提供商流程简化为：竞速提供商 → 最终兜底提供商
-* 新增 `_summarize_error()` 错误摘要方法：524/529/502/503/429 等 Cloudflare 错误压缩为一行，其他超长错误截断到 300 字符
-* 竞速失败汇总日志中每个 provider 状态截断到 80 字符，避免日志爆炸
-* 注入日志合并：3 条注入日志（存在感+日程+细分）合并为 1 条
-* 新增 `/生成细分` 指令（别名 `dayflow_sub_gen`、`/重新生成细分`），可重新生成今日细分内容
-* 删除 `_resolve_session_provider_id` 方法（已无调用者）
-* `GenerationContext` 移除 `session_provider_id` / `default_provider_id` 字段
-* 配置面板 hint 更新：移除对话提供商相关描述，补充兜底提供商说明
+**1. 🔄 提供商流程精简**
+
+* 移除对话提供商回退逻辑，流程简化为：竞速提供商 → 最终兜底提供商。
+
+**2. 📝 日志优化**
+
+* 524/529/502/503/429 等 Cloudflare 错误压缩为一行摘要。
+* 竞速失败汇总日志中每个 provider 状态截断到 80 字符，避免日志爆炸。
+* 3 条注入日志合并为 1 条。
+
+**3. ✨ 新增 /生成细分 指令**
+
+* 新增 `/生成细分` 指令（别名 `dayflow_sub_gen`、`/重新生成细分`），可重新生成今日细分内容。
 
 ---
 
-## v1.6.1 - 2026-04-29
+### v1.6.1 - 2026-04-29
 
-**🔧 代码质量全面改进 + 日志中文化**
+**🔧 代码质量改进 + 日志中文化**
 
-* 修复 `_build_schedule_result` 参数过多（17个）问题：引入 `GenerationContext` dataclass 封装参数
-* 修复 `_try_final_fallback` 参数过多（15个）问题：同样使用 `GenerationContext` 封装
-* 修复 `validate_persona` 使用 walrus 运算符 `:=` 隐式赋值，可读性极差的问题
-* 修复 `_cleanup_stale_caches` 中时间比较使用字符串 `iso < cutoff.isoformat()` 不可靠的问题，改为 `datetime.fromisoformat()` 解析后比较
-* 修复 `_is_emoji` 检测范围不完整问题：从 8 个范围扩展到 24 个，覆盖 Emoji 15.0 全部范围
-* 修复 `save_schedule` 浅拷贝问题：从 `dict(data)` 改为 `copy.deepcopy(data)`，彻底解决嵌套数据共享
-* 消除 `_parse_hhmm_to_minutes` 重复定义：提取到 `core/utils.py` 共享工具模块
-* 统一插件发现机制：提取 `_find_plugin_by_name` 通用方法，消除 `_find_daymind_plugin` 和 `_find_grok_plugin` 的重复逻辑
-* 细分竞速从串行改为并行：`_generate_subdivision` 中多提供商竞速使用 `asyncio.wait(FIRST_COMPLETED)` 并行
-* 细分生成新增完整日志：入口添加 `[dayflow-细分] 开始生成细分` 日志，成功/失败均有明确中文提示
-* 全部英文日志翻译为中文：~140 条日志从英文改为中文，`[dayflow-style-research]` 统一为 `[dayflow-风格研究]`，`[dayflow-subdivision]` 统一为 `[dayflow-细分]`
-* 新增 `core/utils.py` 共享工具模块：包含 `parse_hhmm_to_minutes`、`deep_copy_schedule`、`GenerationContext`
+**1. 🐛 代码瑕疵修复**
 
----
+* 修复 `save_schedule` 浅拷贝问题，改为深拷贝彻底解决嵌套数据共享。
+* 修复 `_is_emoji` 检测范围不完整问题，从 8 个范围扩展到 24 个，覆盖 Emoji 15.0 全部范围。
+* 修复 `_cleanup_stale_caches` 中时间比较使用字符串不可靠的问题。
 
-## v1.6.0 - 2026-04-29
+**2. ⚡ 细分竞速并行化**
 
-**🧩 日程细分骨架（双LLM制）**
+* 细分竞速从串行改为并行，多提供商竞速使用 `asyncio.wait(FIRST_COMPLETED)`。
 
-* 新增日程细分功能：Model 1 生成大骨架日程后，复用同一套提供商逻辑（竞速-对话-兜底-最终兜底）对大骨架进行创造性细分
-* 新增人格级配置项 enable_subdivision（纯 bool 开关），细分复用日程生成的同一套提供商配置
-* 细分结果 sub_events 独立存储，不嵌入 timeline，回退安全零影响
-* 细分失败时只记录 warning 日志，不影响主日程数据
-* 新增 validate_sub_events 校验函数，校验细分结果的时间完整性、覆盖率和粒度
-* 新增 build_draft_skeleton 格式化函数，将 timeline 转为细分模型可读的文本格式
-* 新增 <DayFlow-Current-Activity> 标签注入，动态注入当前细分活动（此刻+刚做完+接下来，约60 token）
-* 新增 get_sub_events 方法，供 DayMind 和 DailySharing 获取细分数据
-* 新增 build_current_sub_activity_injection 方法，供系统提示词注入使用
-* 新增 /今日细分 命令（别名 dayflow_sub、查看细分），查看当前人格今日日程的细分活动
+**3. 🌐 日志中文化**
+
+* 全部英文日志翻译为中文（约 140 条）。
+* `[dayflow-style-research]` 统一为 `[dayflow-风格研究]`，`[dayflow-subdivision]` 统一为 `[dayflow-细分]`。
+* 细分生成新增完整中文日志（开始/成功/失败）。
 
 ---
 
+### v1.6.0 - 2026-04-29
 
-## v1.5.1 - 2026-04-28
+**🧩 日程细分骨架（双 LLM 制）**
 
-**🐛 修复串行路径最终兜底未传递 best_partial**
+**1. ✨ 日程细分功能**
 
-* 修复单提供商（串行）路径中 `_try_final_fallback` 两处调用未传递 `best_partial` 参数的问题
-* 校验失败路径：构建 `serial_best_partial` 传递 raw_text 和 reason，使兜底提供商能利用部分成功结果构建修复提示词
-* 异常路径：构建 `exception_best_partial` 传递异常信息
+* 新增日程细分功能：Model 1 生成大骨架日程后，复用同一套提供商逻辑对大骨架进行创造性细分。
+* 新增人格级配置项 `enable_subdivision`（bool 开关），细分复用日程生成的同一套提供商配置。
+* 细分结果 `sub_events` 独立存储，不嵌入 timeline，回退安全零影响。
+* 细分失败时只记录 warning 日志，不影响主日程数据。
 
-**🔧 增强最终兜底提供商重试能力**
+**2. 🏷️ 当前活动注入**
 
-* `_try_final_fallback` 新增 `max_repair_retries` 参数（默认1），支持修复重试循环
-* 原来只尝试一次（retry_count=0），现在默认有1次修复重试机会，提高兜底成功率
+* 新增 `<DayFlow-Current-Activity>` 标签注入，动态注入当前细分活动（此刻+刚做完+接下来）。
 
----
+**3. ✨ /今日细分 命令**
 
-## v1.5.0 - 2026-04-28
-
-**🛡️ 最终兜底提供商**
-
-* 新增全局配置项 `final_fallback_provider`，当所有竞速提供商和对话提供商都失败后，使用此提供商进行最后一次尝试
-* 兜底尝试只执行一次，不进行 repair 重试，若失败则真正失败
-* 兜底尝试会利用竞速阶段的 best_partial 信息构建 repair prompt（如果有）
-* 适用于竞速提供商和对话提供商都是高失败率模型的场景
-
-**⚙️ LLM 超时时间可配置化**
-
-* 新增全局配置项 `llm_timeout_seconds`，默认 900 秒（与之前硬编码值相同）
-* 设为 0 时跳过超时覆盖，使用 AstrBot 框架默认超时（约 120 秒）
-* 修复 `call_llm_once` 中 `original_client_timeout` 未初始化的潜在 NameError
-* 移除无效的 `prov.timeout` 修改（仅 `prov.client.timeout` 在运行时被 openai SDK 动态读取，`prov.timeout` 是初始化后不再被框架读取的死属性）
+* 新增 `/今日细分` 命令（别名 `dayflow_sub`、`查看细分`），查看当前人格今日日程的细分活动。
 
 ---
 
-## v1.4.8 - 2026-04-28
+### v1.5.1 - 2026-04-28
+
+**🐛 修复串行路径最终兜底 + 增强重试能力**
+
+* 修复单提供商（串行）路径中最终兜底未传递 `best_partial` 参数的问题，使兜底提供商能利用部分成功结果构建修复提示词。
+* `_try_final_fallback` 新增 `max_repair_retries` 参数（默认 1），支持修复重试循环，原来只尝试一次。
+
+---
+
+### v1.5.0 - 2026-04-28
+
+**🛡️ 最终兜底提供商 + LLM 超时可配置**
+
+**1. 🛡️ 最终兜底提供商**
+
+* 新增全局配置项 `final_fallback_provider`，当所有竞速提供商和对话提供商都失败后，使用此提供商进行最后一次尝试。
+* 兜底尝试会利用竞速阶段的 best_partial 信息构建 repair prompt。
+
+**2. ⚙️ LLM 超时时间可配置化**
+
+* 新增全局配置项 `llm_timeout_seconds`，默认 900 秒。
+* 设为 0 时跳过超时覆盖，使用 AstrBot 框架默认超时（约 120 秒）。
+* 修复 `call_llm_once` 中 `original_client_timeout` 未初始化的潜在 NameError。
+
+---
+
+### v1.4.8 - 2026-04-28
 
 **⏱️ 插件接管 LLM 超时时间**
 
-* `call_llm_once` 在调用前临时将提供商 timeout 设为 900 秒（15 分钟），调用后恢复原值
-* 解决慢速提供商因框架默认 120 秒超时而失败的问题
+* `call_llm_once` 在调用前临时将提供商 timeout 设为 900 秒（15 分钟），调用后恢复原值。
+* 解决慢速提供商因框架默认 120 秒超时而失败的问题。
 
 ---
 
-## v1.4.7 - 2026-04-28
+### v1.4.7 - 2026-04-28
 
 **🛡️ JSON 解析容错增强**
 
-* 增强 `safe_json_loads`：支持尾随逗号、行内注释、截断 JSON 补全等容错解析
-* 截断 JSON 补全：LLM 输出被截断时，逐步剥离不完整部分并补全闭合括号，尽可能提取已有字段
-* 修复 `call_llm_once` 对部分提供商（如 GLM-5.1）返回空文本的问题：当 `completion_text` 为空时，尝试从 `result_chain` 的组件中提取文本
+* 增强 `safe_json_loads`：支持尾随逗号、行内注释、截断 JSON 补全等容错解析。
+* 截断 JSON 补全：LLM 输出被截断时逐步剥离不完整部分并补全闭合括号，尽可能提取已有字段。
+* 修复 `call_llm_once` 对部分提供商（如 GLM-5.1）返回空文本的问题，改为从 `result_chain` 组件中提取文本。
 
 ---
 
-## v1.4.6 - 2026-04-27
+### v1.4.6 - 2026-04-27
 
 **🐛 修复搜索额度浪费**
 
-* `/生成日程` 不再清空 frozen_randoms，复用当天的随机参数和风格研究结果，避免浪费搜索额度
-* `/定制日程` 仍然清空 frozen_randoms，重新随机 + 重新搜索
-* 拆分 `force_regenerate`（跳过已有日程）和 `reset_randoms`（清空随机参数）两个独立控制
+* `/生成日程` 不再清空 frozen_randoms，复用当天的随机参数和风格研究结果，避免浪费搜索额度。
+* `/定制日程` 仍然清空 frozen_randoms，重新随机 + 重新搜索。
+* 拆分 `force_regenerate`（跳过已有日程）和 `reset_randoms`（清空随机参数）两个独立控制。
 
 ---
 
-## v1.4.5 - 2026-04-27
+### v1.4.5 - 2026-04-27
 
 **🔧 提供商配置重构**
 
-* 移除旧的 `select_provider` 单选字段，统一使用 `select_providers` 配置提供商
-* `select_providers` 扩展为 3 个下拉选择框（`racing_provider_1`/`racing_provider_2`/`racing_provider_3`），留空不参与竞速
-* 兼容旧配置格式：如果用户仍使用旧的 `select_provider` 或 list 格式的 `select_providers`，解析时会自动迁移
+* 移除旧的 `select_provider` 单选字段，统一使用 `select_providers`。
+* `select_providers` 扩展为 3 个下拉选择框，留空不参与竞速。
+* 兼容旧配置格式：旧的 `select_provider` 或 list 格式解析时会自动迁移。
 
 ---
 
-## v1.4.4 - 2026-04-27
+### v1.4.4 - 2026-04-27
 
 **🐛 竞速机制修复 + 配置体验优化**
 
-* 修复竞速/串行/fallback 三条路径中 `call_llm_with_provider_fallback` 的 `retry_count` 嵌套放大问题：将内部 `retry_count` 从 `repair_retries` 改为 `0`，重试完全由外层 repair 循环控制，避免 retry_count=3 时单提供商最多 16 次 LLM 调用（现降为 4 次）
-* 修复单提供商竞速丢失 fallback 行为：`select_providers` 只有 1 个提供商时走串行路径，保留 session/default fallback 链
-* 修复竞速全部失败后 fallback 使用原始 prompt 的问题：现在会利用竞速阶段的最佳部分结果构建 repair prompt，提高 fallback 成功率
-* 新增全局 LLM 并发控制：`asyncio.Semaphore(4)` 限制同时进行的 LLM 请求数不超过 4，防止竞速 + 多人格场景下并发过高
-* 新增竞速调试信息：`_race_providers` 记录各提供商结果到 debug payload，包含 `racing_providers`、`racing_results`、`racing_winner` 等
-* 优化竞速配置体验：`select_providers` 从 template_list 改为固定两个下拉选择框（`racing_provider_1`、`racing_provider_2`），与主提供商选择体验一致
-* 修复 `describe_personas` 单提供商竞速展示不准确的问题
-* 修复竞速成功时 `fallback_used` 误判为 True 的问题：竞速赢家在 `select_providers` 列表中不算 fallback
-* 降级 `get_life_context missing target schedule` 日志从 warning 到 info（正常业务流程）
+**1. 🐛 竞速重试修复**
+
+* 修复竞速/串行/fallback 三条路径中 `retry_count` 嵌套放大问题，单提供商最多 LLM 调用次数从 16 次降为 4 次。
+* 修复单提供商竞速丢失 fallback 行为。
+* 修复竞速全部失败后 fallback 使用原始 prompt 的问题，改为利用最佳部分结果构建 repair prompt。
+
+**2. ⚡ 并发控制**
+
+* 新增全局 LLM 并发控制，限制同时进行的 LLM 请求数不超过 4，防止竞速 + 多人格场景下并发过高。
+
+**3. 🔧 配置体验优化**
+
+* `select_providers` 从 template_list 改为固定两个下拉选择框，与主提供商选择体验一致。
+* 修复 `describe_personas` 单提供商竞速展示不准确的问题。
+* 修复竞速成功时 `fallback_used` 误判为 True 的问题。
+* 降级 `get_life_context missing target schedule` 日志从 warning 到 info。
 
 ---
 
-## v1.4.3 - 2026-04-27
+### v1.4.3 - 2026-04-27
 
 **🐛 修复生成锁未释放 + 🚀 提供商并行竞速**
 
-* 修复 async generator 中 yield 在 try-finally 内导致锁不释放的 bug：将 yield 移出 try-finally 块，确保 exit_generation 一定执行
-* generating_personas 从 set 改为 dict 记录时间戳，enter_generation 时自动清理超过 10 分钟的陈旧锁
-* 新增 select_providers 列表配置：支持为每个人格配置多个提供商，生成时并行竞速，谁先成功用谁的结果
-* 竞速模式下每个提供商独立重试（和串行模式逻辑一致），全部失败后回退对话模型
-* 向后兼容：未配置 select_providers 时走原来的串行逻辑，行为无变化
-* describe_personas 展示竞速提供商信息
+**1. 🐛 修复生成锁未释放**
+
+* 修复 async generator 中 yield 在 try-finally 内导致锁不释放的 bug。
+* generating_personas 从 set 改为 dict 记录时间戳，自动清理超过 10 分钟的陈旧锁。
+
+**2. 🚀 提供商并行竞速**
+
+* 新增 `select_providers` 列表配置，支持为每个人格配置多个提供商，生成时并行竞速，谁先成功用谁的结果。
+* 竞速模式下每个提供商独立重试，全部失败后回退对话模型。
+* 未配置 `select_providers` 时走原来的串行逻辑，行为无变化。
+* `describe_personas` 展示竞速提供商信息。
 
 ---
 
-## v1.4.2 - 2026-04-26
+### v1.4.2 - 2026-04-26
 
 **🐛 修复多日程共存 bug + 调试日志增强**
 
-* 修复 save_schedule 引用共享问题：memory_store 直接存储原始 dict 引用，history_store 浅拷贝但 meta 子字典仍共享，改为显式深拷贝 data 和 meta
-* save_schedule 新增旧条目移除计数日志，便于追踪同日覆盖情况
-* get_life_context 新增多 candidate_keys 查找调试日志，当存在多个候选 key 时记录每个 key 的命中/未命中状态
+* 修复 `save_schedule` 引用共享问题，改为显式深拷贝 data 和 meta。
+* `save_schedule` 新增旧条目移除计数日志，便于追踪同日覆盖情况。
+* `get_life_context` 新增多候选 key 查找调试日志。
 
 ---
 
-## v1.4.1 - 2026-04-26
+### v1.4.1 - 2026-04-26
 
 **🎨 UI 全面优化 + Emoji 支持**
 
-* 时间放入卡片内左侧，大时间+小时间对比，竖线分隔
-* 换装单独成鼠尾草绿气泡，与柔粉主卡片形成双色系
-* 标题加粗加深，与详情辨识度提升
-* 去掉所有消息前缀，输出更干净
-* 新增 Emoji 字体支持，正文内容可渲染彩色 Emoji
-* 修复定制日程图片发两次（推送排除当前会话）
+* 时间放入卡片内左侧，大时间+小时间对比，竖线分隔。
+* 换装单独成鼠尾草绿气泡，与柔粉主卡片形成双色系。
+* 标题加粗加深，与详情辨识度提升。
+* 去掉所有消息前缀，输出更干净。
+* 新增 Emoji 字体支持，正文内容可渲染彩色 Emoji。
+* 修复定制日程图片发两次的问题（推送排除当前会话）。
 
 ---
 
-## v1.4.0 - 2026-04-26
+### v1.4.0 - 2026-04-26
 
 **🎨 时间轴布局优化 + 图片渲染日志输出**
 
 **1. 🎨 修复时间戳与卡片文本框重合**
 
-* 时间戳从圆点左侧移到圆点上方，避免与卡片内容重叠
-* 卡片起始位置从 `timeline_x + 16` 调整为 `timeline_x + 24`，增加间距
-* 时间戳水平居中于圆点上方，不再与圆点重叠
+* 时间戳从圆点左侧移到圆点上方，避免与卡片内容重叠。
+* 卡片起始位置增加间距，时间戳水平居中于圆点上方。
 
 **2. 🎨 新增时间线竖线**
 
-* 每个时间轴条目之间绘制竖线连接，增强时间轴视觉连续性
+* 每个时间轴条目之间绘制竖线连接，增强视觉连续性。
 
 **3. 📝 图片渲染时输出文字日志**
 
-* 图片渲染成功后，后台同时输出 `logger.info` 文字日志
-* 便于调试和查看日程内容，无需依赖图片显示
+* 图片渲染成功后同时输出文字日志，便于调试和查看日程内容。
 
 ---
 
-## v1.3.9 - 2026-04-26
+### v1.3.9 - 2026-04-26
 
 **🐛 修复日程图片渲染：错位 + emoji 方框 + 穿搭溢出**
 
-**1. 🐛 修复高度计算与绘制宽度不一致导致错位**
-
-* `_calc_item_height` 中的 `content_width` 计算与 `_draw_timeline_item` 中的实际绘制宽度不一致
-* 高度计算用的是 `img_width - padding_x - timeline_x - 30`，绘制用的是 `card_width - card_padding * 2`
-* 统一为从绘制逻辑推导的 `card_width - card_padding * 2`，确保换行位置一致
-
-**2. 🐛 修复 emoji 渲染为方框（口里一个x）**
-
-* `👗` emoji 在 NotoSerifSC 等中文字体中不存在，Pillow 无法渲染
-* 将换装标签从 `👗 换装内容` 改为 `换装：换装内容`
-
-**3. 🐛 修复穿搭文本不换行、跑出图片外**
-
-* `outfit_change` 绘制时直接 `draw.text()` 一行写完，未调用 `_wrap_text`
-* 改为调用 `_wrap_text` 换行后逐行绘制，高度计算也同步更新
-
-**4. 🐛 修复 `_wrap_text` 不处理换行符**
-
-* `_wrap_text` 遇到 `\n` 时未断行，导致多行文本被拼成一行
-* 改为先按 `\n` 分段，每段独立换行
+* 修复高度计算与绘制宽度不一致导致错位，统一为从绘制逻辑推导的宽度。
+* 修复 emoji 渲染为方框（`👗` 在中文字体中不存在），将换装标签从 `👗 换装内容` 改为 `换装：换装内容`。
+* 修复穿搭文本不换行、跑出图片外，改为调用换行后逐行绘制。
+* 修复 `_wrap_text` 不处理换行符，导致多行文本被拼成一行。
 
 ---
 
-## v1.3.8 - 2026-04-26
+### v1.3.8 - 2026-04-26
 
-**🐛 修复图片发送崩溃：`image_result` 误传 Image 对象**
+**🐛 修复图片发送崩溃**
 
-**1. 🐛 修复 `_send_schedule_result` 图片发送路径崩溃**
-
-* `event.image_result()` 只接受 `str`（URL 或文件路径），但代码传入了 `ImageComponent.fromBytes()` 返回的 `Image` 对象
-* 导致 `AttributeError: 'Image' object has no attribute 'startswith'`
-* 改用 `event.chain_result()` + 消息链（`[Plain, ImageComponent]`）发送图片
-* 同时修复了图片模式下 prefix 和图片分两条消息发送的问题，现在合并为一条消息链
+* 修复 `_send_schedule_result` 图片发送路径崩溃：`event.image_result()` 只接受字符串，但传入了 `Image` 对象。
+* 改用 `event.chain_result()` + 消息链发送图片。
+* 同时修复图片模式下 prefix 和图片分两条消息发送的问题，现在合并为一条消息链。
 
 ---
 
-## v1.3.7 - 2026-04-26
+### v1.3.7 - 2026-04-26
 
 **🔄 指令重构：去除懒加载，新增 /今日日程**
 
-**1. 🔄 /查看日程 → /今日日程**
-
-* 移除 `/查看日程` 命令（alias: `life_show`, `dayflow_show`）
-* 新增 `/今日日程` 命令（alias: `life_today`, `dayflow_today`）
-* 新命令仅查看今日日程，不再自动触发生成（去除懒加载）
-* 日程不存在时提示用户使用 `/生成日程` 手动生成
-
-**2. 🔗 兼容性说明**
-
-* DayMind 的"思考前确保今日日程存在"功能通过 `service.generate_schedule()` 直接调用，不经过命令层，不受本次变更影响
+* 移除 `/查看日程` 命令。
+* 新增 `/今日日程` 命令（别名 `life_today`、`dayflow_today`），仅查看今日日程，不再自动触发生成。
+* 日程不存在时提示用户使用 `/生成日程` 手动生成。
 
 ---
 
-## v1.3.6 - 2026-04-25
+### v1.3.6 - 2026-04-25
 
 **🔧 图片渲染功能修复**
 
 **1. 🐛 修复换装标签解析 Bug**
 
-* `lstrip("👗换装：")` 误用：`lstrip` 按单字符剥离，会导致内容中包含"换"、"装"等字符时被错误截断
-* 改用 `re.sub(r'^👗\s*换装[：:]\s*', '', line)` 精确匹配前缀
+* `lstrip("👗换装：")` 误用导致内容中包含"换"、"装"等字符时被错误截断，改用正则精确匹配前缀。
 
 **2. 🐛 修复高度计算与实际绘制不一致**
 
-* `_calc_item_height` 中 title-detail 间距为 8，实际 `_draw_timeline_item` 绘制间距为 4
-* 统一为 4，消除卡片底部多余空白
+* title-detail 间距从 8 统一为 4，消除卡片底部多余空白。
 
 **3. 🐛 修复时间文本与时间线圆点重叠**
 
-* 时间文本从 `padding_x` 开始绘制，与 `timeline_x` 处的圆点重叠
-* 改为右对齐到圆点左侧，留 12px 间距
+* 时间文本改为右对齐到圆点左侧，留 12px 间距。
 
-**4. ⚡ 优化背景渐变绘制性能**
+**4. ⚡ 性能优化**
 
-* 逐行绘制改为 64 段矩形填充，大幅减少绘制调用次数
+* 背景渐变绘制从逐行改为 64 段矩形填充，大幅减少绘制调用次数。
+* 图片渲染改为异步，使用 `asyncio.to_thread()` 避免阻塞事件循环。
+* 新增 `asyncio.Lock` 防止并发渲染竞态。
 
-**5. ⚡ 图片渲染异步化**
+**5. 🛡️ Pillow 版本检查**
 
-* `_render_push_image` 改为 `async` 方法，使用 `asyncio.to_thread()` 避免阻塞事件循环
-* 新增 `asyncio.Lock` 防止并发渲染竞态
+* 新增 Pillow ≥ 8.2.0 版本检查，旧版本输出 warning 并禁用图片渲染。
 
-**6. 🛡️ Pillow 版本检查**
+**6. 🌐 添加国内字体下载镜像源**
 
-* 新增 Pillow ≥ 8.2.0 版本检查（`rounded_rectangle` API 需要）
-* 旧版本输出 warning 日志并禁用图片渲染
-
-**7. 🌐 添加国内字体下载镜像源**
-
-* jsDelivr 优先（国内可达性好于 GitHub）
-* 新增 ghproxy 镜像作为第三备用源
-
-**8. 🔧 代码质量改进**
-
-* `_wrap_text` fallback 宽度估算区分中英文字符
-* `_should_send_image` 显式 None 检查
+* jsDelivr 优先（国内可达性好于 GitHub），新增 ghproxy 镜像作为第三备用源。
 
 ---
 
-## v1.3.5 - 2026-04-25
+### v1.3.5 - 2026-04-25
 
 **✨ 新增日程图片渲染功能**
 
 **1. 🎨 清新自然风日程图片**
 
-* 新增 `core/schedule_renderer.py` 日程图片渲染器
-* 采用清新自然风设计：柔和渐变背景（绿白过渡）、圆角卡片、垂直时间轴+卡片混合布局
-* 左侧时间节点圆点+时间文本，右侧为圆角卡片内容区（标题、详情、换装标签）
-* 顶部显示日期和人格名称，底部显示 Dayflow 品牌标识
-* 字体策略同 DayMind：优先使用系统字体，无则自动下载 NotoSerifSC-Regular
-* 支持从 timeline 数组或 schedule 纯文本解析日程条目
-* 图片宽度 640px，高度根据内容动态计算
+* 新增日程图片渲染器，采用清新自然风设计：柔和渐变背景、圆角卡片、垂直时间轴+卡片混合布局。
+* 左侧时间节点圆点+时间文本，右侧为圆角卡片内容区（标题、详情、换装标签）。
+* 顶部显示日期和人格名称，底部显示 Dayflow 品牌标识。
+* 字体优先使用系统字体，无则自动下载 NotoSerifSC-Regular。
+* 图片宽度 640px，高度根据内容动态计算。
 
 **2. ⚙️ 人格级图片推送开关**
 
-* persona 配置新增 `push_image_enabled` 字段（bool，默认 False）
-* 不同人格可独立开关图片推送/查看
-* 开启后，日程自动推送和命令查看均输出图片
-* 关闭时保持原有纯文本行为
+* persona 配置新增 `push_image_enabled` 字段（默认 False）。
+* 不同人格可独立开关图片推送/查看，开启后日程自动推送和命令查看均输出图片。
 
 **3. 🛡️ 图片渲染失败自动降级**
 
-* 图片渲染失败时自动回退到纯文本推送
-* 记录 warning 日志便于排查
-
-**4. 🔧 代码变更**
-
-* `service.py`：新增 `_render_push_image()` 方法，`push_schedule_to_targets()` 支持图片/纯文本双模式
-* `main.py`：新增 `_should_send_image()` 和 `_send_schedule_result()`，所有日程输出命令统一走图片/文本分发
-* `config.py`：新增 `push_image_enabled` 字段解析
-* `_conf_schema.json`：新增 `push_image_enabled` 配置项
+* 图片渲染失败时自动回退到纯文本推送。
 
 ---
 
-## v1.3.4 - 2026-04-25
+### v1.3.4 - 2026-04-25
 
-**🔧 代码质量改进：循环导入消除 + error 字段统一 + 内存泄漏清理**
+**🔧 代码质量改进**
 
 **1. ♻️ 消除循环导入风险**
 
-* `render_schedule_display` 和 `is_schedule_valid` 从 main.py 移至 `core/generator.py`
-* service.py 的 `_render_push_content` 不再通过 `from ..main import` 延迟导入
-* 彻底消除 main.py ↔ service.py 的循环依赖隐患
+* `render_schedule_display` 和 `is_schedule_valid` 从 main.py 移至 `core/generator.py`，消除 main.py ↔ service.py 的循环依赖隐患。
 
 **2. 🐛 统一 error 字段**
 
-* `get_life_context` 和 `_build_missing_today_context` 返回的无效日程数据增加 `"error": True`
-* 与 `_build_persona_not_enabled_data` 保持一致，确保所有依赖 `meta.get("error")` 的代码路径行为统一
+* `get_life_context` 和 `_build_missing_today_context` 返回的无效日程数据增加 `"error": True`，确保所有依赖 `meta.get("error")` 的代码路径行为统一。
 
 **3. 🧹 内存泄漏清理**
 
-* 新增 `_cleanup_stale_caches()` 方法：清理非当天的 `_frozen_randoms` 和 7 天前的 `_last_interaction_times`
-* 启动时清理一次，调度循环中每小时清理一次
+* 新增 `_cleanup_stale_caches()` 方法：清理非当天的 `_frozen_randoms` 和 7 天前的 `_last_interaction_times`。
+* 启动时清理一次，调度循环中每小时清理一次。
 
-**4. 🔒 Store 封装改进**
+**4. 🔒 推送防御性校验**
 
-* DayflowStore 新增 `get_history_count()` 和 `get_memory_date()` 访问器方法
-* `save_generated` 日志不再直接访问 Store 内部字典
-
-**5. ♻️ 消除验证逻辑重复**
-
-* `_build_injection_text` 不再重复校验逻辑，改为调用 `is_schedule_valid()`
-
-**6. 🛡️ 推送防御性校验**
-
-* `push_schedule_to_targets` 开头增加 `is_schedule_valid()` 检查，无效日程不推送
+* `push_schedule_to_targets` 开头增加有效性检查，无效日程不推送。
 
 ---
 
-## v1.3.3 - 2026-04-25
+### v1.3.3 - 2026-04-25
 
 **🔧 代码质量改进：fallback 语义冲突 + 死代码清理 + 异步化**
 
-**1. 🐛 修复 `fallback` 字段语义冲突（显示/决策路径）**
+**1. 🐛 修复 fallback 字段语义冲突**
 
-* 新增 `_is_schedule_valid(data)` 辅助函数，基于内容有效性判断日程是否有效
-* 替换 main.py 中 4 处 `not existing.get("meta", {}).get("fallback")` 检查
-* 之前只修了注入层面（v1.3.0），显示和决策路径仍会把备用 provider 生成的日程误判为无效
-* 现在备用 provider 成功生成的日程可正常展示和复用
+* 新增 `_is_schedule_valid()` 辅助函数，基于内容有效性判断日程是否有效。
+* 修复备用 provider 生成的日程被误判为无效的问题，现在可正常展示和复用。
 
-**2. ♻️ 消除渲染逻辑重复**
+**2. 🧹 清理死代码**
 
-* `_render_push_content()` 不再重复实现渲染逻辑，改为调用 `_render_schedule_display()`
-* 后续只需维护一处渲染代码
+* 删除已无效的 `style_research_retry_count` getter 及对应配置项。
 
-**3. 🧹 清理死代码**
+**3. ⚡ save_schedule 异步化**
 
-* 删除 `_style_research_retry_count()` getter（外层重试循环已在 v1.3.1 删除，此配置无效）
-* 删除 `_conf_schema.json` 中对应的 `style_research_retry_count` 配置项
+* `save_schedule()` 改为 async，不再阻塞事件循环。
 
-**4. ⚡ `save_schedule()` 异步化**
+**4. 📊 describe_personas 增强**
 
-* `save_schedule()` 改为 `async def`，内部调用 `await async_save_state()` 替代同步 `_save_state()`
-* 不再阻塞事件循环
-
-**5. 📊 `describe_personas()` 增加推送目标显示**
-
-* 输出末尾追加 `| 推送:N个目标`
+* 输出末尾追加 `| 推送:N个目标`。
 
 ---
 
-## v1.3.2 - 2026-04-26
+### v1.3.2 - 2026-04-26
 
 **🔧 代码质量修复 + 新增日程推送功能**
 
-**1. 🐛 代码瑕疵修复（P0）**
+**1. 🐛 代码瑕疵修复**
 
-* `_history_item_to_schedule` 返回类型从 `dict` 修正为 `dict | None`，与方法实际行为一致
-* `prune_expired()` 新增节流机制（300秒间隔），避免高频调用时反复遍历全部数据；关键调用点使用 `force=True`
-* `_save_state()` 新增 `threading.Lock` 防止并发写入文件
-* 新增 `async_save_state()` 方法，通过 `asyncio.to_thread()` 将同步文件 I/O 卸载到线程池
-* `save_generated()` 改为 `async def`，内部调用 `await self.store.async_save_state()`
-* `_last_debug_payload` 新增 `threading.Lock` 保护，新增 `_update_debug_payload()` 方法
+* `prune_expired()` 新增节流机制（300秒间隔），避免高频调用时反复遍历全部数据。
+* `_save_state()` 新增锁防止并发写入文件。
+* 新增 `async_save_state()` 方法，将同步文件 I/O 卸载到线程池。
+* `save_generated()` 改为 async。
 
-**2. 🔒 封装性修复（P1）**
+**2. 🔒 封装性修复**
 
-* 新增 `DayflowStore.save_schedule()` 方法，封装 memory_store 写入、history_store 去重追加、prune 和 save
-* `DayflowService.save_generated()` 不再直接操作 Store 内部字典
+* 新增 `DayflowStore.save_schedule()` 方法，封装 memory_store 写入、history_store 去重追加、prune 和 save。
+* `DayflowService.save_generated()` 不再直接操作 Store 内部字典。
 
 **3. ✨ 日程推送功能**
 
-* persona 配置新增 `push_targets` 字段（UMO 字符串数组）
-* 日程生成后自动推送到配置的聊天会话
-* 推送内容不含"🧠 人格：xxx"前缀
-* 推送失败静默跳过并记录日志
-* 预留图片渲染接口（`_render_push_content()`）
+* persona 配置新增 `push_targets` 字段（UMO 字符串数组）。
+* 日程生成后自动推送到配置的聊天会话。
+* 推送内容不含"🧠 人格：xxx"前缀。
+* 推送失败静默跳过并记录日志。
 
 ---
 
-## v1.3.1 - 2026-04-25
+### v1.3.1 - 2026-04-25
 
 **🔧 风格研究调用重构与降级校验**
 
-**1. 🔄 重试逻辑简化：完全交给 Grok 插件**
-
-* 删除 `_research_style_reference` 中的外层重试循环（之前 `for attempt in range(1, retries+2)`）
-* 改为只调一次 `grok._do_search(use_retry=True)`，重试完全由 Grok 插件内部处理
-* 消除了 dayflow 外层循环 + grok 内部重试的双重重试问题
-
-**2. 🛡️ ok=False 时 raw 降级**
-
-* 当 Grok 返回 `ok=False` 时，检查 `raw` 字段是否有内容
-* 有内容则降级使用纯文本（走已有的 `_render_style_reference_from_plain_text` 路径）
-* 之前 ok=False 时直接跳过，完全不考虑 raw 内容
+* 重试逻辑简化：删除外层重试循环，改为只调一次 `grok._do_search(use_retry=True)`，重试完全由 Grok 插件内部处理。
+* 当 Grok 返回 `ok=False` 时，检查 `raw` 字段是否有内容，有内容则降级使用纯文本。
 
 ---
 
-## v1.3.0 - 2026-04-25
+### v1.3.0 - 2026-04-25
 
 **🐛 修复日程注入被错误阻止的问题**
 
-**1. 🔧 修复 `fallback` 字段语义冲突**
-
-* `_build_injection_text` 之前检查 `meta.get("fallback")` 来决定是否注入
-* 但 `fallback: true` 在 provider 切换场景下仅表示"使用了备用 provider"，日程内容是有效的
-* 这导致当配置的 provider 失败、切换到备用 provider 成功生成日程后，日程无法注入系统提示词
-
-**2. 📝 改进注入判断逻辑**
-
-* 移除对 `meta.get("fallback")` 的检查
-* 改为检查日程内容是否为占位符（`outfit == "尚未生成"` 或 `"尚未生成成功" in schedule`）
-* 现在只要日程内容有效，即使使用了备用 provider 也会正常注入
+* 修复 `fallback` 字段语义冲突导致备用 provider 成功生成的日程无法注入系统提示词的问题。
+* 改为检查日程内容是否为占位符来判断是否注入，只要日程内容有效就会正常注入。
 
 ---
 
-## v1.2.9 - 2026-04-25
+### v1.2.9 - 2026-04-25
 
 **🐛 修复 Grok 搜索 429 重试失效问题**
 
-**1. 🔧 启用 Grok 插件内置重试机制**
-
-* `_research_style_reference` 调用 `_do_search` 时将 `use_retry=False` 改为 `use_retry=True`
-* 之前 `use_retry=False` 导致 grok 插件内部 `max_retries=0`，遇到 429 直接放弃当前 provider，不等待 Retry-After
-* dayflow 自身的重试循环没有延迟，立刻重试又 429，形成无效重试循环
-* 现在由 grok 插件自行处理 429 重试（解析 Retry-After 头、线性退避），dayflow 不再介入
+* 调用 `_do_search` 时将 `use_retry` 从 False 改为 True，启用 Grok 插件内置重试机制。
+* 之前 `use_retry=False` 导致 Grok 插件遇到 429 直接放弃，dayflow 自身的无延迟重试又立刻 429，形成无效重试循环。
+* 现在由 Grok 插件自行处理 429 重试（解析 Retry-After 头、线性退避）。
 
 ---
 
-## v1.2.8 - 2026-04-24
+### v1.2.8 - 2026-04-24
 
 **👁️ 存在感注入从全局级下调为人格级**
 
-**1. 🔧 存在感配置人格级化**
-
-* `presence_injection_level` 和 `presence_min_interval_minutes` 从全局配置移至每个人格的独立配置
-* 不同人格可以有不同的存在感注入等级和间隔，例如一个角色等级4主动分享，另一个角色等级1完全关闭
-* 保留向后兼容：未配置时默认等级2、间隔0分钟
-
-**2. 📝 配置 schema 更新**
-
-* 全局配置中移除 `presence_injection_level` 和 `presence_min_interval_minutes`
-* persona 模板中新增这两个字段
+* `presence_injection_level` 和 `presence_min_interval_minutes` 从全局配置移至每个人格的独立配置。
+* 不同人格可以有不同的存在感注入等级和间隔。
+* 保留向后兼容：未配置时默认等级 2、间隔 0 分钟。
 
 ---
 
-## v1.2.7 - 2026-04-24
+### v1.2.7 - 2026-04-24
 
 **🌤️ 天气覆盖：Grok 联网研究顺便获取真实天气**
 
-**1. 🌟 新增 `location` 配置项**
+**1. 🌟 新增 location 配置项**
 
-* 每个 persona 可配置 `location` 字段（如 `"北京市海淀区"`），填了就查真实天气，不填就用池随机天气
-* 异世界人设不受影响——`location` 为空时完全回退到池随机天气
+* 每个 persona 可配置 `location` 字段，填了就查真实天气，不填就用池随机天气。
 
 **2. 🌐 天气查询搭风格研究便车**
 
-* 在同一次 Grok 联网请求中追加天气查询，零额外 API 调用
-* `STYLE_RESEARCH_SYSTEM_PROMPT` 新增 `weather` 字段定义，要求 Grok 返回指定地点的真实天气
-* `_build_style_research_query` 支持 `location` 参数，自动追加天气查询语句
+* 在同一次 Grok 联网请求中追加天气查询，零额外 API 调用。
 
 **3. 📦 天气缓存与降级**
 
-* 真实天气随风格研究一起缓存（有效期1天），缓存命中时直接读取
-* 降级路径完整：无 location → 池随机；无 Grok → 池随机；Grok 返回 weather 为 null → 池随机
-* `_research_style_reference` 返回值从 4 元素扩展为 5 元素（增加 `real_weather`）
+* 真实天气随风格研究一起缓存（有效期 1 天）。
+* 降级路径完整：无 location → 池随机；无 Grok → 池随机；Grok 返回 weather 为 null → 池随机。
 
-**4. 🔧 调试信息增强**
+**4. 🔍 调试信息增强**
 
-* `/dayflow_debug` 命令新增 `location` 和 `style_research_weather` 输出
+* `/dayflow_debug` 命令新增 `location` 和 `style_research_weather` 输出。
 
 ---
 
-## v1.2.6 - 2026-04-24
+### v1.2.6 - 2026-04-24
 
-**✨ 新增存在感注入机制（DayFlow Presence Injection）**
+**✨ 新增存在感注入机制**
 
-**1. 🌟 新增 `<DayFlow-Presence>` system_prompt 注入**
+**1. 🌟 新增 <DayFlow-Presence> system_prompt 注入**
 
 * Bot 现在能感知与用户的时间间隔，在每次 LLM 请求时注入存在感上下文。
 * 4 级存在感等级（配置项 `presence_injection_level`）：
-  - 等级 1：关闭，不注入任何内容
-  - 等级 2（默认）：仅注入当前时间、上次互动时间与时间差
-  - 等级 3：额外引导"可以考虑是否要主动与用户分享今天的日程，但不必刻意"
-  - 等级 4：额外引导"可以考虑是否要主动与用户分享今天的日程、现在的心情或最近的思考，但不必刻意"
-* 引导措辞刻意弱化，约束力度 > 引导力度，避免提示词污染导致角色每次都主动分享。
+  - 等级 1：关闭，不注入任何内容。
+  - 等级 2（默认）：仅注入当前时间、上次互动时间与时间差。
+  - 等级 3：额外引导"可以考虑是否要主动与用户分享今天的日程"。
+  - 等级 4：额外引导"可以考虑是否要主动分享日程、心情或最近的思考"。
 
 **2. 🕐 新增互动时间追踪**
 
-* 通过 `on_llm_response` 钩子记录 Bot 回复时间（按会话追踪，内存存储，不持久化）。
-* `on_llm_request` 时根据时间差生成存在感注入，时间差本身就是天然的行为调节器——"约5分钟前"自然不分享，"约3小时前"自然考虑分享。
+* 通过 `on_llm_response` 钩子记录 Bot 回复时间（按会话追踪，内存存储）。
+* `on_llm_request` 时根据时间差生成存在感注入。
 
 **3. ⚙️ 新增配置项**
 
-* `presence_injection_level`（int，默认 2）：存在感注入等级
-* `presence_min_interval_minutes`（int，默认 0）：最小注入间隔，设为 0 始终注入（推荐）
-
-**4. 🔗 与 DayMind 的联动**
-
-* 等级 4 的引导提及"心情"和"思考"，但 DayFlow 不重复注入这些数据——DayMind 已在注入心情风格规则和思考流，等级 4 只是在行为引导层面做桥接。
+* `presence_injection_level`（int，默认 2）：存在感注入等级。
+* `presence_min_interval_minutes`（int，默认 0）：最小注入间隔，设为 0 始终注入。
 
 ---
 
-## v1.2.5 - 2026-04-23
+### v1.2.5 - 2026-04-23
 
 **🐛 修复 Fallback 提供商始终不生效的问题**
 
-**1. 🔧 修复 `_get_default_provider_id` 无法获取 Provider ID**
-
-* 之前使用 `getattr(provider, "id", None)` 获取 Provider ID，但 AstrBot 的 `Provider` 对象没有 `id` 属性，应使用 `provider.meta().id`。
-* 这导致 `default_provider_id` 始终返回 `None`，fallback 候选列表永远为空，primary 提供商失败后无法切换到备用提供商。
-* 新增 `_get_provider_id_from_instance()` 方法，优先使用 `provider.meta().id`，兼容 fallback 到 `getattr`。
-
-**2. 🔧 修复 `call_llm_once` 在 `provider_id=None` 时崩溃**
-
-* 之前当 `provider_id=None` 时调用 `self.context.llm_generate(prompt=prompt)`，但 AstrBot 的 `llm_generate` 的 `chat_provider_id` 是必填参数，会直接抛出 `TypeError`。
-* 现在当 `provider_id` 为空时，先通过 `_get_default_provider_id()` 获取默认 Provider ID，确保总是传入有效的 `chat_provider_id`。
-
-**3. 🔧 修复 `call_llm_with_provider_fallback` 条件判断逻辑缺陷**
-
-* 之前的条件 `if primary_provider_id is not None or fallback_provider_id is None` 在 `primary=None, fallback≠None` 时，两个分支都不会执行，fallback 被完全跳过。
-* 改为显式的 `should_try_primary` 逻辑，当 primary 为 None 且 fallback 存在时，直接使用 fallback。
-
-**4. 🔧 代码变更**
-
-* `service.py`：新增 `_get_provider_id_from_instance()` 方法；`_get_default_provider_id()` 改用新方法获取 Provider ID；`call_llm_once()` 在 `provider_id=None` 时获取默认 Provider；`call_llm_with_provider_fallback()` 条件判断逻辑修复。
+* 修复 `_get_default_provider_id` 无法获取 Provider ID 的问题（`Provider` 对象没有 `id` 属性，应使用 `provider.meta().id`）。
+* 修复 `call_llm_once` 在 `provider_id=None` 时崩溃的问题（`llm_generate` 的 `chat_provider_id` 是必填参数）。
+* 修复 `call_llm_with_provider_fallback` 条件判断逻辑缺陷，当 primary 为 None 且 fallback 存在时直接使用 fallback。
 
 ---
 
-## v1.2.4 - 2026-04-22
+### v1.2.4 - 2026-04-22
 
 **🐛 修复生成失败重试时随机值重复 roll 的问题**
 
 **1. 🧊 新增随机值冻结机制**
 
-* 之前每次调用 `generate_schedule()` 都会重新 `random.choice()` 选择穿搭风格、主线类型、事件驱动、天气和变化等级。
-* 当 LLM 提供商失败后，调度器自动重试时会重新 roll 所有随机值，导致：
-  - 新的风格触发新的 Grok 联网搜索，产生不必要的 API 消耗
-  - 每次重试的 prompt 完全不同，降低了修复重试的意义
-* 现在随机值在首次生成时"冻结"，以 `(persona_key, target_date)` 为键缓存，后续重试直接复用，直到生成成功后才清除。
+* 随机值在首次生成时"冻结"，以 `(persona_key, target_date)` 为键缓存，后续重试直接复用，直到生成成功后清除。
+* 避免重试时重新 roll 导致新风格触发新的 Grok 联网搜索、prompt 完全不同降低修复意义。
 
 **2. 🔄 强制重新生成时清除冻结值**
 
 * `generate_schedule()` 新增 `force_regenerate` 参数。
-* 当用户使用 `/生成日程` 或 `/定制日程` 时，会先清除冻结值再重新 roll，确保用户主动操作能获得全新的随机结果。
-* 自动调度重试时不清除冻结值，复用已有的随机选择。
+* 用户使用 `/生成日程` 或 `/定制日程` 时会先清除冻结值再重新 roll。
+* 自动调度重试时不清除冻结值。
 
-**3. ✅ 生成成功后自动清除冻结值**
+**3. 🗄️ 启用风格研究缓存**
 
-* `save_generated()` 保存成功日程时会自动清除对应的冻结随机值。
-* 确保第二天生成时不会误用前一天的冻结值。
-
-**4. 🗄️ 启用风格研究缓存**
-
-* `STYLE_RESEARCH_CACHE_DAYS` 从 `0` 改为 `1`，启用同一天内相同风格的缓存。
-* 之前缓存天数设为 0 导致缓存永远无效，即使冻结了随机值保证同一风格，重试时仍会重新请求 Grok 搜索。
-* 现在同一天内相同风格只会请求一次 Grok，后续直接命中缓存。
-
-**5. 🔧 代码变更**
-
-* `service.py`：新增 `_frozen_randoms` 字典、`_frozen_randoms_key()`、`_get_or_freeze_randoms()`、`clear_frozen_randoms()` 方法；`generate_schedule()` 新增 `force_regenerate` 参数；`save_generated()` 新增清除冻结值逻辑。
-* `main.py`：`_generate_for_event()` 将 `force_regenerate` 传递给 `generate_schedule()`。
+* `STYLE_RESEARCH_CACHE_DAYS` 从 0 改为 1，启用同一天内相同风格的缓存。
+* 之前缓存天数设为 0 导致缓存永远无效，同一天内相同风格仍会重复请求 Grok。
 
 ---
 
-## v1.2.3 - 2026-04-19
+### v1.2.3 - 2026-04-19
 
 **✨ 新增明日日程定制功能**
 
-**1. 🎯 新增 `/明日日程` 命令**
-
-* 用户可提前设置明天的定制日程要求。
-* 例如：`/明日日程 穿洛丽塔，下午约会`。
-* 明天自动生成时会自动应用该要求。
-
-**2. 🎯 新增 `/取消明日日程` 命令**
-
-* 取消已设置的明日定制日程要求。
-* 取消后明天将正常随机生成。
-
-**3. 💾 新增 pending_custom_requests 存储**
-
-* 定制要求持久化存储，重启后仍有效。
-* 每个人格独立存储。
-* 自动清理过期数据。
-
-**4. 📝 日志精简**
-
-* `on_llm_request` 注入日程时的日志精简为：`[dayflow] 已注入日程: YYYY-MM-DD`
-
-**5. 🔧 代码变更**
-
-* `store.py`：新增 `pending_custom_requests` 存储及相关方法。
-* `service.py`：新增 `set_tomorrow_custom_request`、`clear_tomorrow_custom_request`、`consume_pending_custom_request` 方法；自动调度时读取 pending_custom_requests。
-* `main.py`：新增 `/明日日程` 和 `/取消明日日程` 命令。
+* 新增 `/明日日程` 命令，可提前设置明天的定制日程要求（如 `/明日日程 穿洛丽塔，下午约会`），明天自动生成时自动应用。
+* 新增 `/取消明日日程` 命令，取消已设置的明日定制日程要求。
+* 定制要求持久化存储，重启后仍有效，每个人格独立存储，自动清理过期数据。
 
 ---
 
-## v1.2.2 - 2026-04-19
+### v1.2.2 - 2026-04-19
 
 **✨ 新增定制日程功能**
 
-**1. 🎯 新增 `/定制日程` 命令**
+**1. 🎯 新增 /定制日程 命令**
 
-* 用户可通过 `/定制日程 <要求>` 命令，在生成日程时注入额外的定制要求。
-* 例如：`/定制日程 今天穿洛丽塔，下午约会`、`/定制日程 今天穿杏花微雨`。
+* 用户可通过 `/定制日程 <要求>` 在生成日程时注入额外的定制要求（如 `/定制日程 今天穿洛丽塔，下午约会`）。
 
 **2. 🧠 意图解析机制**
 
-* 当用户使用 `/定制日程` 时，Grok 会在风格研究的同时解析用户意图。
-* 支持识别并覆盖：
-  - `outfit_style`：穿搭风格大类（优先使用池中相近值）
-  - `outfit_item`：具体单品名（如"杏花微雨"）
-  - `schedule_main_type`：日程主线类型
-  - `core_event_driver`：核心事件驱动
-  - `outfit_adjustments`：穿搭调整（如"第二套下身换裤子"）
+* Grok 会在风格研究的同时解析用户意图，支持覆盖穿搭风格大类、具体单品名、日程主线类型、核心事件驱动、穿搭调整。
 
 **3. 🔄 风格研究自动重搜索**
 
-* 当用户指定的风格与随机抽取的不同时，会自动用新风格重新搜索风格参考。
-* 例如：随机抽到"女仆装"，用户说"穿杏花微雨"，Grok 会重新搜索"杏花微雨"的风格信息。
+* 用户指定的风格与随机抽取的不同时，会自动用新风格重新搜索风格参考。
 
-**4. 📝 Prompt 注入优化**
+**4. ⚙️ 新增配置项**
 
-* 用户定制要求会清晰地注入到最终生成的 Prompt 中。
-* 明确标注穿搭风格、具体单品、穿搭调整等信息。
-
-**5. ✅ 校验兼容**
-
-* `validate_payload` 支持放行用户指定的池外风格。
-* 通过 `user_specified_outfit_style` 标记区分用户指定和随机抽取。
-
-**6. ⚙️ 新增配置项**
-
-* `custom_schedule_intent_append`：定制日程意图解析追加模板，高级用户可自定义。
-
-**7. 🔧 代码变更**
-
-* `main.py`：新增 `/定制日程` 命令，`_generate_for_event` 支持 `extra_requirement` 参数。
-* `service.py`：新增 `CUSTOM_SCHEDULE_INTENT_APPEND` 常量，`_research_style_reference` 支持意图解析，`generate_schedule` 支持意图覆盖和 Prompt 注入。
-* `generator.py`：`validate_payload` 放行用户指定风格。
-* `_conf_schema.json`：新增 `custom_schedule_intent_append` 配置项。
+* 新增 `custom_schedule_intent_append`：定制日程意图解析追加模板，高级用户可自定义。
 
 ---
 
-## v1.2.1 - 2026-04-19
+### v1.2.1 - 2026-04-19
 
 **🐛 修复日程未注入系统提示词的遗漏问题**
 
-**1. ✅ 新增 `on_llm_request` 钩子**
-
-* 修复了设计之初就应存在但遗漏实现的功能：将今日日程注入到 LLM 的 system prompt 中。
-* 现在 Bot 在回复时会"带着今天的生活上下文"说话，而不仅仅是套用人设。
-* 注入内容包含：今日穿搭 + 今日日程。
-
-**2. 🔄 注入清理机制**
-
+* 新增 `on_llm_request` 钩子，将今日日程（穿搭 + 日程）注入到 LLM 的 system prompt 中。
+* 现在 Bot 在回复时会"带着今天的生活上下文"说话。
 * 每次请求前会先清理上次注入的内容，避免日程在对话历史中累积。
-* 使用 `<DayFlow-Schedule>` 标签包裹注入内容，与 livingmemory 的 `<RAG-Faiss-Memory>` 标签互不干扰。
-
-**3. 🔧 代码变更**
-
-* `main.py`：新增 `on_llm_request()` 钩子、`_build_injection_text()` 和 `_remove_dayflow_injection()` 辅助函数。
+* 使用 `<DayFlow-Schedule>` 标签包裹注入内容。
 
 ---
 
-## v1.2.0 - 2026-04-19
+### v1.2.0 - 2026-04-19
 
 **🧭 日程输出格式重构与提示词全面优化**
 
-**1. 🏗️ 日程输出格式从字符串改为结构化 timeline 数组**
+**1. 🏗️ 日程输出格式改为结构化 timeline 数组**
 
-* JSON 输出结构从 `{outfit_style, outfit, schedule}` 改为 `{outfit_style, outfit, summary, timeline[]}`
-* `timeline` 数组中每个对象包含 `time_start`、`time_end`、`title`、`detail`、`outfit_change` 五个字段
-* 新增 `summary` 字段：25字内概括今天的主题和心情
-* 新增 `title` 字段：每个时段必须有创意标题，用诗意或生动的短语概括
-* `schedule` 字符串字段保留，由 `timeline` 数组自动合成，兼容 DayMind 等下游插件
+* JSON 输出结构从 `{outfit_style, outfit, schedule}` 改为 `{outfit_style, outfit, summary, timeline[]}`。
+* `timeline` 数组中每个对象包含 `time_start`、`time_end`、`title`、`detail`、`outfit_change` 五个字段。
+* 新增 `summary` 字段：25 字内概括今天的主题和心情。
+* 新增 `title` 字段：每个时段必须有创意标题。
+* `schedule` 字符串字段保留，由 timeline 自动合成，兼容 DayMind 等下游插件。
 
 **2. 🧠 人设脱钩声明**
 
-* 明确 persona_desc 中的对话约束（字数限制、标点限制等）不适用于日程生成
-* 解决月见雪等角色人设污染日程叙述的问题（如20字限制导致日程事件也变短、标点自由导致全用空格）
+* 明确 persona_desc 中的对话约束（字数限制、标点限制等）不适用于日程生成。
 
 **3. 🚫 禁止元标签泄漏**
 
-* 禁止在 title/detail 中出现"核心事件"、"主线事件"、"XX驱动"等构思逻辑标签
-* 这些是内部构思依据，不是日程内容，不得泄露到输出文本中
+* 禁止在 title/detail 中出现"核心事件"、"主线事件"、"XX驱动"等构思逻辑标签。
 
 **4. ✨ 事件创造性要求**
 
-* 新增正面引导：每个非固定事件应有记忆点（小插曲/小转折）
-* 核心主线事件应有完整的起承转合：触发→发展→高潮→收束
-* 禁止两个以上连续时段都是被动消磨型内容
+* 每个非固定事件应有记忆点（小插曲/小转折）。
+* 核心主线事件应有完整的起承转合：触发→发展→高潮→收束。
+* 禁止两个以上连续时段都是被动消磨型内容。
 
 **5. 👗 换装差异要求**
 
-* 两次穿搭须在同一风格体系下呈现明显差异：单品选择、配色深浅、层次搭配、版型轮廓等至少两项不同
-* 措辞改为性别中立，兼容男性角色
+* 两次穿搭须在同一风格体系下呈现明显差异（单品选择、配色深浅、层次搭配、版型轮廓等至少两项不同）。
+* 措辞改为性别中立，兼容男性角色。
 
-**6. 📊 优先级体系重构**
+**6. 🎲 随机度定义重写**
 
-* 消除"必须严格遵循"通胀，统一为三层优先级：格式合规 > 人设脱钩 > 内容质量
+* 从"和前几天有多不同"改为"今天有多大事发生"。
+* 低=普通日常，中=小插曲日，高=重要事件日。
 
-**7. 🔁 反重复规则优化**
+**7. 🌐 联网风格研究提示词重构**
 
-* 日记参考明确"只取连续性不取结构"，禁止复用日记中的事件序列和场景组合
-* 日记是主观感受，日程是客观记录，两者体裁不同
-
-**8. 🎲 随机度定义重写**
-
-* 从"和前几天有多不同"改为"今天有多大事发生"
-* 低=普通日常，中=小插曲日，高=重要事件日
-* 去掉具体例子避免提示词污染
-
-**9. 🌐 联网风格研究提示词重构**
-
-* SYSTEM_PROMPT：新增"工作方式"段落，穿搭建议要求包含搭配理由，新增 `difference` 字段明确两套穿搭差异，删除"无法稳定输出 JSON 则允许纯文本"兜底
-* QUERY_TEMPLATE：从7条指令性文本改为简洁搜索关键词，让搜索词和指令各司其职
-* 渲染逻辑：`_render_style_reference` 新增渲染 `difference` 字段，穿搭建议条数上限从6提升到8
-
-**10. 🔧 代码变更**
-
-* `generator.py`：新增 `_synthesize_schedule_from_timeline()` 函数（兼容 DayMind），`normalize_payload` 自动合成 schedule，`validate_payload` 支持 timeline 数组校验，`extract_timeline` 支持从 dict 或 string 提取，`build_repair_prompt` 适配新格式
-* `service.py`：返回值新增 `summary` 和 `timeline` 字段，`_render_style_reference` 新增 difference 渲染，`prompt_template_version` 升级为 `persona_full_template_v9_timeline_struct`
-* `main.py`：新增 `_render_schedule_display()` 渲染函数，优先用 timeline 数组渲染（含标题），回退到 schedule 字符串
-* `_conf_schema.json`：同步更新 `style_research_system_prompt` 和 `style_research_query_template` 的 default 值
+* SYSTEM_PROMPT 新增"工作方式"段落，穿搭建议要求包含搭配理由，新增 `difference` 字段明确两套穿搭差异。
+* QUERY_TEMPLATE 从指令性文本改为简洁搜索关键词。
+* 穿搭建议条数上限从 6 提升到 8。
 
 ---
 
-## v1.1.2 - 2026-04-18
+### v1.1.2 - 2026-04-18
 
-**🔧 无限重试修复与自动Fallback机制**
+**🔧 无限重试修复与自动 Fallback 机制**
 
-**1. 🐛 修复自动调度无限重试Bug**
+**1. 🐛 修复自动调度无限重试 Bug**
 
-* 之前自动调度失败时，`generate_schedule` 内部会重试N次LLM调用，调度器本身又会重试N次，导致指数级重试（如9×9=81次请求）。
-* 现在新增 `auto_retry` 参数，自动调度场景下禁用 `generate_schedule` 内部重试，由调度器统一管理重试次数。
+* 之前自动调度失败时，`generate_schedule` 内部重试 + 调度器重试导致指数级重试（如 9×9=81 次请求）。
+* 新增 `auto_retry` 参数，自动调度场景下禁用内部重试，由调度器统一管理。
 * 手动触发（`/生成日程`）仍保留完整重试机制。
 
-**2. 🔄 修复空结果不触发Fallback的Bug**
+**2. 🐛 修复空结果不触发 Fallback 的 Bug**
 
-* 之前 `call_llm_with_provider_fallback` 在 primary provider 返回空结果时不会触发 fallback，直接返回空。
-* 现在无论异常还是空结果，都会正确切换到 fallback provider。
+* 之前 primary provider 返回空结果时不会触发 fallback，现在无论异常还是空结果都会正确切换。
 
-**3. 🌐 新增自动Fallback到聊天模型机制**
+**3. 🌐 新增自动 Fallback 到聊天模型**
 
-* 当配置的专家模型重试全部失败后，自动切换到聊天模型（session provider 或默认 provider）继续重试。
-* 重试流程：Primary provider重试N次 → Fallback provider重试N次 → 全部失败则停止。
-* 自动调度场景（无session）会 fallback 到 astrbot 默认聊天 provider。
-* 手动触发场景会 fallback 到当前会话使用的聊天模型。
+* 配置的专家模型重试全部失败后，自动切换到聊天模型继续重试。
+* 自动调度场景 fallback 到 astrbot 默认聊天 provider，手动触发场景 fallback 到当前会话聊天模型。
 
-**4. 📊 增强Meta信息**
+**4. 📊 增强调试信息**
 
-* 新增 `default_provider_id` 字段，记录使用的默认 provider。
-* `fallback` 字段现在会正确反映是否使用了 fallback provider。
-* 日志新增 `fallback_used`、`default_provider` 等调试信息。
-
-**5. 🏗️ 新增 `_get_default_provider_id` 方法**
-
-* 支持多种 astrbot API 获取默认 provider 的方式。
-* 为自动调度场景提供 fallback 目标。
+* 新增 `default_provider_id` 字段，`fallback` 字段正确反映是否使用了 fallback provider。
 
 ---
 
-## v1.1.1 - 2026-04-08
+### v1.1.1 - 2026-04-08
 
 **🛠️ 联动读取与重复生成修复**
 
-**1. 📅 新增目标日期读取语义**
-
-* `get_life_context()` 与 `generate_schedule()` 现支持按 `target_date` 读取 / 生成日程。
-* 解决了跨日场景下，外部插件为某一天生成内容时仍被迫按系统"今天"取日程的问题。
-
-**2. 🔗 与 DayMind 的跨日联动修复**
-
-* 配合 DayMind 调整后，前一日日记可稳定读取对应日期日程。
-* 避免出现前一日日记生成过程中误判"今日日程不存在"而重复补生成的问题。
-
-**3. ♻️ `/查看日程` 重复生成防抖**
-
-* 命令路径改为统一经过 DayFlow 上下文读取接口判断是否已有今日日程。
-* 降低已有缓存却仍误触发再次生成、导致同日结果被重复覆盖的概率。
+* `get_life_context()` 与 `generate_schedule()` 支持按 `target_date` 读取/生成日程，解决跨日场景下外部插件取日程的问题。
+* 配合 DayMind 调整，前一日日记可稳定读取对应日期日程，避免误判"今日日程不存在"而重复补生成。
+* `/查看日程` 命令路径改为统一经过 DayFlow 上下文读取接口判断是否已有今日日程，降低已有缓存却仍误触发再次生成的概率。
 
 ---
 
-## v1.1.0 - 2026-04-07
+### v1.1.0 - 2026-04-07
 
 **🌐 Grok 联网风格研究接入**
 
 **1. ✅ 新增 Grok 风格研究链路**
 
-* 现在 DayFlow 可接入 `astrbot_plugin_grok_web_search`，在生成日程前先对当前抽中的穿搭风格做一次联网研究。
-* 这一步不是为了单纯扩写内容，而是为了尽量减少模型对细分穿搭风格的误解。
-* 尤其适合名称容易被字面误读、容易与相近风格混淆、或本身带有较强圈内定义的风格词。
+* 可接入 `astrbot_plugin_grok_web_search`，在生成日程前先对当前穿搭风格做一次联网研究，减少模型对细分穿搭风格的误解。
 
-**2. 🧠 新增风格研究结构化约束**
+**2. 🧠 风格研究结构化约束**
 
-* Grok 返回结果会优先按结构化方式约束后续生成，重点覆盖：
-  - 风格定义
-  - 核心识别点
-  - 晨间第一套建议
-  - 午后第二套换装建议
-  - 常见误判与禁区
-* 目标是让主模型在生成穿搭与日程时，优先服从联网研究结果，而不是按字面联想自由发挥。
+* Grok 返回结果按结构化方式约束后续生成，覆盖风格定义、核心识别点、晨间第一套建议、午后第二套换装建议、常见误判与禁区。
 
-**3. ♻️ 新增风格研究缓存与降级机制**
+**3. ♻️ 风格研究缓存与降级**
 
-* 相同穿搭风格的研究结果现在会写入本地缓存，避免重复联网搜索。
-* 若 Grok 结果无法稳定解析为 JSON，会自动降级为纯文本摘要继续参与生成。
-* 若未安装 Grok 搜索插件，DayFlow 仍可正常运行，只是不会启用联网风格研究。
+* 相同穿搭风格的研究结果写入本地缓存，避免重复联网搜索。
+* Grok 结果无法解析为 JSON 时自动降级为纯文本摘要。
+* 未安装 Grok 插件时 DayFlow 仍可正常运行。
 
-**4. 🔍 调试信息补充风格研究视角**
+**4. 🔍 调试信息补充**
 
-* `/dayflow_debug` 现在可查看风格研究相关调试信息。
-* 包括缓存命中、查询预览、原始返回预览、解析结果预览与来源预览。
-* 便于排查风格理解跑偏、搜索质量不足或研究结果不稳定的问题。
+* `/dayflow_debug` 可查看风格研究调试信息（缓存命中、查询预览、返回预览、解析结果、来源）。
 
 **5. 🛠️ schema 暴露 Grok 提示词模板**
 
-* 现在已把 Grok 风格研究使用的 system prompt 与 query 模板暴露到 schema。
-* 高级用户可直接在配置中自定义风格研究的输出结构、研究重点与检索措辞。
-* 若自定义模板格式错误，会自动回退到内置 query 模板；但模板写坏仍可能影响研究质量，需自行确认。
-
-**6. 📝 README 与推荐搭配插件说明更新**
-
-* README 已补充 Grok 联网风格研究说明。
-* 推荐搭配插件新增：
-  - `astrbot_plugin_daymind`
-  - `astrbot_plugin_grok_web_search`
-* 同时补充了新增 schema 配置项与高级定制说明。
+* Grok 风格研究的 system prompt 与 query 模板暴露到 schema，高级用户可自定义。
+* 自定义模板格式错误时自动回退到内置 query 模板。
 
 ---
 
-## v1.0.0 - 2026-04-05
+### v1.0.0 - 2026-04-05
 
 **🌸 结构性优化**
 
 **1. ✅ 人格启用校验变严格**
 
-* 之前未配置的人格也能走生成流程，会偷偷按默认人格兜底。
-* 现在新增 `is_persona_configured()` 校验：只有已在 DayFlow 中启用的人格才会生成日程。
-* 未配置人格会直接拒绝，返回"人格未在 Dayflow 中启用"。
+* 新增 `is_persona_configured()` 校验，只有已在 DayFlow 中启用的人格才会生成日程，未配置人格直接拒绝。
 
-**2. 🔄 `/生成日程` 改为强制重生成**
+**2. 🔄 /生成日程 改为强制重生成**
 
-* 之前 `/生成日程` 会先看当天缓存，有缓存就直接返回。
-* 现在明确区分：
-  - `/查看日程`：有缓存则直接返回，没有才生成。
-  - `/生成日程`：强制重生成当天日程，忽略已有缓存。
-* 提示文案也区分成"正在生成"和"正在强制重生成"。
+* `/查看日程`：有缓存则直接返回，没有才生成。
+* `/生成日程`：强制重生成当天日程，忽略已有缓存。
 
-**3. 📅 `get_life_context()` 只返回今日日程**
+**3. 📅 get_life_context() 只返回今日日程**
 
-* 之前如果今天没有日程，会回退到最新历史日程。
-* 现在严格改为：只返回今天的有效日程。
-* 如果今天没有有效日程，会返回"今日尚无有效日程，已拒绝回退到旧日程"，不再伪装。
+* 严格改为只返回今天的有效日程，不再回退到最新历史日程。
 
 **4. ⏰ 自动调度新增 trigger 消费状态**
 
-* 之前只在固定分钟命中时触发，错过就可能跳过。
-* 现在改为 `now_minutes >= trigger_minutes` 即可触发。
-* 新增 `trigger_key = YYYY-MM-DD@HH:MM`，每个触发点每天只消费一次。
-* 已有今日日程时会把 trigger 消费掉，生成失败则不消费，后续可继续重试。
+* 改为 `now_minutes >= trigger_minutes` 即可触发，每个触发点每天只消费一次。
+* 生成失败则不消费 trigger，后续可继续重试。
 
 **5. 🔗 自动生成可绑定最近活跃会话**
 
 * 自动生成时会尝试从 DayMind 的消息缓存和会话-人格映射中找到该人格最近活跃的会话。
-* 让生成的日程更贴近真实互动历史，而不是无来源硬生成。
 
 **6. 🎲 新增日程变化等级系统**
 
 * 新增 `schedule_variation_level` 配置，支持"低 / 中 / 高 / 随机"。
 * "随机"按 3:6:1 比例抽取低/中/高。
-* 用于控制今天和前几天的差异程度，避免连续几天结构过于重复。
 
 **7. 🎯 日程约束升级为双轴结构控制**
 
-* 约束池现在升级为：
-  - `schedule_main_types`：今日总体节奏（如日常常规型、外出探索型、居家慵懒型等）。
-  - `core_event_drivers`：今日主要被什么推动（如任务驱动、情绪驱动、社交驱动等）。
-* 生成校验和 Prompt 约束都改为双轴控制，让生成结果更稳、变化度更可控。
+* `schedule_main_types`：今日总体节奏。
+* `core_event_drivers`：今日主要被什么推动。
 
 **8. 🔀 Provider 调用支持主备回退**
 
-* 新增 `call_llm_with_provider_fallback()`：
-  - `primary` = 人格配置 provider 或会话 provider。
-  - `fallback` = 会话 provider（当人格配置 provider 存在且与会话 provider 不同时）。
-* 主 provider 失败时可自动回退到会话 provider，提高稳定性。
+* 主 provider 失败时可自动回退到会话 provider。
 
-**9. 📦 历史存储从轻量文本升级为完整 payload**
+**9. 📦 历史存储升级为完整 payload**
 
-* 之前历史日程只存 `date` / `outfit` / `schedule` 轻量字段。
-* 现在改为存储完整 payload，包括 `meta` / `timeline` / `weather` / `memo` 等。
+* 历史日程从只存轻量字段升级为存储完整 payload（meta / timeline / weather / memo 等）。
 
 **10. 📝 新增近三日结构摘要参考**
 
-* 除了历史日程原文，还会提取近几天的前几行结构，形成摘要。
-* 帮模型理解最近几天的整体编排习惯，让变化等级机制更有抓手。
+* 提取近几天的前几行结构形成摘要，帮助模型理解最近几天的编排习惯。
 
 ---
 
-## v0.2.3 - 2026-04-01
+### v0.2.3 - 2026-04-01
 
-### Fixed
-- 修复 `/查看日程` 在部分人格场景下无法正确命中当天缓存、反而重复触发生成的问题
-- 修复不同人格显示名 / 配置名不一致时，日程读写键不统一导致的缓存失效问题
-- 修复生成流程中"已经有缓存却仍先提示正在生成"的体验问题
-- 修复穿搭字段 `outfit` 第一行格式在部分模型输出下连续校验失败的问题
-- 增加本地 payload 规范化逻辑：当模型输出 `【风格】:`、`穿搭风格：`、`风格为：` 等变体时，会优先自动矫正为 `风格：xxx`
-- 修复重写提示词构造中的字符串问题，降低 repair prompt 异常风险
+**🔧 缓存命中修复 + 配置体验优化**
 
-### Changed
-- 配置页中的"默认 Prompt 模板"改为 Markdown 编辑器模式，支持更长文本、更清晰的结构化编辑
-- 人格级 `prompt_template` 也改为 Markdown 编辑器模式，便于单独定制
-- 默认天气池移除温度信息，改为仅保留纯天气描述，避免默认值过于僵硬
-- 优化部分 schema 文案与提示信息，提升配置可理解性
-- README 恢复为原有展示风格，并同步保留本次配置项说明更新
+**1. 🐛 缓存与生成修复**
 
-### Docs
-- 补充 `CHANGELOG.md`，记录本次修复与配置项调整
+* 修复 `/查看日程` 部分人格场景下无法命中当天缓存、反而重复触发生成的问题。
+* 修复不同人格显示名/配置名不一致时日程读写键不统一导致的缓存失效。
+* 修复已有缓存却仍提示"正在生成"的体验问题。
+* 修复穿搭字段 `outfit` 第一行格式在部分模型输出下连续校验失败的问题。
+* 修复重写提示词构造中的字符串问题。
+
+**2. ✨ 配置与提示词优化**
+
+* 配置页"默认 Prompt 模板"改为 Markdown 编辑器模式。
+* 人格级 `prompt_template` 也改为 Markdown 编辑器模式。
+* 默认天气池移除温度信息，仅保留纯天气描述。
+* 模型输出 `【风格】:`、`穿搭风格：`、`风格为：` 等变体时自动矫正为 `风格：xxx`。
+* 优化部分 schema 文案与提示信息。
