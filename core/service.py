@@ -1981,7 +1981,7 @@ class DayflowService:
                 if ok and payload:
                     break
                 logger.warning(
-                    f"[dayflow] 最终回退校验失败: persona={ctx.normalized_persona_name}, provider={final_provider_id}, attempt={attempt}/{ctx.max_repair_retries}, reason={reason}, raw_preview={self._preview_text(raw_text, limit=800)}"
+                    f"[dayflow] 最终回退校验失败: persona={ctx.normalized_persona_name}, provider={final_provider_id}, attempt={attempt}/{ctx.max_repair_retries}, reason={reason}, raw_text={raw_text}"
                 )
                 repair_prompt = build_repair_prompt(final_prompt, raw_text, reason, ctx.validate_persona, retry_index=attempt)
                 raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
@@ -2933,7 +2933,7 @@ class DayflowService:
                 for attempt in range(1, repair_retries + 1):
                     if ok and payload:
                         break
-                    logger.warning(f"[dayflow] 载荷校验失败: persona={normalized_persona_name}, attempt={attempt}, reason={reason}, raw_preview={self._preview_text(raw_text, limit=800)}")
+                    logger.warning(f"[dayflow] 载荷校验失败: persona={normalized_persona_name}, attempt={attempt}, reason={reason}, raw_text={raw_text}")
                     repair_prompt = build_repair_prompt(prompt, raw_text, reason, validate_persona, retry_index=attempt)
                     raw_text, actual_provider_id = await self.call_llm_with_provider_fallback(
                         repair_prompt,
