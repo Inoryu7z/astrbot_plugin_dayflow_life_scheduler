@@ -60,7 +60,9 @@ class DayflowStore:
     async def enter_generation(self, persona_name: str) -> bool:
         import time
         async with self._gen_lock:
-            now = time.monotonic()
+            # 使用墙钟时间而非 monotonic：生成锁需跨进程重启持久化，
+            # monotonic 在重启后归零，无法判断持久化锁的过期状态。
+            now = time.time()
             stale = [
                 k for k, ts in self.generating_personas.items()
                 if now - ts > self._generation_stale_timeout
@@ -71,11 +73,13 @@ class DayflowStore:
             if persona_name in self.generating_personas:
                 return False
             self.generating_personas[persona_name] = now
+            await self.async_save_state()
             return True
 
     async def exit_generation(self, persona_name: str):
         async with self._gen_lock:
             self.generating_personas.pop(persona_name, None)
+            await self.async_save_state()
 
     async def save_schedule(self, store_key: str, data: dict):
         import copy
@@ -401,6 +405,16 @@ class DayflowStore:
                     if str(v).strip():
                         normalized_pending[str(k)] = str(v)
                 self.pending_custom_requests = normalized_pending
+            generating_personas = payload.get("generating_personas", {}) or {}
+            if isinstance(generating_personas, dict):
+                # 恢复持久化的生成锁；重启后若已超过 stale 阈值会在下次 enter_generation 时被清理
+                restored_gen: dict[str, float] = {}
+                for k, v in generating_personas.items():
+                    try:
+                        restored_gen[str(k)] = float(v)
+                    except Exception:
+                        continue
+                self.generating_personas = restored_gen
             saved_retention = payload.get("retention_days")
             if saved_retention is not None:
                 self.retention_days = self._normalize_retention_days(saved_retention)
@@ -419,6 +433,8 @@ class DayflowStore:
                     "auto_generation_state": self.auto_generation_state,
                     "auto_generation_failures": self.auto_generation_failures,
                     "pending_custom_requests": self.pending_custom_requests,
+                    # 持久化生成锁：重载插件后仍能识别"正在生成"状态，避免调度器重复触发
+                    "generating_personas": self.generating_personas,
                 }
                 self.state_file.parent.mkdir(parents=True, exist_ok=True)
 

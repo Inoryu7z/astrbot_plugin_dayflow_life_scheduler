@@ -606,6 +606,11 @@ class DayflowService:
     def _normalize_style_key(self, style_name: str) -> str:
         return "".join(str(style_name or "").strip().lower().split())
 
+    def _style_cache_key(self, persona_name: str | None, style_name: str) -> str:
+        """风格研究/审查缓存的复合键：persona + style，保证不同人格间缓存隔离。"""
+        persona_part = self.normalize_persona_key(persona_name) if persona_name else "__global__"
+        return f"{persona_part}::{self._normalize_style_key(style_name)}"
+
     @staticmethod
     def _strip_style_suffix(style_name: str) -> str:
         s = str(style_name or "").strip()
@@ -942,12 +947,13 @@ class DayflowService:
         style_name = str(style_name or "").strip()
         if not style_name:
             return "", {}, [], None, None
-        cache_key = self._normalize_style_key(style_name)
+        cache_key = self._style_cache_key(persona_name, style_name)
         anti_repetition_append = self._build_style_anti_repetition_append(persona_name, style_name)
         has_anti_repetition = bool(anti_repetition_append.strip())
         has_sub_variants = bool(STYLE_SUB_VARIANTS.get(self._strip_style_suffix(style_name)))
         cached = self._style_research_cache.get(cache_key)
-        if self._is_style_cache_entry_valid(cached) and not has_anti_repetition and not has_sub_variants:
+        # 定制日程(extra_requirement)强制重新研究，不走缓存
+        if self._is_style_cache_entry_valid(cached) and not has_anti_repetition and not has_sub_variants and not extra_requirement:
             payload = dict(cached.get("payload") or {})
             sources = list(cached.get("sources") or [])
             summary = str(cached.get("summary") or "")
@@ -1161,7 +1167,7 @@ class DayflowService:
 
         # 注入初次风格研究阶段的预置款式描述与防重复上下文，避免审查时错误纠正特殊款式（如 cosplay、洛丽塔等）
         review_inject_parts = []
-        review_cache_key = self._normalize_style_key(style_name)
+        review_cache_key = self._style_cache_key(persona_name, style_name)
         review_cached = self._style_research_cache.get(review_cache_key) or {}
         injected_sub_variants = str(review_cached.get("injected_sub_variants") or "").strip()
         if injected_sub_variants:
@@ -1212,7 +1218,7 @@ class DayflowService:
         if approved or not isinstance(improved_payload, dict):
             logger.info(f"[dayflow-风格审查] 审查通过: style={style_name}")
             # 标记缓存为已审查，避免同一天内相同风格重复审查
-            cache_key = self._normalize_style_key(style_name)
+            cache_key = self._style_cache_key(persona_name, style_name)
             cached = self._style_research_cache.get(cache_key)
             if cached:
                 cached["reviewed"] = True
@@ -1232,7 +1238,7 @@ class DayflowService:
         logger.info(f"[dayflow-风格审查] 使用改进方案: style={style_name}")
 
         # Update cache with improved payload
-        cache_key = self._normalize_style_key(style_name)
+        cache_key = self._style_cache_key(persona_name, style_name)
         cached = self._style_research_cache.get(cache_key) or {}
         improved_summary = self._render_style_reference(style_name, improved_payload, all_sources)
         self._style_research_cache[cache_key] = {
@@ -2813,9 +2819,10 @@ class DayflowService:
         # 二次审查：人格级开关控制，在初次风格研究完成后对穿搭方案做联网复查
         # 缓存已审查的风格跳过，避免同一天内重复消耗 Grok 搜索额度
         if bool(persona.get("enable_style_review", False)) and style_payload:
-            review_cache_key = self._normalize_style_key(outfit_style)
+            review_cache_key = self._style_cache_key(normalized_persona_name, outfit_style)
             review_cached = self._style_research_cache.get(review_cache_key) or {}
-            if review_cached.get("reviewed"):
+            # 定制日程(extra_requirement)强制重新审查，不跳过
+            if review_cached.get("reviewed") and not extra_requirement:
                 logger.info(f"[dayflow-风格审查] 缓存已审查，跳过 | persona={normalized_persona_name} | style={outfit_style}")
             else:
                 try:
