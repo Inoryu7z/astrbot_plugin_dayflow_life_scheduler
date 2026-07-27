@@ -10,6 +10,7 @@ from astrbot.core.provider.entities import ProviderRequest
 from .core.generator import (
     is_schedule_valid,
     render_schedule_display,
+    render_timeline_block,
 )
 from .core.constants import STYLE_SUB_VARIANTS
 from .core.page_api import PluginPageApi
@@ -184,6 +185,27 @@ class DayflowPlugin(Star):
             if image_bytes is not None:
                 logger.info(f"[dayflow] 图片渲染成功: persona={persona_name}")
                 yield event.chain_result([ImageComponent.fromBytes(image_bytes)])
+                return
+        # 文字版分段发送：QQ 转发消息单条 Node 有字数限制（约 5000 字），
+        # 完整日程（超长 outfit + 完整 timeline）常超限导致 retcode=1200 发送失败。
+        # 以第一个换装点（outfit_change）为界拆分：换装前为第一段（含第一套穿搭），换装后为第二段。
+        timeline = data.get("timeline")
+        if isinstance(timeline, list) and len(timeline) > 1:
+            change_idx = None
+            for i, item in enumerate(timeline):
+                if isinstance(item, dict) and str(item.get("outfit_change") or "").strip():
+                    change_idx = i
+                    break
+            if change_idx is not None and change_idx > 0:
+                outfit = str(data.get("outfit") or "").strip()
+                summary = str(data.get("summary") or "").strip()
+                part1 = f"👕 今日穿搭：{outfit}"
+                if summary:
+                    part1 += f"\n💬 {summary}"
+                part1 += "\n📝 日程安排：\n" + render_timeline_block(timeline[:change_idx], start_idx=1)
+                part2 = "📝 日程安排（续）：\n" + render_timeline_block(timeline[change_idx:], start_idx=change_idx + 1)
+                yield event.plain_result(part1)
+                yield event.plain_result(part2)
                 return
         yield event.plain_result(text)
 
