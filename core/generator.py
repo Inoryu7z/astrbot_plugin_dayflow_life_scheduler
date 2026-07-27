@@ -6,6 +6,29 @@ from typing import Any
 from astrbot.api import logger
 
 
+def render_timeline_block(timeline: list, start_idx: int = 1) -> str:
+    """渲染 timeline 切片为文本块。start_idx 控制起始编号（保持原始序号）。"""
+    parts = []
+    for i, item in enumerate(timeline, start_idx):
+        if not isinstance(item, dict):
+            continue
+        time_start = str(item.get("time_start") or "").strip()
+        time_end = str(item.get("time_end") or "").strip()
+        title = str(item.get("title") or "").strip()
+        detail = str(item.get("detail") or "").strip()
+        outfit_change = str(item.get("outfit_change") or "").strip()
+        time_range = f"{time_start}-{time_end}" if time_start and time_end else ""
+        block = f"── 第 {i} 项 ──\n🕐 {time_range}"
+        if title:
+            block += f"\n📌 {title}"
+        if detail:
+            block += f"\n📄 {detail}"
+        if outfit_change:
+            block += f"\n👗 换装：{outfit_change}"
+        parts.append(block)
+    return "\n\n".join(parts)
+
+
 def render_schedule_display(data: dict) -> str:
     outfit = str(data.get("outfit") or "").strip()
     summary = str(data.get("summary") or "").strip()
@@ -16,25 +39,7 @@ def render_schedule_display(data: dict) -> str:
         header += f"\n💬 {summary}"
 
     if isinstance(timeline, list) and timeline:
-        parts = []
-        for i, item in enumerate(timeline, 1):
-            if not isinstance(item, dict):
-                continue
-            time_start = str(item.get("time_start") or "").strip()
-            time_end = str(item.get("time_end") or "").strip()
-            title = str(item.get("title") or "").strip()
-            detail = str(item.get("detail") or "").strip()
-            outfit_change = str(item.get("outfit_change") or "").strip()
-            time_range = f"{time_start}-{time_end}" if time_start and time_end else ""
-            block = f"── 第 {i} 项 ──\n🕐 {time_range}"
-            if title:
-                block += f"\n📌 {title}"
-            if detail:
-                block += f"\n📄 {detail}"
-            if outfit_change:
-                block += f"\n👗 换装：{outfit_change}"
-            parts.append(block)
-        schedule_text = "\n\n".join(parts)
+        schedule_text = render_timeline_block(timeline)
     else:
         schedule_text = str(data.get("schedule") or "").strip()
 
