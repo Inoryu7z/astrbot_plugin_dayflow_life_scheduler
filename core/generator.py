@@ -268,25 +268,25 @@ def validate_payload(payload: dict | None, persona: dict[str, Any]) -> tuple[boo
                 return False, f'outfit 第一行必须为 "风格：{required_style}"'
 
     timeline = payload.get("timeline")
-    schedule = str(payload.get("schedule") or "").strip()
 
-    if isinstance(timeline, list):
-        if not timeline:
-            return False, "timeline 不能为空数组"
-        for i, item in enumerate(timeline):
-            if not isinstance(item, dict):
-                return False, f"timeline[{i}] 不是有效对象"
-            title = str(item.get("title") or "").strip()
-            detail = str(item.get("detail") or "").strip()
-            if not title:
-                return False, f"timeline[{i}] 的 title 不能为空"
-            if not detail:
-                return False, f"timeline[{i}] 的 detail 不能为空"
-            for meta_label in ["核心事件", "主线事件", "情感驱动", "任务驱动", "人际驱动", "抉择驱动", "突发驱动", "仪式驱动", "回忆驱动"]:
-                if meta_label in title:
-                    return False, f'timeline[{i}] 的 title 包含禁止的元标签："{meta_label}"'
-    elif not schedule:
-        return False, "timeline 和 schedule 均为空，至少需要提供其一"
+    # timeline 是日程的核心字段（输出格式只要求 timeline，不要求 schedule）
+    # schedule 字段是 normalize_payload 从 timeline 合成的 DayMind 兼容字段，不参与校验
+    if not isinstance(timeline, list):
+        return False, "timeline 为空或不是数组"
+    if not timeline:
+        return False, "timeline 不能为空数组"
+    for i, item in enumerate(timeline):
+        if not isinstance(item, dict):
+            return False, f"timeline[{i}] 不是有效对象"
+        title = str(item.get("title") or "").strip()
+        detail = str(item.get("detail") or "").strip()
+        if not title:
+            return False, f"timeline[{i}] 的 title 不能为空"
+        if not detail:
+            return False, f"timeline[{i}] 的 detail 不能为空"
+        for meta_label in ["核心事件", "主线事件", "情感驱动", "任务驱动", "人际驱动", "抉择驱动", "突发驱动", "仪式驱动", "回忆驱动"]:
+            if meta_label in title:
+                return False, f'timeline[{i}] 的 title 包含禁止的元标签："{meta_label}"'
 
     return True, ""
 
@@ -303,11 +303,15 @@ def build_repair_prompt(
     required_driver = str(persona.get("core_event_driver") or "").strip()
 
     bad_text_clean = str(bad_text or "").strip()
-    # 判断上次输出是否有效：必须有 JSON 起始符号，且包含 timeline 或 schedule 核心字段
-    # 仅含 outfit 但缺 timeline/schedule 的残缺输出不应走"修复模式"，否则 LLM 会被 outfit 内容带偏，只重新生成 outfit 而不补 timeline
+    # 判断上次输出是否含 timeline 核心字段
+    # 仅含 outfit 但缺 timeline 的残缺输出不算"已基本成型"，走补全模式
     has_valid_output = bool(bad_text_clean) and "{" in bad_text_clean and (
         "timeline" in bad_text_clean.lower() or "schedule" in bad_text_clean.lower()
     )
+
+    # 针对性指示：如果失败原因与 timeline 相关，明确指示保留 outfit 并补 timeline
+    reason_lower = str(reason or "").lower()
+    timeline_issue = "timeline" in reason_lower
 
     if has_valid_output:
         mode_intro = (
@@ -318,9 +322,17 @@ def build_repair_prompt(
         )
     else:
         mode_intro = (
-            "【重新生成】\n"
-            f"这是你第 {retry_index} 次因校验失败被退回重写。\n"
-            "上次输出为空或不可用，请从零生成完整 JSON。\n"
+            "【补全模式】\n"
+            f"这是你第 {retry_index} 次因校验失败被退回修复。\n"
+            "上次输出残缺（缺少 timeline 等核心字段），请保留上次输出中已正确的字段（如 outfit_style/outfit/summary），"
+            "仅补全缺失的核心字段。不要重新生成已正确的字段，避免重复消耗篇幅导致后续字段再次丢失。\n"
+        )
+
+    if timeline_issue:
+        mode_intro += (
+            "⚠️ 特别指示：上次输出缺少 timeline 字段或 timeline 不合法。"
+            "请直接保留上次输出中的 outfit_style/outfit/summary 内容原样不动，仅补充完整的 timeline 数组（8-10 个连续时段，覆盖 00:00-23:59）。\n"
+            "不要重新生成 outfit，不要改动已正确的字段。\n"
         )
 
     result = (
@@ -328,8 +340,8 @@ def build_repair_prompt(
         "---\n"
         f"{mode_intro}"
         f"最近一次失败原因：{reason}\n"
-        "请根据失败原因和上次输出（如果有），自行判断需要小修小补还是从零重写："
-        "大多数情况下上次输出只有小问题，做最小修改即可；"
+        "请根据失败原因和上次输出，自行判断需要小修小补还是补全缺失字段："
+        "大多数情况下上次输出只有部分问题，保留已正确字段并补全缺失字段即可；"
         "仅当上次输出完全不可用、严重乱码或严重偏离要求时才从零重写。\n"
     )
 
@@ -347,8 +359,10 @@ def build_repair_prompt(
         "如果格式与内容表达发生冲突，必须优先满足格式要求。\n"
     )
 
-    if has_valid_output:
-        result += "上次的不合格输出如下（请在它基础上修复，保留已正确的字段；若严重不可用则从零重写）：\n" + bad_text_clean
+    # 始终附加上次输出：即使残缺，LLM 也能复用已正确的字段（如 outfit），仅补全缺失字段
+    # 避免"从零生成"时 LLM 被原 prompt 的超详细 outfit 引导带偏，再次只输出 outfit 而丢 timeline
+    if bad_text_clean:
+        result += "上次的不合格输出如下（请保留其中已正确的字段，仅修复/补全出错或缺失的部分；若严重不可用则从零重写）：\n" + bad_text_clean
     return result
 
 

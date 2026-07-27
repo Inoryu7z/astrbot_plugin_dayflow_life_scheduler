@@ -1,5 +1,15 @@
 # Changelog
 
+### v1.7.6 - 2026-07-28
+
+**🐛 日程校验与修复模式优化**
+
+* 移除 `validate_payload` 中对 `schedule` 字符串字段的兜底校验：输出格式只要求 `timeline` 数组，`schedule` 是 `normalize_payload` 从 timeline 合成的 DayMind 兼容字段，不应参与校验。timeline 现必须是数组且非空，错误信息不再提及不存在的 schedule 字段。
+* 日程生成校验失败日志现输出完整 LLM 原始返回（`raw_text`），不再截断至 800 字符，消除调试盲区。
+* 优化 `build_repair_prompt` 修复模式：始终附加上次输出（即使残缺），让 LLM 能复用已正确的字段（如 outfit）仅补全缺失字段；针对"timeline 为空"类失败原因增加针对性指示，明确要求保留 outfit 并补全 timeline，避免 LLM 被原 prompt 的超详细 outfit 引导带偏再次只输出 outfit。
+
+---
+
 ### v1.7.5 - 2026-07-28
 
 **🐛 日程生成修复模式误判修复**
