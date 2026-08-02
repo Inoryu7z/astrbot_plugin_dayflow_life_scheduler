@@ -304,6 +304,8 @@ class DayflowService:
         self._schedule_renderer = ScheduleRenderer(self.data_dir)
         self._render_lock = asyncio.Lock()
         self._llm_concurrency_sem = asyncio.Semaphore(4)
+        # WebUI 触发的生成任务状态跟踪：persona -> {generating, started_at, last_result, last_error, last_updated}
+        self._webui_generation_status: dict[str, dict[str, Any]] = {}
 
     def _update_debug_payload(self, updates: dict[str, Any]):
         with self._debug_payload_lock:
@@ -1735,6 +1737,257 @@ class DayflowService:
                 f"- {item['name']} @ {item.get('generate_time', '07:00')} ({provider_text} -> 最终兜底) | 重试:{item.get('retry_count', 2)} | 变化:{item.get('schedule_variation_level', DEFAULT_VARIATION_LEVEL)} | 持久化:{retention_text} | 推送:{len(item.get('push_targets') or [])}个目标{flags_text}"
             )
         return lines
+
+    # ------------------------------------------------------------------
+    # WebUI 日程管理接口
+    # ------------------------------------------------------------------
+
+    def list_schedule_personas(self) -> list[dict[str, Any]]:
+        """返回已配置人格的概要信息，供 WebUI 日程 tab 选择人格使用。"""
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        result = []
+        for item in self.cfg.personas():
+            store_key = self.normalize_persona_key(item["name"])
+            today_data = self.store.get_schedule_for_date(store_key, today)
+            has_today = bool(today_data and not today_data.get("meta", {}).get("error"))
+            latest_date = str((today_data or {}).get("meta", {}).get("date") or "")
+            if not latest_date:
+                latest = self.store.get_latest_schedule(store_key)
+                latest_date = str((latest or {}).get("meta", {}).get("date") or "")
+            tomorrow_req = self.get_tomorrow_custom_request(store_key)
+            racing = item.get("select_providers") or []
+            result.append({
+                "name": item["name"],
+                "store_key": store_key,
+                "generate_time": item.get("generate_time", "07:00"),
+                "providers": racing,
+                "variation_level": item.get("schedule_variation_level", DEFAULT_VARIATION_LEVEL),
+                "enable_subdivision": bool(item.get("enable_subdivision", False)),
+                "enable_style_review": bool(item.get("enable_style_review", False)),
+                "has_today_schedule": has_today,
+                "latest_schedule_date": latest_date,
+                "has_tomorrow_request": bool(tomorrow_req),
+                "tomorrow_request": tomorrow_req,
+                "is_generating": store_key in self.store.generating_personas,
+            })
+        return result
+
+    def get_schedule_for_persona(self, persona_name: str, target_date: str | None = None) -> dict:
+        """获取指定人格在指定日期的日程数据。"""
+        effective_date = str(target_date or datetime.datetime.now().strftime("%Y-%m-%d")).strip()
+        store_key = self.normalize_persona_key(persona_name)
+        data = self.store.get_schedule_for_date(store_key, effective_date)
+        if not data:
+            latest = self.store.get_latest_schedule(store_key)
+            return self._build_missing_today_context(
+                store_key=store_key,
+                target_date=effective_date,
+                latest=latest,
+                fallback_reason="该日期尚无日程记录",
+            )
+        return data
+
+    def list_schedule_history(self, persona_name: str) -> list[dict[str, Any]]:
+        """返回指定人格的历史日程列表（仅元信息，不含完整内容）。"""
+        store_key = self.normalize_persona_key(persona_name)
+        history = self.history_store_safe(store_key)
+        result = []
+        for item in reversed(history):
+            converted = self.store._history_item_to_schedule(store_key, item)
+            if not converted:
+                continue
+            date_str = str((converted.get("meta") or {}).get("date") or "")
+            if not date_str:
+                continue
+            result.append({
+                "date": date_str,
+                "outfit_style": str(converted.get("outfit_style") or ""),
+                "summary": str(converted.get("summary") or ""),
+                "weather": str(converted.get("weather") or ""),
+                "has_sub_events": bool(converted.get("sub_events")),
+                "is_fallback": bool((converted.get("meta") or {}).get("fallback")),
+            })
+        return result
+
+    def history_store_safe(self, store_key: str) -> list[dict[str, Any]]:
+        """安全读取历史日程（先 prune）。"""
+        self.store.prune_expired()
+        return self.store.history_store.get(store_key, [])
+
+    def save_edited_schedule(self, persona_name: str, target_date: str, edited: dict[str, Any]) -> tuple[bool, str]:
+        """保存 WebUI 手动编辑的日程。"""
+        store_key = self.normalize_persona_key(persona_name)
+        if not self.is_persona_configured(persona_name):
+            return False, f"人格未在 Dayflow 中启用：{persona_name}"
+        effective_date = str(target_date or datetime.datetime.now().strftime("%Y-%m-%d")).strip()
+
+        existing = self.store.get_schedule_for_date(store_key, effective_date) or {}
+        existing_meta = dict(existing.get("meta") or {})
+
+        outfit = str(edited.get("outfit") or "").strip()
+        summary = str(edited.get("summary") or "").strip()
+        outfit_style = str(edited.get("outfit_style") or "").strip()
+        weather = str(edited.get("weather") or "").strip()
+        timeline = edited.get("timeline")
+        if not isinstance(timeline, list):
+            timeline = []
+        # 清洗 timeline 项
+        cleaned_timeline = []
+        for item in timeline:
+            if not isinstance(item, dict):
+                continue
+            cleaned_timeline.append({
+                "time_start": str(item.get("time_start") or "").strip(),
+                "time_end": str(item.get("time_end") or "").strip(),
+                "title": str(item.get("title") or "").strip(),
+                "detail": str(item.get("detail") or "").strip(),
+                "outfit_change": str(item.get("outfit_change") or "").strip() or None,
+            })
+        if not outfit:
+            return False, "穿搭描述不能为空"
+        if not cleaned_timeline:
+            return False, "时间线不能为空"
+
+        from .generator import _synthesize_schedule_from_timeline
+        data = {
+            "outfit": outfit,
+            "summary": summary,
+            "outfit_style": outfit_style,
+            "weather": weather,
+            "timeline": cleaned_timeline,
+            "schedule": _synthesize_schedule_from_timeline({"timeline": cleaned_timeline}),
+            "meta": {
+                **existing_meta,
+                "persona_name": store_key,
+                "date": effective_date,
+                "fallback": False,
+                "error": False,
+                "fallback_reason": "",
+                "edited": True,
+                "edited_at": datetime.datetime.now().isoformat(),
+            },
+            "memo": str(existing.get("memo") or ""),
+            "long_term_memory": existing.get("long_term_memory") or [],
+        }
+        if existing.get("sub_events"):
+            data["sub_events"] = existing["sub_events"]
+
+        self.store.memory_store[store_key] = data
+        # 同步写入历史
+        history = self.store.history_store.setdefault(store_key, [])
+        date_str = effective_date
+        history = [h for h in history if str((h.get("meta") or {}).get("date") or "") != date_str]
+        history.append(data)
+        self.store.history_store[store_key] = history
+        self.store._save_state()
+        logger.info(f"[dayflow-webui] 手动编辑日程已保存: persona={store_key}, date={effective_date}")
+        return True, "日程已保存"
+
+    async def start_webui_generation(self, persona_name: str, extra_requirement: str | None = None, target_date: str | None = None) -> dict[str, Any]:
+        """WebUI 触发的异步日程生成。立即返回，生成在后台进行。"""
+        store_key = self.normalize_persona_key(persona_name)
+        if not self.is_persona_configured(persona_name):
+            return {"started": False, "error": f"人格未在 Dayflow 中启用：{persona_name}"}
+
+        effective_date = str(target_date or datetime.datetime.now().strftime("%Y-%m-%d")).strip()
+
+        # 检查是否已有生成任务
+        if store_key in self.store.generating_personas:
+            return {"started": False, "error": "该人格已有生成任务在进行中，请稍后再试"}
+
+        ok = await self.store.enter_generation(store_key)
+        if not ok:
+            return {"started": False, "error": "该人格已有生成任务在进行中，请稍后再试"}
+
+        self._webui_generation_status[store_key] = {
+            "generating": True,
+            "started_at": datetime.datetime.now().isoformat(),
+            "target_date": effective_date,
+            "extra_requirement": extra_requirement,
+            "last_result": None,
+            "last_error": None,
+            "last_updated": datetime.datetime.now().isoformat(),
+        }
+
+        asyncio.create_task(self._run_webui_generation(store_key, persona_name, extra_requirement, effective_date))
+        return {"started": True, "persona": store_key, "target_date": effective_date}
+
+    async def _run_webui_generation(self, store_key: str, persona_name: str, extra_requirement: str | None, target_date: str):
+        """WebUI 后台生成任务的执行体。"""
+        try:
+            persona_ctx = await self._resolve_persona_context_internal(persona_name=persona_name)
+            persona_desc = persona_ctx.get("persona_desc", "")
+            auto_session_id = await self._get_recent_session_id_for_persona(persona_name, persona_ctx.get("persona_id"))
+            data = await self.generate_schedule(
+                event=None,
+                persona_name=persona_name,
+                persona_desc=persona_desc,
+                session_id=auto_session_id,
+                target_date=target_date,
+                auto_retry=True,
+                extra_requirement=extra_requirement,
+                force_regenerate=True,
+            )
+            if data.get("meta", {}).get("error"):
+                error_msg = data.get("memo") or data.get("meta", {}).get("fallback_reason") or "生成失败"
+                self._webui_generation_status[store_key] = {
+                    "generating": False,
+                    "started_at": self._webui_generation_status.get(store_key, {}).get("started_at"),
+                    "target_date": target_date,
+                    "extra_requirement": extra_requirement,
+                    "last_result": "error",
+                    "last_error": error_msg,
+                    "last_updated": datetime.datetime.now().isoformat(),
+                }
+                logger.warning(f"[dayflow-webui] 生成失败: persona={store_key}, error={error_msg}")
+                return
+
+            await self.save_generated(store_key, data)
+            persona_cfg = self.get_persona_config(persona_name)
+            if persona_cfg and bool(persona_cfg.get("enable_subdivision", False)):
+                sub_events = await self._generate_subdivision(
+                    result=data,
+                    persona_name=persona_name,
+                    persona_desc=persona_desc,
+                    persona=persona_cfg,
+                )
+                if sub_events:
+                    data["sub_events"] = sub_events
+                    await self.save_generated(store_key, data)
+
+            self._webui_generation_status[store_key] = {
+                "generating": False,
+                "started_at": self._webui_generation_status.get(store_key, {}).get("started_at"),
+                "target_date": target_date,
+                "extra_requirement": extra_requirement,
+                "last_result": "success",
+                "last_error": None,
+                "last_updated": datetime.datetime.now().isoformat(),
+            }
+            logger.info(f"[dayflow-webui] 生成成功: persona={store_key}, date={target_date}")
+        except Exception as e:
+            self._webui_generation_status[store_key] = {
+                "generating": False,
+                "started_at": self._webui_generation_status.get(store_key, {}).get("started_at"),
+                "target_date": target_date,
+                "extra_requirement": extra_requirement,
+                "last_result": "error",
+                "last_error": str(e),
+                "last_updated": datetime.datetime.now().isoformat(),
+            }
+            logger.warning(f"[dayflow-webui] 生成异常: persona={store_key}, error={e}")
+        finally:
+            await self.store.exit_generation(store_key)
+
+    def get_webui_generation_status(self, persona_name: str) -> dict[str, Any]:
+        """查询 WebUI 生成状态。同时检查 store 级别的生成锁。"""
+        store_key = self.normalize_persona_key(persona_name)
+        status = dict(self._webui_generation_status.get(store_key) or {})
+        # 也检查 store 级别的锁（可能由调度器或命令触发）
+        store_generating = store_key in self.store.generating_personas
+        status["generating"] = bool(status.get("generating")) or store_generating
+        status["persona"] = store_key
+        return status
 
     def _iter_loaded_stars(self):
         try:

@@ -23,8 +23,9 @@
 
 把"服装设计"从**运行时由 LLM 现想**提前到**手动 webui 中提前设计并入库**，让穿搭从"模型即兴发挥"变成"策展式挑选"。
 
-内置 **Plugin Pages** webui（AstrBot 0.5.x+ 支持），打开后可见四个 tab：
+内置 **Plugin Pages** webui（AstrBot 0.5.x+ 支持），打开后可见五个 tab：
 
+- **📅 日程**：查看与管理工作日日程。支持切换人格与日期浏览今日及历史日程，查看穿搭、时间线、天气等完整信息；可手动编辑日程内容（穿搭、摘要、时间线各时段）、一键重生成当日日程、按需求定制生成、设置或取消明日定制要求。生成过程异步执行，进度实时可见。
 - **📐 设计**：手动发起一次穿搭设计。可指定人格名、风格（如"洛丽塔"/"废土风"/"杏花微雨"）、主题描述、晨间/午后单品（留空则模型自由发挥）、调用提供商。设计完成后以"待审核"状态写入优秀库。
 - **⭐ 优秀库**：浏览已入册的穿搭条目，支持分级管理（`starred` 标星收藏款 / `normal` 经典款，starred 在自动生成时拥有更高被抽中权重）；每条都包含晨间与午后两套完整搭配，符合双套换装结构；可点击"立即使用此条目生成今日日程"跳过风格池抽取与 Grok 研究直接使用；支持编辑分级、备注、单品描述与删除。
 - **📝 提示词**：管理设计 tab 调用 LLM 时使用的 system / user prompt 模板，内置默认模板覆盖风格识别、晨午双套约束、单品颜色材质要求等维度，可自定义适配不同模型家族。
@@ -70,7 +71,7 @@
 ## 🧩 推荐搭配插件
 
 - [`astrbot_plugin_daymind`](https://github.com/Inoryu7z/astrbot_plugin_daymind)：提供近期对话、近日日记、最近活跃会话等连续生活参考；DayFlow 也会把穿搭与日程喂给 DayMind 作为思考素材
-- [`astrbot_plugin_grok_web_search_Inoryu7z`](https://github.com/Inoryu7z/astrbot_plugin_grok_web_search_Inoryu7z)：提供联网风格研究，降低模型误解穿搭风格的概率
+- [`astrbot_plugin_grok_web_search`](https://github.com/Inoryu7z/astrbot_plugin_grok_web_search)：提供联网风格研究，降低模型误解穿搭风格的概率（本插件 fork 自该项目的上游，并做了与本插件耦合的魔改；本地目录名可能带 `_Inoryu7z` 后缀，但仓库地址以本链接为准）
 
 DayFlow 也可独立运行：未检测到 DayMind 时自动回退到仅基于当前触发消息和自身历史日程生成；未检测到 Grok 时跳过联网风格研究。
 

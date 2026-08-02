@@ -14,7 +14,17 @@
           <span class="sidebar-brand-sub">Dayflow Designer</span>
         </div>
         <nav class="sidebar-nav" id="nav">
-          <button class="nav-item active" data-page="design">
+          <button class="nav-item active" data-page="schedule">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+              <line x1="16" y1="2" x2="16" y2="6"/>
+              <line x1="8" y1="2" x2="8" y2="6"/>
+              <line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
+            <span>日程</span>
+            <span class="nav-badge nav-badge-generating" id="badge-schedule-gen" style="display:none">生成中</span>
+          </button>
+          <button class="nav-item" data-page="design">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 19l7-7 3 3-7 7-3-3z"/>
               <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>
@@ -68,8 +78,55 @@
 
       <main class="main-content">
 
+        <!-- 日程 Tab -->
+        <section class="page active" id="page-schedule">
+          <header class="page-header">
+            <span class="page-title">日程管理</span>
+            <div class="page-actions">
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-schedule">刷新</button>
+            </div>
+          </header>
+
+          <!-- 人格选择 + 日期选择 -->
+          <div class="card schedule-toolbar-card">
+            <div class="schedule-toolbar">
+              <div class="form-group schedule-persona-group">
+                <label class="form-label">人格</label>
+                <select class="form-select" id="schedule-persona-select">
+                  <option value="">加载中...</option>
+                </select>
+              </div>
+              <div class="form-group schedule-date-group">
+                <label class="form-label">日期</label>
+                <input type="date" class="form-input" id="schedule-date-input" />
+              </div>
+              <div class="form-group schedule-action-group">
+                <label class="form-label">&nbsp;</label>
+                <button class="btn btn-primary btn-sm" id="btn-schedule-load">查看</button>
+              </div>
+            </div>
+            <div id="schedule-persona-meta" class="schedule-persona-meta"></div>
+          </div>
+
+          <!-- 生成状态条 -->
+          <div id="schedule-gen-status" class="schedule-gen-status" style="display:none"></div>
+
+          <!-- 日程内容区 -->
+          <div id="schedule-content-area">
+            <div class="empty-state">
+              <svg class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                <line x1="16" y1="2" x2="16" y2="6"/>
+                <line x1="8" y1="2" x2="8" y2="6"/>
+                <line x1="3" y1="10" x2="21" y2="10"/>
+              </svg>
+              <div>选择人格与日期后查看日程</div>
+            </div>
+          </div>
+        </section>
+
         <!-- 设计 Tab -->
-        <section class="page active" id="page-design">
+        <section class="page" id="page-design">
           <header class="page-header">
             <span class="page-title">设计穿搭</span>
             <div class="page-actions">
