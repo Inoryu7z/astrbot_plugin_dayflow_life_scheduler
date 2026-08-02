@@ -70,10 +70,20 @@ class PluginPageApi:
             (f"{PAGE_API_PREFIX}/prompts", self.get_or_set_prompts, ["GET", "POST"], "dayflow 优秀库：设计师/审核师提示词"),
             # 概览 tab
             (f"{PAGE_API_PREFIX}/overview", self.get_overview, ["GET"], "dayflow 优秀库：风格概览"),
+            # 日程 tab
+            (f"{PAGE_API_PREFIX}/schedule/personas", self.list_schedule_personas, ["GET"], "dayflow 日程：已配置人格列表"),
+            (f"{PAGE_API_PREFIX}/schedule/today", self.get_schedule_today, ["GET"], "dayflow 日程：获取今日/指定日期日程"),
+            (f"{PAGE_API_PREFIX}/schedule/history", self.list_schedule_history, ["GET"], "dayflow 日程：历史日程列表"),
+            (f"{PAGE_API_PREFIX}/schedule/save", self.save_schedule_edit, ["POST"], "dayflow 日程：保存手动编辑"),
+            (f"{PAGE_API_PREFIX}/schedule/regenerate", self.regenerate_schedule, ["POST"], "dayflow 日程：触发重生成"),
+            (f"{PAGE_API_PREFIX}/schedule/custom", self.custom_schedule, ["POST"], "dayflow 日程：触发定制生成"),
+            (f"{PAGE_API_PREFIX}/schedule/status", self.get_generation_status, ["GET"], "dayflow 日程：生成状态查询"),
+            (f"{PAGE_API_PREFIX}/schedule/tomorrow", self.get_or_set_tomorrow_request, ["GET", "POST"], "dayflow 日程：明日定制要求"),
+            (f"{PAGE_API_PREFIX}/schedule/tomorrow/cancel", self.cancel_tomorrow_request, ["POST"], "dayflow 日程：取消明日定制"),
         ]
         for route, handler, methods, desc in routes:
             register(route, handler, methods, desc)
-        logger.info(f"[dayflow-优秀库] 已注册 {len(routes)} 个 Web API 路由")
+        logger.info(f"[dayflow] 已注册 {len(routes)} 个 Web API 路由")
 
     # ------------------------------------------------------------------
     # 响应与请求工具
@@ -413,3 +423,160 @@ class PluginPageApi:
                 "reviewer": bool(self.curated_store.get_prompts().get("reviewer")),
             },
         })
+
+    # ------------------------------------------------------------------
+    # 日程 tab
+    # ------------------------------------------------------------------
+    async def list_schedule_personas(self):
+        """返回已配置人格列表，供 WebUI 日程 tab 选择人格。"""
+        try:
+            personas = self.service.list_schedule_personas()
+            return self._ok({"personas": personas, "total": len(personas)})
+        except Exception as e:
+            logger.warning(f"[dayflow-日程] 获取人格列表失败: {e}")
+            return self._err(f"获取人格列表失败：{e}")
+
+    async def get_schedule_today(self):
+        """获取今日或指定日期的日程。?persona=xxx&date=yyyy"""
+        persona = self._query("persona")
+        date = self._query("date")
+        if not persona:
+            return self._err("persona 参数不能为空")
+        try:
+            data = self.service.get_schedule_for_persona(persona, date or None)
+            return self._ok(data)
+        except Exception as e:
+            logger.warning(f"[dayflow-日程] 获取日程失败: persona={persona}, date={date}, error={e}")
+            return self._err(f"获取日程失败：{e}")
+
+    async def list_schedule_history(self):
+        """返回指定人格的历史日程列表。?persona=xxx"""
+        persona = self._query("persona")
+        if not persona:
+            return self._err("persona 参数不能为空")
+        try:
+            history = self.service.list_schedule_history(persona)
+            return self._ok({"history": history, "total": len(history)})
+        except Exception as e:
+            logger.warning(f"[dayflow-日程] 获取历史日程失败: persona={persona}, error={e}")
+            return self._err(f"获取历史日程失败：{e}")
+
+    async def save_schedule_edit(self):
+        """保存手动编辑的日程。body: {persona, date, outfit, summary, outfit_style, weather, timeline}"""
+        data = await self._body()
+        persona = str(data.get("persona") or "").strip()
+        date = str(data.get("date") or "").strip()
+        if not persona:
+            return self._err("persona 不能为空")
+        edited = {
+            "outfit": data.get("outfit") or "",
+            "summary": data.get("summary") or "",
+            "outfit_style": data.get("outfit_style") or "",
+            "weather": data.get("weather") or "",
+            "timeline": data.get("timeline") or [],
+        }
+        try:
+            ok, msg = self.service.save_edited_schedule(persona, date, edited)
+            if not ok:
+                return self._err(msg)
+            return self._ok({"persona": persona, "date": date, "message": msg})
+        except Exception as e:
+            logger.warning(f"[dayflow-日程] 保存编辑失败: persona={persona}, date={date}, error={e}")
+            return self._err(f"保存失败：{e}")
+
+    async def regenerate_schedule(self):
+        """触发日程重生成（不带额外要求）。body: {persona, date?}"""
+        data = await self._body()
+        persona = str(data.get("persona") or "").strip()
+        date = str(data.get("date") or "").strip() or None
+        if not persona:
+            return self._err("persona 不能为空")
+        try:
+            result = await self.service.start_webui_generation(
+                persona_name=persona, extra_requirement=None, target_date=date,
+            )
+            if not result.get("started"):
+                return self._err(result.get("error") or "无法启动生成")
+            return self._ok(result)
+        except Exception as e:
+            logger.warning(f"[dayflow-日程] 触发重生成失败: persona={persona}, error={e}")
+            return self._err(f"触发生成失败：{e}")
+
+    async def custom_schedule(self):
+        """触发日程定制生成（带额外要求）。body: {persona, date?, extra_requirement}"""
+        data = await self._body()
+        persona = str(data.get("persona") or "").strip()
+        date = str(data.get("date") or "").strip() or None
+        extra = str(data.get("extra_requirement") or "").strip() or None
+        if not persona:
+            return self._err("persona 不能为空")
+        if not extra:
+            return self._err("extra_requirement 不能为空")
+        try:
+            result = await self.service.start_webui_generation(
+                persona_name=persona, extra_requirement=extra, target_date=date,
+            )
+            if not result.get("started"):
+                return self._err(result.get("error") or "无法启动生成")
+            return self._ok(result)
+        except Exception as e:
+            logger.warning(f"[dayflow-日程] 触发定制生成失败: persona={persona}, error={e}")
+            return self._err(f"触发生成失败：{e}")
+
+    async def get_generation_status(self):
+        """查询生成状态。?persona=xxx"""
+        persona = self._query("persona")
+        if not persona:
+            return self._err("persona 参数不能为空")
+        try:
+            status = self.service.get_webui_generation_status(persona)
+            return self._ok(status)
+        except Exception as e:
+            logger.warning(f"[dayflow-日程] 查询生成状态失败: persona={persona}, error={e}")
+            return self._err(f"查询状态失败：{e}")
+
+    async def get_or_set_tomorrow_request(self):
+        """GET: 获取明日定制要求 ?persona=xxx
+        POST: 设置明日定制要求 {persona, requirement}"""
+        persona = self._query("persona") if self._method() != "POST" else ""
+        if self._method() == "POST":
+            data = await self._body()
+            persona = str(data.get("persona") or "").strip()
+            requirement = str(data.get("requirement") or "").strip()
+            if not persona:
+                return self._err("persona 不能为空")
+            if not requirement:
+                return self._err("requirement 不能为空")
+            try:
+                store_key = self.service.normalize_persona_key(persona)
+                self.service.set_tomorrow_custom_request(store_key, requirement)
+                return self._ok({"persona": store_key, "requirement": requirement, "message": "明日定制要求已设置"})
+            except Exception as e:
+                logger.warning(f"[dayflow-日程] 设置明日定制失败: persona={persona}, error={e}")
+                return self._err(f"设置失败：{e}")
+        # GET
+        if not persona:
+            return self._err("persona 参数不能为空")
+        try:
+            store_key = self.service.normalize_persona_key(persona)
+            requirement = self.service.get_tomorrow_custom_request(store_key)
+            return self._ok({"persona": store_key, "requirement": requirement or ""})
+        except Exception as e:
+            logger.warning(f"[dayflow-日程] 获取明日定制失败: persona={persona}, error={e}")
+            return self._err(f"获取失败：{e}")
+
+    async def cancel_tomorrow_request(self):
+        """取消明日定制要求。body: {persona}"""
+        data = await self._body()
+        persona = str(data.get("persona") or "").strip()
+        if not persona:
+            return self._err("persona 不能为空")
+        try:
+            store_key = self.service.normalize_persona_key(persona)
+            ok = self.service.clear_tomorrow_custom_request(store_key)
+            if not ok:
+                return self._err("未找到明日定制要求")
+            return self._ok({"persona": store_key, "message": "明日定制要求已取消"})
+        except Exception as e:
+            logger.warning(f"[dayflow-日程] 取消明日定制失败: persona={persona}, error={e}")
+            return self._err(f"取消失败：{e}")

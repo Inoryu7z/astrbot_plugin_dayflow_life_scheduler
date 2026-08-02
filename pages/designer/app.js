@@ -1,6 +1,6 @@
 // 优秀穿搭库 WebUI 前端逻辑
-// 对接 core/page_api.py 的 13 个路由
-// 4 个 tab：设计 / 优秀库 / 提示词 / 概览
+// 对接 core/page_api.py 的路由
+// 5 个 tab：日程 / 设计 / 优秀库 / 提示词 / 概览
 //
 // 重要：Bridge SDK 会自动解包响应
 // - 成功时：bridge.apiGet/apiPost 返回的就是后端 _ok(data) 中的 data 字段内容
@@ -47,8 +47,21 @@ const api = new ApiClient();
 
 // ── 全局状态 ──────────────────────────────────────────────────
 const state = {
-  currentPage: "design",
+  currentPage: "schedule",
   theme: "light",
+  // 日程 tab
+  schedulePersonas: [],
+  schedulePersonasLoaded: false,
+  scheduleSelectedPersona: "",
+  scheduleSelectedDate: "",
+  scheduleCurrentData: null,
+  scheduleHistory: [],
+  scheduleEditMode: false,
+  scheduleEditData: null,
+  scheduleLoading: false,
+  scheduleGenPolling: false,
+  scheduleGenPollTimer: null,
+  scheduleTomorrowReq: "",
   // 设计 tab
   styles: [],                // /styles 返回的列表
   stylesLoaded: false,
@@ -229,9 +242,765 @@ function switchPage(pageName) {
   document.querySelectorAll(".page").forEach((page) => {
     page.classList.toggle("active", page.id === `page-${pageName}`);
   });
+  if (pageName === "schedule" && !state.schedulePersonasLoaded) loadSchedulePersonas();
+  if (pageName === "design" && !state.stylesLoaded) loadStyles();
   if (pageName === "library" && !state.libraryData) loadLibrary();
   if (pageName === "prompts" && !state.promptsData) loadPrompts();
   if (pageName === "overview" && !state.overviewData) loadOverview();
+}
+
+// ── 日程 Tab ─────────────────────────────────────────────────
+
+function todayStr() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const diff = Math.floor((now - d) / 1000);
+    if (diff < 60) return "刚刚";
+    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+    return formatDateTime(iso);
+  } catch {
+    return iso;
+  }
+}
+
+async function loadSchedulePersonas() {
+  const select = $("schedule-persona-select");
+  if (select) select.innerHTML = '<option value="">加载中...</option>';
+  try {
+    const res = await api.get("schedule/personas");
+    state.schedulePersonas = (res && res.personas) || [];
+    state.schedulePersonasLoaded = true;
+    renderSchedulePersonaSelect();
+  } catch (e) {
+    if (select) select.innerHTML = `<option value="">加载失败</option>`;
+    toast(`加载人格列表失败: ${e.message}`, "error");
+  }
+}
+
+function renderSchedulePersonaSelect() {
+  const select = $("schedule-persona-select");
+  if (!select) return;
+  if (state.schedulePersonas.length === 0) {
+    select.innerHTML = '<option value="">未配置人格</option>';
+    return;
+  }
+  select.innerHTML = state.schedulePersonas
+    .map((p) => {
+      const genMark = p.is_generating ? " (生成中)" : "";
+      const todayMark = p.has_today_schedule ? " ✓" : "";
+      return `<option value="${esc(p.name)}">${esc(p.name)}${genMark}${todayMark}</option>`;
+    })
+    .join("");
+
+  // 自动选中第一个有人格的
+  if (!state.scheduleSelectedPersona && state.schedulePersonas.length > 0) {
+    const withToday = state.schedulePersonas.find((p) => p.has_today_schedule);
+    state.scheduleSelectedPersona = (withToday || state.schedulePersonas[0]).name;
+    select.value = state.scheduleSelectedPersona;
+    onSchedulePersonaChange();
+  } else if (state.scheduleSelectedPersona) {
+    select.value = state.scheduleSelectedPersona;
+    onSchedulePersonaChange();
+  }
+}
+
+function onSchedulePersonaChange() {
+  const select = $("schedule-persona-select");
+  if (!select) return;
+  state.scheduleSelectedPersona = select.value;
+
+  // 显示人格元信息
+  const metaDiv = $("schedule-persona-meta");
+  const persona = state.schedulePersonas.find((p) => p.name === state.scheduleSelectedPersona);
+  if (metaDiv && persona) {
+    const tags = [];
+    tags.push(`<span class="schedule-meta-tag">生成时间: ${esc(persona.generate_time || "—")}</span>`);
+    tags.push(`<span class="schedule-meta-tag">变化等级: ${esc(persona.variation_level || "—")}</span>`);
+    if (persona.has_today_schedule) tags.push(`<span class="schedule-meta-tag active">今日有日程</span>`);
+    else tags.push(`<span class="schedule-meta-tag">今日无日程</span>`);
+    if (persona.is_generating) tags.push(`<span class="schedule-meta-tag generating">生成中</span>`);
+    if (persona.has_tomorrow_request) tags.push(`<span class="schedule-meta-tag active">明日已定制</span>`);
+    if (persona.enable_subdivision) tags.push(`<span class="schedule-meta-tag">细分已启用</span>`);
+    if (persona.enable_style_review) tags.push(`<span class="schedule-meta-tag">风格审查已启用</span>`);
+    metaDiv.innerHTML = tags.join("");
+  }
+
+  // 更新导航栏生成徽章
+  updateScheduleGenBadge(persona);
+
+  // 加载明日定制要求
+  loadTomorrowRequest();
+
+  // 加载历史
+  loadScheduleHistory();
+}
+
+function updateScheduleGenBadge(persona) {
+  const badge = $("badge-schedule-gen");
+  if (!badge) return;
+  const isGen = persona && persona.is_generating;
+  badge.style.display = isGen ? "" : "none";
+}
+
+async function loadSchedule(showHistory = true) {
+  const persona = state.scheduleSelectedPersona;
+  const date = state.scheduleSelectedDate || todayStr();
+  if (!persona) {
+    toast("请先选择人格", "warning");
+    return;
+  }
+
+  state.scheduleLoading = true;
+  state.scheduleEditMode = false;
+  const area = $("schedule-content-area");
+  if (area) showLoading(area, "加载日程中...");
+
+  try {
+    const data = await api.get("schedule/today", { persona, date });
+    state.scheduleCurrentData = data;
+    renderScheduleContent(data);
+    if (showHistory) loadScheduleHistory();
+    // 如果正在生成，开始轮询
+    checkAndPollGeneration();
+  } catch (e) {
+    if (area) {
+      area.innerHTML = `
+        <div class="schedule-missing">
+          <div class="schedule-missing-text">加载失败: ${esc(e.message)}</div>
+          <div class="schedule-missing-actions">
+            <button class="btn btn-secondary btn-sm" onclick="loadSchedule()">重试</button>
+          </div>
+        </div>`;
+    }
+  } finally {
+    state.scheduleLoading = false;
+  }
+}
+
+async function loadScheduleHistory() {
+  const persona = state.scheduleSelectedPersona;
+  if (!persona) return;
+  try {
+    const res = await api.get("schedule/history", { persona });
+    state.scheduleHistory = (res && res.history) || [];
+  } catch (e) {
+    state.scheduleHistory = [];
+  }
+}
+
+function renderScheduleContent(data) {
+  const area = $("schedule-content-area");
+  if (!area) return;
+
+  if (!data) {
+    area.innerHTML = `
+      <div class="empty-state">
+        <div>选择人格与日期后查看日程</div>
+      </div>`;
+    return;
+  }
+
+  const meta = data.meta || {};
+  const isMissing = meta.error || meta.fallback;
+  const fallbackReason = meta.fallback_reason || meta.error || "";
+
+  // 如果是缺失/回退
+  if (isMissing && !data.timeline) {
+    area.innerHTML = `
+      <div class="schedule-missing">
+        <svg class="schedule-missing-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <div class="schedule-missing-text">${esc(fallbackReason || "该日期尚无日程记录")}</div>
+        <div class="schedule-missing-actions">
+          <button class="btn btn-primary btn-sm" id="btn-schedule-gen-missing">生成日程</button>
+          <button class="btn btn-secondary btn-sm" id="btn-schedule-custom-missing">定制生成</button>
+        </div>
+      </div>`;
+    const genBtn = $("btn-schedule-gen-missing");
+    if (genBtn) genBtn.addEventListener("click", () => regenerateSchedule());
+    const customBtn = $("btn-schedule-custom-missing");
+    if (customBtn) customBtn.addEventListener("click", () => openCustomScheduleModal());
+    return;
+  }
+
+  const outfit = data.outfit || "";
+  const summary = data.summary || "";
+  const outfitStyle = data.outfit_style || "";
+  const weather = data.weather || "";
+  const timeline = data.timeline || [];
+  const dateStr = meta.date || state.scheduleSelectedDate || todayStr();
+
+  const tags = [];
+  if (meta.edited) tags.push(`<span class="schedule-tag edited">已编辑</span>`);
+  if (meta.fallback) tags.push(`<span class="schedule-tag fallback">回退</span>`);
+  if (weather) tags.push(`<span class="schedule-tag weather">${esc(weather)}</span>`);
+
+  const timelineHtml = timeline.map((item, idx) => {
+    const hasChange = !!item.outfit_change;
+    return `
+      <div class="schedule-timeline-item${hasChange ? " has-change" : ""}">
+        <div class="schedule-timeline-header">
+          <span class="schedule-timeline-time">${esc(item.time_start || "")}-${esc(item.time_end || "")}</span>
+          <span class="schedule-timeline-title">${esc(item.title || "")}</span>
+        </div>
+        <div class="schedule-timeline-detail">${esc(item.detail || "")}</div>
+        ${hasChange ? `
+          <div class="schedule-timeline-change">
+            <span class="schedule-timeline-change-label">换装</span>
+            ${esc(item.outfit_change)}
+          </div>` : ""}
+      </div>`;
+  }).join("");
+
+  area.innerHTML = `
+    <div class="schedule-detail">
+      <div class="schedule-header-card">
+        <div class="schedule-header-top">
+          <div>
+            <div class="schedule-date-display">${esc(dateStr)}</div>
+            <div class="schedule-date-sub">${esc(personaLabel(state.scheduleSelectedPersona))}${tags.length ? " · " + tags.join(" ") : ""}</div>
+          </div>
+          ${outfitStyle ? `<span class="schedule-style-badge">${esc(outfitStyle)}</span>` : ""}
+        </div>
+        ${summary ? `<div class="schedule-summary">${esc(summary)}</div>` : ""}
+        ${outfit ? `
+          <div class="schedule-outfit-block">
+            <div class="schedule-outfit-label">今日穿搭</div>
+            <div class="schedule-outfit-text">${esc(outfit)}</div>
+          </div>` : ""}
+        <div class="schedule-actions">
+          <button class="btn btn-secondary btn-sm" id="btn-schedule-edit">编辑</button>
+          <button class="btn btn-secondary btn-sm" id="btn-schedule-regenerate">重生成</button>
+          <button class="btn btn-secondary btn-sm" id="btn-schedule-custom">定制生成</button>
+        </div>
+      </div>
+      ${timeline.length > 0 ? `
+        <div class="card">
+          <div class="card-title">时间线</div>
+          <div class="schedule-timeline">
+            ${timelineHtml}
+          </div>
+        </div>` : ""}
+      ${renderHistorySection()}
+      ${renderTomorrowSection()}
+    </div>`;
+
+  // 绑定事件
+  const editBtn = $("btn-schedule-edit");
+  if (editBtn) editBtn.addEventListener("click", () => enterScheduleEditMode());
+  const regenBtn = $("btn-schedule-regenerate");
+  if (regenBtn) regenBtn.addEventListener("click", () => regenerateSchedule());
+  const customBtn = $("btn-schedule-custom");
+  if (customBtn) customBtn.addEventListener("click", () => openCustomScheduleModal());
+
+  bindHistoryItems();
+  bindTomorrowSection();
+}
+
+function personaLabel(name) {
+  return name || "—";
+}
+
+function renderHistorySection() {
+  if (state.scheduleHistory.length === 0) return "";
+  const currentDate = state.scheduleSelectedDate || todayStr();
+  const items = state.scheduleHistory.map((h) => {
+    const isCurrent = h.date === currentDate;
+    return `
+      <div class="schedule-history-item${isCurrent ? " current" : ""}" data-date="${esc(h.date)}">
+        <span class="schedule-history-date">${esc(h.date)}</span>
+        <span class="schedule-history-summary">${esc(h.summary || "（无摘要）")}</span>
+        ${h.outfit_style ? `<span class="schedule-history-style">${esc(h.outfit_style)}</span>` : ""}
+        ${h.is_fallback ? `<span class="schedule-history-fallback">回退</span>` : ""}
+      </div>`;
+  }).join("");
+  return `
+    <div class="schedule-history-section">
+      <details class="default-prompt-collapse">
+        <summary>历史日程 (${state.scheduleHistory.length})</summary>
+        <div class="schedule-history-list">
+          ${items}
+        </div>
+      </details>
+    </div>`;
+}
+
+function bindHistoryItems() {
+  document.querySelectorAll(".schedule-history-item[data-date]").forEach((item) => {
+    item.addEventListener("click", () => {
+      const date = item.dataset.date;
+      const dateInput = $("schedule-date-input");
+      if (dateInput) dateInput.value = date;
+      state.scheduleSelectedDate = date;
+      loadSchedule(false);
+    });
+  });
+}
+
+function renderTomorrowSection() {
+  const req = state.scheduleTomorrowReq || "";
+  return `
+    <div class="schedule-tomorrow-section">
+      <div class="schedule-tomorrow-title">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"/>
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+        </svg>
+        明日定制要求
+      </div>
+      <div class="schedule-tomorrow-content">
+        <div class="form-group schedule-tomorrow-input" style="margin-bottom:0">
+          <input type="text" class="form-input" id="tomorrow-req-input" placeholder="例如：明天穿洛丽塔风格 / 明天是雨天，安排室内活动..." value="${esc(req)}" />
+        </div>
+        <button class="btn btn-primary btn-sm" id="btn-tomorrow-save">设置</button>
+        ${req ? `<button class="btn btn-secondary btn-sm" id="btn-tomorrow-cancel">取消定制</button>` : ""}
+      </div>
+      <div class="schedule-tomorrow-status${req ? " set" : ""}" id="tomorrow-req-status">
+        ${req ? `已设置：${esc(req)}` : "未设置明日定制要求。设置后，明日自动生成时会参考此要求。"}
+      </div>
+    </div>`;
+}
+
+function bindTomorrowSection() {
+  const saveBtn = $("btn-tomorrow-save");
+  if (saveBtn) saveBtn.addEventListener("click", () => saveTomorrowRequest());
+  const cancelBtn = $("btn-tomorrow-cancel");
+  if (cancelBtn) cancelBtn.addEventListener("click", () => cancelTomorrowRequest());
+}
+
+async function loadTomorrowRequest() {
+  const persona = state.scheduleSelectedPersona;
+  if (!persona) return;
+  try {
+    const res = await api.get("schedule/tomorrow", { persona });
+    state.scheduleTomorrowReq = (res && res.requirement) || "";
+  } catch (e) {
+    state.scheduleTomorrowReq = "";
+  }
+}
+
+async function saveTomorrowRequest() {
+  const persona = state.scheduleSelectedPersona;
+  if (!persona) return;
+  const input = $("tomorrow-req-input");
+  const requirement = input ? input.value.trim() : "";
+  if (!requirement) {
+    toast("请输入定制要求", "warning");
+    return;
+  }
+  try {
+    await api.post("schedule/tomorrow", { persona, requirement });
+    state.scheduleTomorrowReq = requirement;
+    toast("明日定制要求已设置", "success");
+    renderScheduleContent(state.scheduleCurrentData);
+  } catch (e) {
+    toast(`设置失败: ${e.message}`, "error");
+  }
+}
+
+async function cancelTomorrowRequest() {
+  const persona = state.scheduleSelectedPersona;
+  if (!persona) return;
+  try {
+    await api.post("schedule/tomorrow/cancel", { persona });
+    state.scheduleTomorrowReq = "";
+    toast("明日定制要求已取消", "success");
+    renderScheduleContent(state.scheduleCurrentData);
+  } catch (e) {
+    toast(`取消失败: ${e.message}`, "error");
+  }
+}
+
+// ── 日程编辑模式 ──
+
+function enterScheduleEditMode() {
+  if (!state.scheduleCurrentData) {
+    toast("无日程数据可编辑", "warning");
+    return;
+  }
+  state.scheduleEditMode = true;
+  state.scheduleEditData = cloneScheduleForEdit(state.scheduleCurrentData);
+  renderScheduleEditForm();
+}
+
+function cloneScheduleForEdit(data) {
+  return {
+    outfit: data.outfit || "",
+    summary: data.summary || "",
+    outfit_style: data.outfit_style || "",
+    weather: data.weather || "",
+    timeline: (data.timeline || []).map((item) => ({
+      time_start: item.time_start || "",
+      time_end: item.time_end || "",
+      title: item.title || "",
+      detail: item.detail || "",
+      outfit_change: item.outfit_change || "",
+    })),
+  };
+}
+
+function renderScheduleEditForm() {
+  const area = $("schedule-content-area");
+  if (!area) return;
+  const d = state.scheduleEditData;
+
+  const timelineHtml = d.timeline.map((item, idx) => `
+    <div class="schedule-edit-timeline-item" data-idx="${idx}">
+      <div class="schedule-edit-timeline-row">
+        <span class="schedule-edit-timeline-item-index">#${idx + 1}</span>
+        <input type="time" class="form-input" data-field="time_start" value="${esc(item.time_start)}" />
+        <span style="color:var(--text-tertiary);font-size:11px">→</span>
+        <input type="time" class="form-input" data-field="time_end" value="${esc(item.time_end)}" />
+        <input type="text" class="form-input title-input" data-field="title" placeholder="标题" value="${esc(item.title)}" />
+        <button class="btn btn-ghost btn-sm btn-remove-timeline" data-idx="${idx}" title="删除">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+        </button>
+      </div>
+      <textarea class="form-textarea" data-field="detail" placeholder="详细描述">${esc(item.detail)}</textarea>
+      <textarea class="form-textarea" data-field="outfit_change" placeholder="换装描述（可选，留空表示不换装）">${esc(item.outfit_change)}</textarea>
+    </div>`).join("");
+
+  area.innerHTML = `
+    <div class="card">
+      <div class="card-title-row">
+        <div class="card-title">编辑日程</div>
+        <div class="page-actions">
+          <button class="btn btn-secondary btn-sm" id="btn-schedule-edit-cancel">取消</button>
+          <button class="btn btn-success btn-sm" id="btn-schedule-edit-save">保存</button>
+        </div>
+      </div>
+      <div class="schedule-edit-form">
+        <div class="schedule-edit-field">
+          <label class="schedule-edit-field-label">穿搭风格</label>
+          <input type="text" class="form-input" id="edit-outfit-style" value="${esc(d.outfit_style)}" />
+        </div>
+        <div class="schedule-edit-field">
+          <label class="schedule-edit-field-label">天气</label>
+          <input type="text" class="form-input" id="edit-weather" value="${esc(d.weather)}" />
+        </div>
+        <div class="schedule-edit-field">
+          <label class="schedule-edit-field-label">摘要</label>
+          <input type="text" class="form-input" id="edit-summary" value="${esc(d.summary)}" />
+        </div>
+        <div class="schedule-edit-field">
+          <label class="schedule-edit-field-label">穿搭描述</label>
+          <textarea class="form-textarea" id="edit-outfit" rows="6">${esc(d.outfit)}</textarea>
+        </div>
+        <div class="schedule-edit-field">
+          <div class="schedule-edit-field-label" style="display:flex;justify-content:space-between;align-items:center">
+            <span>时间线</span>
+            <button class="btn btn-ghost btn-sm" id="btn-add-timeline-item">+ 添加时段</button>
+          </div>
+          <div class="schedule-edit-timeline" id="edit-timeline-list">
+            ${timelineHtml}
+          </div>
+        </div>
+        <div class="schedule-actions">
+          <button class="btn btn-secondary btn-sm" id="btn-schedule-edit-cancel-2">取消</button>
+          <button class="btn btn-success" id="btn-schedule-edit-save-2">保存日程</button>
+        </div>
+      </div>
+    </div>`;
+
+  // 绑定事件
+  const cancelBtn = $("btn-schedule-edit-cancel");
+  if (cancelBtn) cancelBtn.addEventListener("click", () => exitScheduleEditMode());
+  const cancelBtn2 = $("btn-schedule-edit-cancel-2");
+  if (cancelBtn2) cancelBtn2.addEventListener("click", () => exitScheduleEditMode());
+  const saveBtn = $("btn-schedule-edit-save");
+  if (saveBtn) saveBtn.addEventListener("click", () => saveScheduleEdit());
+  const saveBtn2 = $("btn-schedule-edit-save-2");
+  if (saveBtn2) saveBtn2.addEventListener("click", () => saveScheduleEdit());
+  const addBtn = $("btn-add-timeline-item");
+  if (addBtn) addBtn.addEventListener("click", () => addTimelineItem());
+
+  // 绑定删除按钮
+  area.querySelectorAll(".btn-remove-timeline").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = parseInt(btn.dataset.idx, 10);
+      if (!isNaN(idx)) removeTimelineItem(idx);
+    });
+  });
+
+  // 绑定字段变更
+  bindEditTimelineFields();
+}
+
+function bindEditTimelineFields() {
+  const list = $("edit-timeline-list");
+  if (!list) return;
+  list.querySelectorAll(".schedule-edit-timeline-item").forEach((itemEl) => {
+    const idx = parseInt(itemEl.dataset.idx, 10);
+    if (isNaN(idx)) return;
+    itemEl.querySelectorAll("[data-field]").forEach((input) => {
+      const field = input.dataset.field;
+      input.addEventListener("input", () => {
+        if (state.scheduleEditData.timeline[idx]) {
+          state.scheduleEditData.timeline[idx][field] = input.value;
+        }
+      });
+    });
+  });
+}
+
+function addTimelineItem() {
+  state.scheduleEditData.timeline.push({
+    time_start: "",
+    time_end: "",
+    title: "",
+    detail: "",
+    outfit_change: "",
+  });
+  renderScheduleEditForm();
+}
+
+function removeTimelineItem(idx) {
+  state.scheduleEditData.timeline.splice(idx, 1);
+  renderScheduleEditForm();
+}
+
+function exitScheduleEditMode() {
+  state.scheduleEditMode = false;
+  state.scheduleEditData = null;
+  renderScheduleContent(state.scheduleCurrentData);
+}
+
+async function saveScheduleEdit() {
+  const persona = state.scheduleSelectedPersona;
+  const date = state.scheduleSelectedDate || todayStr();
+  if (!persona) {
+    toast("请先选择人格", "warning");
+    return;
+  }
+
+  // 从 DOM 读取最终值（确保最新）
+  const d = state.scheduleEditData;
+  const outfitStyleEl = $("edit-outfit-style");
+  const weatherEl = $("edit-weather");
+  const summaryEl = $("edit-summary");
+  const outfitEl = $("edit-outfit");
+
+  const payload = {
+    persona,
+    date,
+    outfit_style: outfitStyleEl ? outfitStyleEl.value : d.outfit_style,
+    weather: weatherEl ? weatherEl.value : d.weather,
+    summary: summaryEl ? summaryEl.value : d.summary,
+    outfit: outfitEl ? outfitEl.value : d.outfit,
+    timeline: d.timeline.map((item) => ({
+      time_start: item.time_start || "",
+      time_end: item.time_end || "",
+      title: item.title || "",
+      detail: item.detail || "",
+      outfit_change: item.outfit_change || "",
+    })),
+  };
+
+  if (!payload.outfit.trim()) {
+    toast("穿搭描述不能为空", "warning");
+    return;
+  }
+  if (payload.timeline.length === 0) {
+    toast("时间线不能为空", "warning");
+    return;
+  }
+
+  try {
+    await api.post("schedule/save", payload);
+    toast("日程已保存", "success");
+    state.scheduleEditMode = false;
+    state.scheduleEditData = null;
+    await loadSchedule(false);
+  } catch (e) {
+    toast(`保存失败: ${e.message}`, "error");
+  }
+}
+
+// ── 日程生成 ──
+
+async function regenerateSchedule() {
+  const persona = state.scheduleSelectedPersona;
+  const date = state.scheduleSelectedDate || todayStr();
+  if (!persona) {
+    toast("请先选择人格", "warning");
+    return;
+  }
+
+  if (!confirm(`确认为 ${persona} 在 ${date} 重新生成日程？\n这将覆盖当前日程（如有）。`)) return;
+
+  try {
+    const result = await api.post("schedule/regenerate", { persona, date });
+    if (result && result.started) {
+      toast("日程生成已启动，请稍候...", "success");
+      startGenerationPolling(persona);
+    }
+  } catch (e) {
+    toast(`触发生成失败: ${e.message}`, "error");
+  }
+}
+
+function openCustomScheduleModal() {
+  const persona = state.scheduleSelectedPersona;
+  if (!persona) {
+    toast("请先选择人格", "warning");
+    return;
+  }
+  const date = state.scheduleSelectedDate || todayStr();
+  showModal({
+    title: "定制生成日程",
+    bodyHtml: `
+      <div class="schedule-custom-form">
+        <div class="form-hint">
+          定制生成会根据你的额外要求生成日程。例如：<br/>
+          • "今天穿洛丽塔风格，下午去咖啡店"<br/>
+          • "安排一次户外摄影活动"<br/>
+          • "今天心情低落，安排一些治愈的活动"
+        </div>
+        <div class="form-group">
+          <label class="form-label">人格</label>
+          <input type="text" class="form-input" value="${esc(persona)}" disabled />
+        </div>
+        <div class="form-group">
+          <label class="form-label">日期</label>
+          <input type="text" class="form-input" value="${esc(date)}" disabled />
+        </div>
+        <div class="form-group">
+          <label class="form-label">额外要求</label>
+          <textarea class="form-textarea" id="custom-req-input" rows="5" placeholder="描述你对日程的特殊要求..."></textarea>
+        </div>
+      </div>`,
+    footerHtml: `
+      <button class="btn btn-secondary" id="modal-cancel">取消</button>
+      <button class="btn btn-primary" id="modal-confirm-custom">开始生成</button>`,
+    onMount: (container, close) => {
+      const cancelBtn = $("modal-cancel");
+      if (cancelBtn) cancelBtn.addEventListener("click", close);
+      const confirmBtn = $("modal-confirm-custom");
+      if (confirmBtn) confirmBtn.addEventListener("click", () => {
+        const input = $("custom-req-input");
+        const req = input ? input.value.trim() : "";
+        if (!req) {
+          toast("请输入额外要求", "warning");
+          return;
+        }
+        close();
+        customSchedule(req);
+      });
+    },
+  });
+}
+
+async function customSchedule(extraRequirement) {
+  const persona = state.scheduleSelectedPersona;
+  const date = state.scheduleSelectedDate || todayStr();
+  if (!persona) return;
+
+  try {
+    const result = await api.post("schedule/custom", {
+      persona,
+      date,
+      extra_requirement: extraRequirement,
+    });
+    if (result && result.started) {
+      toast("定制生成已启动，请稍候...", "success");
+      startGenerationPolling(persona);
+    }
+  } catch (e) {
+    toast(`触发定制生成失败: ${e.message}`, "error");
+  }
+}
+
+// ── 生成状态轮询 ──
+
+function checkAndPollGeneration() {
+  const persona = state.scheduleSelectedPersona;
+  if (!persona) return;
+  const personaInfo = state.schedulePersonas.find((p) => p.name === persona);
+  if (personaInfo && personaInfo.is_generating) {
+    startGenerationPolling(persona);
+  }
+}
+
+function startGenerationPolling(persona) {
+  if (state.scheduleGenPolling) return;
+  state.scheduleGenPolling = true;
+  updateScheduleGenBadge({ is_generating: true });
+  showGenerationStatus("generating", "日程生成中...", null);
+  pollGenerationStatus(persona);
+}
+
+async function pollGenerationStatus(persona) {
+  if (state.scheduleGenPollTimer) {
+    clearTimeout(state.scheduleGenPollTimer);
+    state.scheduleGenPollTimer = null;
+  }
+
+  try {
+    const status = await api.get("schedule/status", { persona });
+    if (status && status.generating) {
+      const startTime = status.started_at ? formatRelativeTime(status.started_at) : "";
+      showGenerationStatus("generating", "日程生成中...", startTime);
+      // 5 秒后再次轮询
+      state.scheduleGenPollTimer = setTimeout(() => pollGenerationStatus(persona), 5000);
+    } else {
+      // 生成结束
+      state.scheduleGenPolling = false;
+      updateScheduleGenBadge({ is_generating: false });
+
+      const result = status.last_result;
+      const updateTime = status.last_updated ? formatRelativeTime(status.last_updated) : "";
+      if (result === "success") {
+        showGenerationStatus("success", "日程生成成功！", updateTime);
+        toast("日程生成成功", "success");
+        // 自动重新加载日程
+        await loadSchedule(false);
+        // 刷新人格列表状态
+        await loadSchedulePersonas();
+        // 3 秒后隐藏状态条
+        setTimeout(() => hideGenerationStatus(), 3000);
+      } else if (result === "error") {
+        const errMsg = status.last_error || "生成失败";
+        showGenerationStatus("error", `生成失败: ${errMsg}`, updateTime);
+        toast(`生成失败: ${errMsg}`, "error");
+        await loadSchedulePersonas();
+      } else {
+        hideGenerationStatus();
+      }
+    }
+  } catch (e) {
+    // 网络错误，10 秒后重试
+    state.scheduleGenPollTimer = setTimeout(() => pollGenerationStatus(persona), 10000);
+  }
+}
+
+function showGenerationStatus(type, message, timeStr) {
+  const bar = $("schedule-gen-status");
+  if (!bar) return;
+  bar.style.display = "";
+  bar.className = `schedule-gen-status${type === "success" ? " success" : type === "error" ? " error" : ""}`;
+  const spinner = type === "generating" ? `<span class="spinner"></span>` : "";
+  const timeHtml = timeStr ? `<span class="schedule-gen-status-time">${esc(timeStr)}</span>` : "";
+  bar.innerHTML = `${spinner}<span class="schedule-gen-status-text">${esc(message)}</span>${timeHtml}`;
+}
+
+function hideGenerationStatus() {
+  const bar = $("schedule-gen-status");
+  if (bar) bar.style.display = "none";
 }
 
 // ── 设计 Tab：风格网格 ────────────────────────────────────────
@@ -1525,6 +2294,29 @@ function setupEventListeners() {
   const themeBtn = $("theme-toggle");
   if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
 
+  // 日程 tab
+  const refreshScheduleBtn = $("btn-refresh-schedule");
+  if (refreshScheduleBtn) refreshScheduleBtn.addEventListener("click", () => {
+    loadSchedulePersonas();
+    if (state.scheduleSelectedPersona) loadSchedule();
+  });
+
+  const personaSelect = $("schedule-persona-select");
+  if (personaSelect) personaSelect.addEventListener("change", onSchedulePersonaChange);
+
+  const dateInput = $("schedule-date-input");
+  if (dateInput) {
+    // 默认设为今天
+    if (!dateInput.value) dateInput.value = todayStr();
+    state.scheduleSelectedDate = dateInput.value;
+    dateInput.addEventListener("change", () => {
+      state.scheduleSelectedDate = dateInput.value;
+    });
+  }
+
+  const loadBtn = $("btn-schedule-load");
+  if (loadBtn) loadBtn.addEventListener("click", () => loadSchedule());
+
   // 设计 tab：风格搜索
   const searchInput = $("design-style-search");
   if (searchInput) {
@@ -1577,19 +2369,19 @@ async function init() {
     if (footer) footer.textContent = "Bridge 不可用";
   }
 
-  // 加载首页数据
+  // 加载首页数据（日程 tab 为默认页）
   try {
-    await loadStyles();
+    await loadSchedulePersonas();
   } catch (e) {
-    console.error("[DayflowDesigner] 加载风格失败:", e);
+    console.error("[DayflowDesigner] 加载日程人格失败:", e);
   }
 }
 
 // 捕获 init 的未处理异常，避免静默卡在"加载中"
 init().catch((e) => {
   console.error("[DayflowDesigner] 初始化失败:", e);
-  const grid = $("design-style-grid");
-  if (grid) {
-    grid.innerHTML = `<div class="style-grid-empty">初始化失败: ${esc(e.message || String(e))}</div>`;
+  const area = $("schedule-content-area");
+  if (area) {
+    area.innerHTML = `<div class="schedule-missing"><div class="schedule-missing-text">初始化失败: ${esc(e.message || String(e))}</div></div>`;
   }
 });
