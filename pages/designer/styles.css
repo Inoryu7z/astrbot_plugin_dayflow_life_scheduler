@@ -1,5 +1,5 @@
 /* ================================================================
-   Dayflow 优秀穿搭库 WebUI — Design System
+   DayFlow 工作台 WebUI — Design System
    粉紫少女风 · Soft UI Evolution
    - 字体: Cormorant Garamond (标题) + Inter (正文)
    - 色板: 樱花粉 + 薰衣草紫 + 玫瑰金点缀
@@ -1864,6 +1864,67 @@ button, input, textarea, select {
   margin-top: var(--space-4);
 }
 
+/* 可折叠文本块（穿搭/换装超长时自动折叠） */
+.collapsible-block {
+  position: relative;
+}
+
+.collapsible-block.can-collapse {
+  max-height: 120px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: max-height 0.3s ease;
+}
+
+.collapsible-block.can-collapse.expanded {
+  max-height: 3000px;
+}
+
+.collapsible-block .collapse-mask {
+  display: none;
+}
+
+.collapsible-block.can-collapse .collapse-mask {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 36px;
+  padding-bottom: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+
+.collapsible-block.can-collapse:not(.expanded) .collapse-mask::before {
+  content: "展开 ▼";
+}
+
+.collapsible-block.can-collapse.expanded .collapse-mask::before {
+  content: "收起 ▲";
+}
+
+.schedule-outfit-block.can-collapse:not(.expanded) .collapse-mask {
+  background: linear-gradient(to bottom, transparent, var(--accent-secondary-light));
+  color: var(--accent);
+}
+
+.schedule-timeline-change.can-collapse:not(.expanded) .collapse-mask {
+  background: linear-gradient(to bottom, transparent, var(--accent-light));
+  color: var(--gold);
+}
+
+.collapsible-block.can-collapse.expanded .collapse-mask {
+  position: static;
+  background: none;
+  padding-top: var(--space-1);
+  height: auto;
+}
+
 /* 穿搭展示 */
 .schedule-outfit-block {
   padding: var(--space-4) var(--space-5);
@@ -1981,6 +2042,9 @@ button, input, textarea, select {
   font-size: 12px;
   line-height: 1.75;
   color: var(--text-primary);
+}
+
+.schedule-timeline-change-text {
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -2022,13 +2086,13 @@ button, input, textarea, select {
 }
 
 .schedule-edit-timeline-item {
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-4) var(--space-5);
   background: var(--bg-input);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
 .schedule-edit-timeline-row {
@@ -2051,9 +2115,58 @@ button, input, textarea, select {
 }
 
 .schedule-edit-timeline-item .form-textarea {
-  min-height: 60px;
   font-size: 12px;
   line-height: 1.7;
+}
+
+.schedule-edit-timeline-item .detail-textarea {
+  min-height: 76px;
+}
+
+.schedule-edit-timeline-item .outfit-change-textarea {
+  min-height: 38px;
+  background: var(--bg-card);
+}
+
+.schedule-edit-outfit-change {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: linear-gradient(135deg, var(--gold-light) 0%, var(--accent-light) 100%);
+  border-left: 2px solid var(--gold);
+  border-radius: var(--radius-sm);
+}
+
+.schedule-edit-outfit-change-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.schedule-edit-outfit-change-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--gold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.btn-add-outfit-toggle {
+  align-self: flex-start;
+  padding: 3px var(--space-3);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 1px dashed var(--border-light);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-add-outfit-toggle:hover {
+  color: var(--gold);
+  border-color: var(--gold);
 }
 
 .schedule-edit-timeline-actions {

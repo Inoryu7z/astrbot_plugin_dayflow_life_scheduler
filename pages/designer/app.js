@@ -1,4 +1,4 @@
-// 优秀穿搭库 WebUI 前端逻辑
+// DayFlow 工作台 WebUI 前端逻辑
 // 对接 core/page_api.py 的路由
 // 5 个 tab：日程 / 设计 / 优秀库 / 提示词 / 概览
 //
@@ -457,9 +457,10 @@ function renderScheduleContent(data) {
         </div>
         <div class="schedule-timeline-detail">${esc(item.detail || "")}</div>
         ${hasChange ? `
-          <div class="schedule-timeline-change">
-            <span class="schedule-timeline-change-label">换装</span>
-            ${esc(item.outfit_change)}
+          <div class="schedule-timeline-change collapsible-block">
+            <span class="schedule-timeline-change-label">换装 · 午后第二套</span>
+            <div class="schedule-timeline-change-text">${esc(item.outfit_change)}</div>
+            <div class="collapse-mask"></div>
           </div>` : ""}
       </div>`;
   }).join("");
@@ -476,9 +477,10 @@ function renderScheduleContent(data) {
         </div>
         ${summary ? `<div class="schedule-summary">${esc(summary)}</div>` : ""}
         ${outfit ? `
-          <div class="schedule-outfit-block">
+          <div class="schedule-outfit-block collapsible-block">
             <div class="schedule-outfit-label">今日穿搭</div>
             <div class="schedule-outfit-text">${esc(outfit)}</div>
+            <div class="collapse-mask"></div>
           </div>` : ""}
         <div class="schedule-actions">
           <button class="btn btn-secondary btn-sm" id="btn-schedule-edit">编辑</button>
@@ -507,6 +509,18 @@ function renderScheduleContent(data) {
 
   bindHistoryItems();
   bindTomorrowSection();
+
+  // 可折叠文本块（穿搭/换装超长时自动折叠）
+  area.querySelectorAll(".collapsible-block").forEach((el) => {
+    if (el.scrollHeight > el.clientHeight + 4) {
+      el.classList.add("can-collapse");
+    }
+    el.addEventListener("click", () => {
+      if (el.classList.contains("can-collapse")) {
+        el.classList.toggle("expanded");
+      }
+    });
+  });
 }
 
 function personaLabel(name) {
@@ -656,7 +670,9 @@ function renderScheduleEditForm() {
   if (!area) return;
   const d = state.scheduleEditData;
 
-  const timelineHtml = d.timeline.map((item, idx) => `
+  const timelineHtml = d.timeline.map((item, idx) => {
+    const hasOutfitChange = !!(item.outfit_change && item.outfit_change.trim());
+    return `
     <div class="schedule-edit-timeline-item" data-idx="${idx}">
       <div class="schedule-edit-timeline-row">
         <span class="schedule-edit-timeline-item-index">#${idx + 1}</span>
@@ -671,9 +687,18 @@ function renderScheduleEditForm() {
           </svg>
         </button>
       </div>
-      <textarea class="form-textarea" data-field="detail" placeholder="详细描述">${esc(item.detail)}</textarea>
-      <textarea class="form-textarea" data-field="outfit_change" placeholder="换装描述（可选，留空表示不换装）">${esc(item.outfit_change)}</textarea>
-    </div>`).join("");
+      <textarea class="form-textarea detail-textarea" data-field="detail" placeholder="详细描述">${esc(item.detail)}</textarea>
+      ${hasOutfitChange ? `
+        <div class="schedule-edit-outfit-change">
+          <div class="schedule-edit-outfit-change-header">
+            <span class="schedule-edit-outfit-change-label">换装</span>
+            <button class="btn btn-ghost btn-sm btn-clear-outfit" data-idx="${idx}" title="清除换装">清除</button>
+          </div>
+          <textarea class="form-textarea outfit-change-textarea" data-field="outfit_change" placeholder="换装描述">${esc(item.outfit_change)}</textarea>
+        </div>` : `
+        <button class="btn-add-outfit-toggle" data-idx="${idx}">+ 换装</button>`}
+    </div>`;
+  }).join("");
 
   area.innerHTML = `
     <div class="card">
@@ -734,6 +759,32 @@ function renderScheduleEditForm() {
     btn.addEventListener("click", () => {
       const idx = parseInt(btn.dataset.idx, 10);
       if (!isNaN(idx)) removeTimelineItem(idx);
+    });
+  });
+
+  // 绑定 +换装 按钮
+  area.querySelectorAll(".btn-add-outfit-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = parseInt(btn.dataset.idx, 10);
+      if (!isNaN(idx) && state.scheduleEditData.timeline[idx]) {
+        state.scheduleEditData.timeline[idx].outfit_change = " ";
+        renderScheduleEditForm();
+        setTimeout(() => {
+          const ta = area.querySelector(`.schedule-edit-timeline-item[data-idx="${idx}"] .outfit-change-textarea`);
+          if (ta) { ta.focus(); ta.select(); }
+        }, 0);
+      }
+    });
+  });
+
+  // 绑定 清除换装 按钮
+  area.querySelectorAll(".btn-clear-outfit").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = parseInt(btn.dataset.idx, 10);
+      if (!isNaN(idx) && state.scheduleEditData.timeline[idx]) {
+        state.scheduleEditData.timeline[idx].outfit_change = "";
+        renderScheduleEditForm();
+      }
     });
   });
 
@@ -2359,7 +2410,7 @@ async function init() {
   setupEventListeners();
 
   const footer = $("footer-info");
-  if (footer) footer.textContent = "Dayflow Designer v1.0";
+  if (footer) footer.textContent = "DayFlow Studio v1.0";
 
   // 等待 Bridge 就绪（失败不阻断，只警告）
   try {
