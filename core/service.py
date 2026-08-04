@@ -263,23 +263,26 @@ SUBDIVISION_SYSTEM_PROMPT = """你是日程细分编辑。将以下日程的每�
 7. 细分应比大时段更贴近真实生活节奏——真人不会从护肤直接跳到入睡，中间总有过渡、停顿、小习惯、小岔路
 
 ### 人称转译规则
-大骨架日程以第三人称"她"描述主角（"她换上 T 恤"、"她走到厨房"），但细分结果会被注入到角色对话 LLM 的系统提示词，对话 LLM 期待第一人称视角。因此细分输出的 title 和 detail 必须做称谓转译：
+大骨架日程以第三人称"她"描述主角（"她换上 T 恤"、"她走到厨房"），但日程会被注入到角色对话 LLM 的系统提示词，对话 LLM 期待第一人称视角。因此需要把大骨架 timeline 的 detail 做称谓转译：
 - 指代主角的"她"必须转译为"我"（例："她换上 T 恤"→"我换上 T 恤"）
 - 指代其他女性角色的"她"保持不变（例："遇到小林，她带了咖啡"→"我遇到小林，她带了咖啡"）
 - 角色自称不变（例："本小姐"、"小星"、"姐姐"等角色自称代词保留原样，不转译）
 - 根据语义判断哪个"她"是主角、哪个不是，不要机械全替换
+- 同时对 sub_events 的 title 和 detail 也做同样的转译
 
 ### 输出
-输出JSON对象，包含一个sub_events数组。数组中每个元素对应一个大时段的细分结果：
+输出JSON对象，包含两个数组：sub_events 和 converted_timeline_details。
 
-{{"sub_events": [{{"source_index": 0, "items": [{{"time_start": "08:30", "time_end": "08:42", "title": "活动标题", "detail": "简短补充"}}]}}]}}
+{{"sub_events": [{{"source_index": 0, "items": [{{"time_start": "08:30", "time_end": "08:42", "title": "活动标题", "detail": "简短补充"}}]}}], "converted_timeline_details": ["转译后的detail0", "转译后的detail1", ...]}}
 
 字段说明：
-- source_index：整数，从0开始，对应大骨架timeline数组的下标，每个大时段都必须有对应的细分
-- items：该大时段的细分活动数组
-- time_start/time_end：字符串，格式"HH:MM"
-- title：字符串，10字以内
-- detail：字符串，20字以内，可为空字符串
+- sub_events：细分活动数组，每个元素对应一个大时段
+  - source_index：整数，从0开始，对应大骨架timeline数组的下标，每个大时段都必须有对应的细分
+  - items：该大时段的细分活动数组
+  - time_start/time_end：字符串，格式"HH:MM"
+  - title：字符串，10字以内
+  - detail：字符串，20字以内，可为空字符串
+- converted_timeline_details：字符串数组，长度等于大骨架timeline长度，每个元素是对应时段detail的称谓转译结果（她→我）
 
 只输出JSON，不要其他内容。"""
 
@@ -1395,14 +1398,19 @@ class DayflowService:
                     await self.save_generated(store_key, data)
                     enable_subdivision = bool(persona.get("enable_subdivision", False))
                     if enable_subdivision:
-                        sub_events = await self._generate_subdivision(
+                        sub_result = await self._generate_subdivision(
                             result=data,
                             persona_name=configured_persona_name,
                             persona_desc=persona_ctx.get("persona_desc") or "",
                             persona=persona,
                         )
-                        if sub_events:
+                        if sub_result:
+                            sub_events, converted_details = sub_result
                             data["sub_events"] = sub_events
+                            if converted_details and isinstance(data.get("timeline"), list):
+                                for idx, new_detail in enumerate(converted_details):
+                                    if idx < len(data["timeline"]) and new_detail:
+                                        data["timeline"][idx]["detail"] = new_detail
                             await self.save_generated(store_key, data)
                     await self.push_schedule_to_targets(store_key, data)
                     self.store.clear_auto_generation_failure(store_key, trigger_key)
@@ -1962,14 +1970,19 @@ class DayflowService:
             await self.save_generated(store_key, data)
             persona_cfg = self.get_persona_config(persona_name)
             if persona_cfg and bool(persona_cfg.get("enable_subdivision", False)):
-                sub_events = await self._generate_subdivision(
+                sub_result = await self._generate_subdivision(
                     result=data,
                     persona_name=persona_name,
                     persona_desc=persona_desc,
                     persona=persona_cfg,
                 )
-                if sub_events:
+                if sub_result:
+                    sub_events, converted_details = sub_result
                     data["sub_events"] = sub_events
+                    if converted_details and isinstance(data.get("timeline"), list):
+                        for idx, new_detail in enumerate(converted_details):
+                            if idx < len(data["timeline"]) and new_detail:
+                                data["timeline"][idx]["detail"] = new_detail
                     await self.save_generated(store_key, data)
 
             self._webui_generation_status[store_key] = {
@@ -2711,7 +2724,7 @@ class DayflowService:
         persona_desc: str,
         persona: dict,
         event=None,
-    ) -> list | None:
+    ) -> tuple[list, list[str]] | None:
         logger.info(f"[dayflow-细分] 开始生成: persona={persona_name}")
         timeline = result.get("timeline")
         if not isinstance(timeline, list) or not timeline:
@@ -2771,7 +2784,7 @@ class DayflowService:
                         deduped_providers.append(pid)
                 logger.debug(f"[dayflow-细分] 多提供商竞速: persona={persona_name}, count={len(deduped_providers)}")
 
-                async def _try_single_provider(pid: str) -> tuple[str, str | None] | None:
+                async def _try_single_provider(pid: str) -> tuple[str, list, list[str]] | None:
                     try:
                         text = await self.call_llm_once(prompt, pid)
                         if text:
@@ -2781,7 +2794,11 @@ class DayflowService:
                                 if isinstance(sub_events, list):
                                     ok, reason = validate_sub_events(sub_events, timeline)
                                     if ok:
-                                        return pid, sub_events
+                                        converted = parsed.get("converted_timeline_details")
+                                        if not isinstance(converted, list):
+                                            converted = []
+                                        converted = [str(x) if x is not None else "" for x in converted]
+                                        return pid, sub_events, converted
                         return None
                     except Exception as e:
                         logger.debug(f"[dayflow-细分] 竞速失败: provider={pid}, error={e}")
@@ -2789,6 +2806,7 @@ class DayflowService:
 
                 tasks = {asyncio.create_task(_try_single_provider(pid)): pid for pid in deduped_providers}
                 winner_sub_events = None
+                winner_converted_details: list[str] = []
                 best_raw_text = ""
                 best_provider_id = None
                 pending = set(tasks.keys())
@@ -2802,9 +2820,10 @@ class DayflowService:
                             except Exception:
                                 task_result = None
                             if task_result is not None:
-                                winner_pid, winner_events = task_result
+                                winner_pid, winner_events, winner_converted = task_result
                                 logger.info(f"[dayflow-细分] 竞速胜出: provider={winner_pid}, persona={persona_name}")
                                 winner_sub_events = winner_events
+                                winner_converted_details = winner_converted
                                 break
                             else:
                                 try:
@@ -2829,7 +2848,7 @@ class DayflowService:
 
                 if winner_sub_events is not None:
                     logger.info(f"[dayflow-细分] 生成成功(竞速): persona={persona_name}, count={len(winner_sub_events)}")
-                    return winner_sub_events
+                    return winner_sub_events, winner_converted_details
 
                 logger.debug(f"[dayflow-细分] 竞速无胜出: persona={persona_name}, 兜底文本={'有' if best_raw_text else '无'}")
                 raw_text = best_raw_text
@@ -2863,8 +2882,13 @@ class DayflowService:
                 logger.warning(f"[dayflow-细分] 校验失败: persona={persona_name}, reason={reason}")
                 return None
 
+            converted = parsed.get("converted_timeline_details")
+            if not isinstance(converted, list):
+                converted = []
+            converted = [str(x) if x is not None else "" for x in converted]
+
             logger.info(f"[dayflow-细分] 生成成功: persona={persona_name}, count={len(sub_events)}")
-            return sub_events
+            return sub_events, converted
 
         except Exception as e:
             logger.warning(f"[dayflow-细分] 生成异常: persona={persona_name}, error={e}")
