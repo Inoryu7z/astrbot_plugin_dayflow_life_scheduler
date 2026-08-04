@@ -884,7 +884,7 @@ async function saveScheduleEdit() {
 
 // ── 日程生成 ──
 
-async function regenerateSchedule() {
+function regenerateSchedule() {
   const persona = state.scheduleSelectedPersona;
   const date = state.scheduleSelectedDate || todayStr();
   if (!persona) {
@@ -892,17 +892,26 @@ async function regenerateSchedule() {
     return;
   }
 
-  if (!confirm(`确认为 ${persona} 在 ${date} 重新生成日程？\n这将覆盖当前日程（如有）。`)) return;
-
-  try {
-    const result = await api.post("schedule/regenerate", { persona, date });
-    if (result && result.started) {
-      toast("日程生成已启动，请稍候...", "success");
-      startGenerationPolling(persona);
-    }
-  } catch (e) {
-    toast(`触发生成失败: ${e.message}`, "error");
-  }
+  confirmModal({
+    title: "重生成日程",
+    message: `确认为 ${persona} 在 ${date} 重新生成日程？\n这将覆盖当前日程（如有）。`,
+    confirmText: "重生成",
+    danger: true,
+    onConfirm: async (close) => {
+      try {
+        const result = await api.post("schedule/regenerate", { persona, date });
+        if (result && result.started) {
+          toast("日程生成已启动，请稍候...", "success");
+          close();
+          startGenerationPolling(persona);
+        } else {
+          toast(result?.error || "无法启动生成", "error");
+        }
+      } catch (e) {
+        toast(`触发生成失败: ${e.message}`, "error");
+      }
+    },
+  });
 }
 
 function openCustomScheduleModal() {
