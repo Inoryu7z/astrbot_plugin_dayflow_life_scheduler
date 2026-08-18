@@ -1723,8 +1723,61 @@ class DayflowService:
         return Nodes(nodes=nodes)
 
     def is_onebot_umo(self, umo: str) -> bool:
-        """根据 unified_msg_origin 前缀判断是否为 OneBot(v11) 平台。"""
-        return str(umo or "").split(":", 1)[0] == "aiocqhttp"
+        """判断某 unified_msg_origin 是否属于 OneBot(v11) 平台。
+
+        注意：UMO 前缀是 platform_meta.id（适配器唯一 ID），而 id 可由用户在配置中自定义，
+        不一定等于类型名 "aiocqhttp"。因此不能靠前缀硬编码，需通过已注册平台实例反向匹配：
+        以 UMO 前缀（platform_id）找到平台，取其 meta().name 判断是否为 "aiocqhttp"。
+        """
+        platform_id = str(umo or "").split(":", 1)[0]
+        if not platform_id:
+            return False
+        return self._is_onebot_platform_id(platform_id)
+
+    def _is_onebot_platform_id(self, platform_id: str) -> bool:
+        try:
+            manager = getattr(self.context, "platform_manager", None)
+            platform_insts = getattr(manager, "platform_insts", None)
+            if platform_insts is None:
+                # 拿不到平台列表时，退回前缀判断（兼容旧逻辑，无法更精确）
+                return platform_id == "aiocqhttp"
+            for platform in platform_insts:
+                if platform.meta().id == platform_id:
+                    return platform.meta().name == "aiocqhttp"
+            return False
+        except Exception as e:
+            logger.warning(f"[dayflow] 平台判断失败，按前缀兜底: platform_id={platform_id}, err={e}")
+            return platform_id == "aiocqhttp"
+
+    async def _resolve_identity(self, platform_id: str) -> tuple[str, str]:
+        """获取某平台的 bot 身份（昵称, QQ号），用于合并转发子消息展示。
+
+        昵称优先通过协议端 get_login_info 获取（真实 QQ 昵称）；失败则退回 QQ 号本身。
+        """
+        try:
+            manager = getattr(self.context, "platform_manager", None)
+            platform_insts = getattr(manager, "platform_insts", None)
+            if platform_insts:
+                for platform in platform_insts:
+                    if platform.meta().id == platform_id:
+                        bot = getattr(platform, "bot", None)
+                        if bot is not None and hasattr(bot, "call_action"):
+                            ret = await bot.call_action("get_login_info")
+                            nickname = str((ret or {}).get("nickname") or "").strip()
+                            qq = str((ret or {}).get("user_id") or "").strip()
+                            return nickname or qq, qq or "0"
+        except Exception as e:
+            logger.debug(f"[dayflow] 获取 bot 身份失败: platform_id={platform_id}, err={e}")
+        return "", "0"
+
+    async def build_schedule_nodes_for(self, data: dict, umo: str | None = None, platform_id: str | None = None) -> Nodes | None:
+        """按 OneBot 平台构建聊天记录块，子消息以真实 bot 身份展示。
+
+        umo 或 platform_id 用于定位平台并获取 bot 昵称/QQ；无法定位时用默认空身份。
+        """
+        pid = platform_id or (str(umo or "").split(":", 1)[0])
+        name, uin = await self._resolve_identity(pid)
+        return self.build_schedule_nodes(data, name=name, uin=uin)
 
     async def _render_push_image(self, data: dict, persona_name: str) -> bytes | None:
         date_str = str((data.get("meta") or {}).get("date") or "").strip()
@@ -1766,7 +1819,7 @@ class DayflowService:
                     chain = MessageChain([ImageComponent.fromBytes(image_bytes)])
                 elif text_content is not None:
                     if self.is_onebot_umo(target_umo):
-                        nodes = self.build_schedule_nodes(data)
+                        nodes = await self.build_schedule_nodes_for(data, umo=target_umo)
                         if nodes is not None:
                             chain = MessageChain([nodes])
                         else:

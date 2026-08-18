@@ -3,12 +3,11 @@ import re
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Image as ImageComponent, Node, Nodes, Plain
+from astrbot.api.message_components import Image as ImageComponent
 from astrbot.api.star import Context, Star
 from astrbot.core.provider.entities import ProviderRequest
 
 from .core.generator import (
-    build_schedule_segments,
     is_schedule_valid,
     render_schedule_display,
     render_timeline_block,
@@ -189,13 +188,11 @@ class DayflowPlugin(Star):
                 return
 
         # OneBot(v11) 平台：文字版打包为合并转发聊天记录块，避免长文本刷屏。
-        # 子消息以 bot 身份展示（昵称取 bot 自身名，QQ 号用 bot 自身 ID）。
+        # 子消息以真实 bot 身份展示（QQ 昵称优先，其次 QQ 号）。
         if event.get_platform_name() == "aiocqhttp":
-            segments = build_schedule_segments(data)
-            if segments:
-                self_id = str(event.get_self_id() or "")
-                nodes = [Node(content=[Plain(seg)], name=self_id, uin=self_id or "0") for seg in segments]
-                yield event.chain_result([Nodes(nodes=nodes)])
+            nodes = await self.service.build_schedule_nodes_for(data, platform_id=event.get_platform_id())
+            if nodes is not None:
+                yield event.chain_result([nodes])
                 return
 
         # 其他平台降级：QQ 转发消息单条 Node 字数限制（约 5000 字）导致完整日程发送失败，
