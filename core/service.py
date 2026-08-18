@@ -8,7 +8,7 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import Image as ImageComponent, Plain
+from astrbot.api.message_components import Image as ImageComponent, Node, Nodes, Plain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .config import DayflowConfig
@@ -20,6 +20,7 @@ from .generator import (
     build_format_priority_append_prompt,
     build_generation_error_data,
     build_repair_prompt,
+    build_schedule_segments,
     extract_timeline,
     is_schedule_valid,
     normalize_payload,
@@ -1693,6 +1694,21 @@ class DayflowService:
     def _render_push_content(self, data: dict) -> str:
         return render_schedule_display(data)
 
+    def build_schedule_nodes(self, data: dict, name: str = "", uin: str = "0") -> Nodes | None:
+        """将日程构建为合并转发聊天记录块（每条 timeline 时段为一个 Node）。
+
+        返回 None 表示无可拆分内容，调用方应回退到普通文本发送。
+        """
+        segments = build_schedule_segments(data)
+        if not segments:
+            return None
+        nodes = [Node(content=[Plain(seg)], name=name, uin=uin) for seg in segments]
+        return Nodes(nodes=nodes)
+
+    def is_onebot_umo(self, umo: str) -> bool:
+        """根据 unified_msg_origin 前缀判断是否为 OneBot(v11) 平台。"""
+        return str(umo or "").split(":", 1)[0] == "aiocqhttp"
+
     async def _render_push_image(self, data: dict, persona_name: str) -> bytes | None:
         date_str = str((data.get("meta") or {}).get("date") or "").strip()
         async with self._render_lock:
@@ -1732,7 +1748,14 @@ class DayflowService:
                 if image_bytes is not None:
                     chain = MessageChain([ImageComponent.fromBytes(image_bytes)])
                 elif text_content is not None:
-                    chain = MessageChain([Plain(text_content)])
+                    if self.is_onebot_umo(target_umo):
+                        nodes = self.build_schedule_nodes(data)
+                        if nodes is not None:
+                            chain = MessageChain([nodes])
+                        else:
+                            chain = MessageChain([Plain(text_content)])
+                    else:
+                        chain = MessageChain([Plain(text_content)])
                 else:
                     continue
                 await self.context.send_message(target_umo, chain)
