@@ -1407,11 +1407,7 @@ class DayflowService:
                         )
                         if sub_result:
                             sub_events, converted_details = sub_result
-                            data["sub_events"] = sub_events
-                            if converted_details and isinstance(data.get("timeline"), list):
-                                for idx, new_detail in enumerate(converted_details):
-                                    if idx < len(data["timeline"]) and new_detail:
-                                        data["timeline"][idx]["detail"] = new_detail
+                            self._apply_subdivision_translation(data, sub_events, converted_details)
                             await self.save_generated(store_key, data)
                     await self.push_schedule_to_targets(store_key, data)
                     self.store.clear_auto_generation_failure(store_key, trigger_key)
@@ -1670,7 +1666,6 @@ class DayflowService:
         if data.get("meta", {}).get("error"):
             logger.warning(f"[dayflow] 跳过保存错误结果: persona={requested_store_key}")
             return
-
         saved_date = str((data.get("meta") or {}).get("date") or datetime.datetime.now().strftime("%Y-%m-%d"))
         self.clear_frozen_randoms(requested_store_key, saved_date)
 
@@ -1693,6 +1688,28 @@ class DayflowService:
 
     def _render_push_content(self, data: dict) -> str:
         return render_schedule_display(data)
+
+    def _apply_subdivision_translation(self, data: dict, sub_events: list, converted_details: list | None) -> None:
+        """将细分阶段的称谓转译写回主日程并重算 schedule。
+
+        - timeline[].detail 逐条用转译后的 detail 覆盖（仅索引有效且非空）
+        - sub_events 挂到 data
+        - 因对话 LLM 注入读取的是 schedule 字符串，而它由 timeline 合成且不会
+          随 detail 转译自动更新，必须在写回 detail 后重新合成 schedule，
+          否则对话时仍会看到第三人称"她"。
+        """
+        if sub_events:
+            data["sub_events"] = sub_events
+        if converted_details and isinstance(data.get("timeline"), list):
+            for idx, new_detail in enumerate(converted_details):
+                if idx < len(data["timeline"]) and new_detail:
+                    data["timeline"][idx]["detail"] = new_detail
+        # 重新合成 schedule，使注入内容反映转译后的 timeline detail
+        if isinstance(data.get("timeline"), list):
+            from .generator import _synthesize_schedule_from_timeline
+            synced = _synthesize_schedule_from_timeline(data)
+            if synced:
+                data["schedule"] = synced
 
     def build_schedule_nodes(self, data: dict, name: str = "", uin: str = "0") -> Nodes | None:
         """将日程构建为合并转发聊天记录块（每条 timeline 时段为一个 Node）。
@@ -2001,11 +2018,7 @@ class DayflowService:
                 )
                 if sub_result:
                     sub_events, converted_details = sub_result
-                    data["sub_events"] = sub_events
-                    if converted_details and isinstance(data.get("timeline"), list):
-                        for idx, new_detail in enumerate(converted_details):
-                            if idx < len(data["timeline"]) and new_detail:
-                                data["timeline"][idx]["detail"] = new_detail
+                    self._apply_subdivision_translation(data, sub_events, converted_details)
                     await self.save_generated(store_key, data)
 
             self._webui_generation_status[store_key] = {
