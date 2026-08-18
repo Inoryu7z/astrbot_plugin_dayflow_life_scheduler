@@ -46,6 +46,48 @@ def render_schedule_display(data: dict) -> str:
     return f"{header}\n📝 日程安排：\n{schedule_text}"
 
 
+def build_schedule_segments(data: dict) -> list[str]:
+    """将日程拆成聊天记录块的子消息段落。
+
+    第一条 = 今日穿搭（含摘要），之后每条 timeline 时段各一段。
+    无 timeline 时退化为单段完整文本。
+    """
+    outfit = str(data.get("outfit") or "").strip()
+    summary = str(data.get("summary") or "").strip()
+    timeline = data.get("timeline")
+
+    first = f"👕 今日穿搭：{outfit}"
+    if summary:
+        first += f"\n💬 {summary}"
+
+    if isinstance(timeline, list) and timeline:
+        segments = [first]
+        for i, item in enumerate(timeline, 1):
+            if not isinstance(item, dict):
+                continue
+            time_start = str(item.get("time_start") or "").strip()
+            time_end = str(item.get("time_end") or "").strip()
+            title = str(item.get("title") or "").strip()
+            detail = str(item.get("detail") or "").strip()
+            outfit_change = str(item.get("outfit_change") or "").strip()
+            time_range = f"{time_start}-{time_end}" if time_start and time_end else ""
+            block = f"── 第 {i} 项 ──\n🕐 {time_range}"
+            if title:
+                block += f"\n📌 {title}"
+            if detail:
+                block += f"\n📄 {detail}"
+            if outfit_change:
+                block += f"\n👗 换装：{outfit_change}"
+            segments.append(block)
+        return segments
+
+    if not first:
+        first = str(data.get("schedule") or "").strip()
+    if not first:
+        return []
+    return [f"{first}\n📝 日程安排：\n{render_timeline_block(timeline) if isinstance(timeline, list) else ''}"]
+
+
 def is_schedule_valid(data: dict) -> bool:
     if not data:
         return False
