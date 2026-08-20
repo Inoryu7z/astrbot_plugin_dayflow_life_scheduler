@@ -227,6 +227,15 @@ CUSTOM_SCHEDULE_INTENT_APPEND = """
 - 用户指定新风格时，必须基于该风格进行风格研究，禁止仅在当前风格下融合指定新风格元素来绕过用户需求
 """
 
+CUSTOM_SCHEDULE_DESIGN_APPEND = """
+
+## 用户定制要求（设计要求，必须落实到穿搭方案）
+用户定制要求：{extra_requirement}
+设计两套穿搭方案时，必须把用户定制要求中的具体单品、款式或着装调整落实到对应 look 的单品/配饰描述中。
+例如用户要求"戴个小帽子"，则需在晨间和/或午后的 accessories 或单品中加入一顶符合该风格的帽子，并写清色名、材质、版型与设计细节。
+不得因追求风格纯度、精简或防冗余而省略用户明确要求的单品；该单品须与该风格的美学体系自然融合。
+"""
+
 SUBDIVISION_SYSTEM_PROMPT = """你是日程细分编辑。将以下日程的每个时段拆分为更细粒度的活动片段。
 
 ## 角色
@@ -1064,6 +1073,8 @@ class DayflowService:
                     schedule_main_types_pool=json.dumps(pool_options.get("schedule_main_types", []), ensure_ascii=False),
                     core_event_drivers_pool=json.dumps(pool_options.get("core_event_drivers", []), ensure_ascii=False),
                 )
+                # 将用户定制要求落实到具体穿搭设计，而不只是意图解析
+                system_prompt += CUSTOM_SCHEDULE_DESIGN_APPEND.format(extra_requirement=extra_requirement)
             except Exception as e:
                 logger.warning(f"[dayflow] 自定义日程意图追加格式化失败: {e}")
 
@@ -1171,7 +1182,7 @@ class DayflowService:
         })
         return "", {}, sources, intent_overrides, None
 
-    async def _review_style_payload(self, style_name: str, payload: dict[str, Any], sources: list[dict[str, str]], persona_name: str | None = None, style_review_prompt: str | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], bool, list[str]]:
+    async def _review_style_payload(self, style_name: str, payload: dict[str, Any], sources: list[dict[str, str]], persona_name: str | None = None, style_review_prompt: str | None = None, extra_requirement: str | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], bool, list[str]]:
         """二次审查风格研究产出的穿搭方案。
 
         Returns: (final_summary, final_payload, final_sources, was_improved, issues)
@@ -1196,6 +1207,17 @@ class DayflowService:
         except Exception as e:
             logger.warning(f"[dayflow-风格审查] 系统提示词格式化失败: {e}")
             return self._render_style_reference(style_name, payload, sources), payload, sources, False, []
+
+        # 用户定制要求注入审查基准：审查师也能看到用户需求，且不得删掉用户明确要求的单品
+        if extra_requirement:
+            system_prompt += (
+                "\n\n## 用户定制要求（审查基准，必须遵守）\n"
+                f"用户定制要求：{extra_requirement}\n"
+                "待审查方案是基于上述用户要求设计的。审查与改进时必须遵守：\n"
+                "- 不得把方案中体现用户要求的单品（如用户指定的小帽子）当作冗余单品删除或替换\n"
+                "- 若该定制单品在材质/版型/配色/风格融合度上有优化空间，可优化，但必须保留该单品并满足用户要求\n"
+                "- 改进后的方案必须继续满足用户定制要求\n"
+            )
 
         # 注入初次风格研究阶段的预置款式描述与防重复上下文，避免审查时错误纠正特殊款式（如 cosplay、洛丽塔等）
         review_inject_parts = []
@@ -3179,7 +3201,7 @@ class DayflowService:
             elif override_item:
                 user_specified_outfit_item = override_item
             if override_style and override_style != outfit_style:
-                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, location=persona_location or None, persona_name=normalized_persona_name, specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day, style_research_prompt=persona.get("style_research_prompt_template"))
+                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, extra_requirement=extra_requirement, location=persona_location or None, persona_name=normalized_persona_name, specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day, style_research_prompt=persona.get("style_research_prompt_template"))
                 if override_weather:
                     real_weather = override_weather
                     today_weather = override_weather
@@ -3209,7 +3231,7 @@ class DayflowService:
 
         if need_reresearch:
             style_reference, style_payload, style_sources, _, _ = await self._research_style_reference(
-                outfit_style, location=persona_location or None, persona_name=normalized_persona_name,
+                outfit_style, extra_requirement=extra_requirement, location=persona_location or None, persona_name=normalized_persona_name,
                 specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day,
                 style_research_prompt=persona.get("style_research_prompt_template"),
             )
@@ -3228,6 +3250,7 @@ class DayflowService:
                     reviewed_reference, reviewed_payload, reviewed_sources, was_improved, review_issues = await self._review_style_payload(
                         outfit_style, style_payload, style_sources, persona_name=normalized_persona_name,
                         style_review_prompt=persona.get("style_review_prompt_template"),
+                        extra_requirement=extra_requirement,
                     )
                     style_reference = reviewed_reference
                     style_payload = reviewed_payload
