@@ -2,7 +2,7 @@ import datetime
 import re
 
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import Image as ImageComponent
 from astrbot.api.star import Context, Star
 from astrbot.core.provider.entities import ProviderRequest
@@ -189,11 +189,16 @@ class DayflowPlugin(Star):
 
         # OneBot(v11) 平台：文字版打包为合并转发聊天记录块，避免长文本刷屏。
         # 子消息以真实 bot 身份展示（QQ 昵称优先，其次 QQ 号）。
+        # 合并转发在 NapCat 下不稳定（伪造转发节点包易失败 retcode=1200），
+        # 因此不 yield 给框架发送（失败无法捕获），改为主动 await event.send 并降级。
         if event.get_platform_name() == "aiocqhttp":
             nodes = await self.service.build_schedule_nodes_for(data, platform_id=event.get_platform_id())
             if nodes is not None:
-                yield event.chain_result([nodes])
-                return
+                try:
+                    await event.send(MessageChain([nodes]))
+                    return
+                except Exception as e:
+                    logger.warning(f"[dayflow] 合并转发发送失败，降级为分段文本: persona={persona_name}, err={e}")
 
         # 其他平台降级：QQ 转发消息单条 Node 字数限制（约 5000 字）导致完整日程发送失败，
         # 以第一个换装点（outfit_change）为界拆成两段发送。

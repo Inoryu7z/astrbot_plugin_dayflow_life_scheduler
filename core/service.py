@@ -1817,18 +1817,25 @@ class DayflowService:
             try:
                 if image_bytes is not None:
                     chain = MessageChain([ImageComponent.fromBytes(image_bytes)])
+                    await self.context.send_message(target_umo, chain)
                 elif text_content is not None:
-                    if self.is_onebot_umo(target_umo):
+                    is_onebot = self.is_onebot_umo(target_umo)
+                    nodes = None
+                    if is_onebot:
                         nodes = await self.build_schedule_nodes_for(data, umo=target_umo)
-                        if nodes is not None:
-                            chain = MessageChain([nodes])
-                        else:
-                            chain = MessageChain([Plain(text_content)])
+                    if nodes is not None:
+                        try:
+                            await self.context.send_message(target_umo, MessageChain([nodes]))
+                        except Exception as e:
+                            # 合并转发在 NapCat 下不稳定，失败时降级为纯文本推送
+                            logger.warning(
+                                f"[dayflow] 推送合并转发失败，降级为纯文本: target={target_umo}, persona={persona_name}, err={e}"
+                            )
+                            await self.context.send_message(target_umo, MessageChain([Plain(text_content)]))
                     else:
-                        chain = MessageChain([Plain(text_content)])
+                        await self.context.send_message(target_umo, MessageChain([Plain(text_content)]))
                 else:
                     continue
-                await self.context.send_message(target_umo, chain)
                 logger.info(f"[dayflow] 日程已推送: target={target_umo}, persona={persona_name}, image={image_bytes is not None}")
             except Exception as e:
                 logger.warning(f"[dayflow] 推送失败: target={target_umo}, persona={persona_name}: {e}")
