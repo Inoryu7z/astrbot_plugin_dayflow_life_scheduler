@@ -314,6 +314,15 @@ def validate_payload(payload: dict | None, persona: dict[str, Any]) -> tuple[boo
             else:
                 return False, f'outfit 第一行必须为 "风格：{required_style}"'
 
+    # 第一套穿搭必须包含完整详细描述：仅"风格：X"一行（无具体穿法）视为残缺，
+    # 避免"今日穿搭"只显示风格名而无第一套穿搭细节（午后换装必须详细，晨间第一套同等重要）。
+    body_text = "\n".join(ln for ln in outfit.splitlines()[1:] if ln.strip()).strip()
+    if len(body_text) < 30:
+        return False, (
+            f'outfit 缺少详细穿搭描述：除"风格：{required_style}"外，'
+            "必须完整描述第一套穿搭的衣着细节（材质/版型/配饰，参考午后换装的细节完整度），仅风格行视为失败"
+        )
+
     timeline = payload.get("timeline")
 
     # timeline 是日程的核心字段（输出格式只要求 timeline，不要求 schedule）
@@ -380,6 +389,15 @@ def build_repair_prompt(
             "⚠️ 特别指示：上次输出缺少 timeline 字段或 timeline 不合法。"
             "请直接保留上次输出中的 outfit_style/outfit/summary 内容原样不动，仅补充完整的 timeline 数组（8-10 个连续时段，覆盖 00:00-23:59）。\n"
             "不要重新生成 outfit，不要改动已正确的字段。\n"
+        )
+
+    # 针对性指示：失败原因与 outfit 详细描述相关时，明确要求补齐第一套穿搭描述，不动 timeline
+    outfit_issue = "详细穿搭描述" in reason_lower or "仅风格行" in reason_lower
+    if outfit_issue:
+        mode_intro += (
+            "⚠️ 特别指示：上次输出缺少第一套穿搭的详细描述（outfit 只有风格行）。"
+            "请保留 outfit_style 与 timeline 原样不动，仅把 outfit 补齐为包含第一套穿搭的完整详细描述："
+            "风格行之下逐件描述衣着细节（材质/版型/配饰），细节完整度参考午后换装。\n"
         )
 
     result = (
