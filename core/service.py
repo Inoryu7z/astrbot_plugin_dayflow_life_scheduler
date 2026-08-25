@@ -35,7 +35,7 @@ from .store import DayflowStore
 from .utils import GenerationContext, parse_hhmm_to_minutes
 
 
-STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是基于联网搜索结果，设计两套有审美高度的完整穿搭方案。
+STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是基于联网搜索结果，设计两套有审美高度的完整外出穿搭方案，并额外设计一套夜间居家穿搭方案。
 你的核心价值是**设计能力**，不是搜索能力。搜索结果提供风格知识基础，你产出的穿搭方案才是最终成品。
 
 ## 工作方式
@@ -44,7 +44,7 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是�
    - 色彩哲学：该风格的核心色系与配色逻辑是什么？（如莫兰迪色系、高饱和撞色、同色系层次等）
    - 廓形语言：该风格的典型廓形、层次关系与比例规则是什么？（如A字、收腰蓬裙、落肩oversized等）
    - 材质情绪：该风格的标志性材质及其传达的情绪基调是什么？（如丝绸 = 优雅流动、皮革 = 硬朗力量、蕾丝 = 精致柔美、乔其纱 / 云雾纱等通透薄纱 = 朦胧仙气、厚缎织锦 = 庄重华丽、棉麻 = 质朴自然等）
-3. 基于上述设计语言，创作两套穿搭方案。优先选择该风格广为人知的经典搭配组合 —— 经典搭配经过验证，不易踩雷；**但需对经典款进行现代审美转译：保留风格核心形制与识别点，简化冗余装饰，优化面料质感与配色柔和度，禁止直接复刻复古 / 复原款的陈旧感**。若经典搭配被防重复记录覆盖，则再自行设计有新意的方案。
+3. 基于上述设计语言，创作两套外出穿搭方案（morning_look、afternoon_look）与一套夜间居家穿搭方案（night_look）。优先选择该风格广为人知的经典搭配组合 —— 经典搭配经过验证，不易踩雷；**但需对经典款进行现代审美转译：保留风格核心形制与识别点，简化冗余装饰，优化面料质感与配色柔和度，禁止直接复刻复古 / 复原款的陈旧感**。若经典搭配被防重复记录覆盖，则再自行设计有新意的方案。
    每套方案需设定1个核心设计记忆点（结构剪裁/细节装饰/材质组合三选一），作为整套造型的视觉亮点，避免方案平庸无记忆点；亮点需服务于风格体系，不可脱离风格突兀存在
 4. 不要复述搜索结果原文，要转化为可直接用于穿搭生成的方案
 5. 材质搭配应服务于风格统一性，而非追求对比。材质之间的自然差异（如缎面裙的哑光质感×丝质内衬的微妙光泽）是良好设计的副产品，不是设计目标。禁止为了制造材质对比而引入风格冲突的单品
@@ -64,10 +64,20 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是�
   - accessories: string[]，配饰。发饰为优先选择项，其余可选项为包/手套等，包的选择需要慎重，不可滥用，只有确认该搭配确实需要包作为辅助时才可使用。
   - hair_makeup: string，仅描述发型。须包含具体名称及特征描述。
 - afternoon_look: object，午后第二套换装方案，结构同 morning_look
-- difference: string[]，两套穿搭之间的审美维度差异，1条及以上。每条应体现具体的审美维度差异（配色方向/廓形语言/材质情绪/风格倾向），禁止使用实用性理由
+- night_look: object，夜间居家第三套穿搭方案，结构同 morning_look。用于角色晚间回到住处、沐浴后穿着的居家/睡前造型
+- difference: string[]，仅描述 morning_look 与 afternoon_look 两套外出穿搭之间的审美维度差异，1条及以上。每条应体现具体的审美维度差异（配色方向/廓形语言/材质情绪/风格倾向），禁止使用实用性理由。night_look 不参与本字段
 - weather: string | null，当查询中包含地点信息时，返回该地点今日真实天气，格式为"天气状况，温度范围，风力等细节"（如"多云转晴，18~26℃，东南风3级"）；无地点信息时为 null
 
-## 两套穿搭的要求
+## 夜间居家装（night_look）专项
+第三套是晚间回到住处后穿着的居家/睡前造型，与前两套处于不同的生活语境，单独适用以下规范：
+1. 定位：居家/睡前穿搭，如宽松家居连衣裙、睡袍+内搭、吊带裙、家居套装等，须符合"在家"的场景感，禁止设计为外出服装
+2. 风格衔接：night_look 仍须携带该风格的识别元素（配色、廓形语言、标志性材质），做到脱下外衣仍是同一风格；禁止脱离风格体系写成通用睡衣
+3. 语境豁免（仅第三套适用）：允许裸足或光腿（不强制设计鞋类）；允许睡袍/开衫与内搭的天然叠穿；裙长允许过膝（禁止及地拖尾）
+4. 沿用硬约束：面部完整露出、发型规范、禁妆容、禁体型修正性语言等所有既有硬约束不变
+5. 差异规则：night_look 不参与 difference 字段（difference 仅覆盖 morning_look 与 afternoon_look 两套的风格内差异）
+6. 与前两套的关系：第三套在面料质感、穿着状态上体现"居家放松"与"外出精致"的自然区分，但仍须与整体风格体系保持一致
+
+## 两套外出穿搭的要求
 1. 同一风格体系，但从配色方向、廓形语言、材质情绪、风格倾向等多维度呈现明显视觉差异。差异必须来自该风格内部的元素变化（如不同领型、不同裙长、不同面料、不同配色方案），不得通过添加风格外单品（如给旗袍加牛仔外套、给洛丽塔加皮外套）来制造差异
 2. 两套都须是从头到脚、从服装到配饰到发妆的完整造型
 3. 混合风格须在每套中体现主体与辅助元素的主辅关系
@@ -76,7 +86,7 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是�
    执行参考：单种印花占单件服装面积≤30%、非写实风格、配色为同色系/低饱和对比，三者同时满足时，不属于老土设计范畴。
 
 ## 设计自查
-完成两套穿搭设计后，从以下七个维度逐个审视每套方案，发现以下问题则调整后再输出：
+完成全部三套穿搭设计后，从以下七个维度逐个审视每套方案，发现以下问题则调整后再输出：
 1. 风格纯度：逐件审视每件单品。是否与风格名存在美学冲突？（如传统旗袍×牛仔外套、甜系洛丽塔×皮质外套、哥特风×粉色蕾丝）该风格本身是否已是完整服装类型（即风格名描述的服装本身就是完整造型，如旗袍、女仆装、水手服等）？若是，则该服装类型本身就是完整造型——禁止添加任何外搭/外套/开衫。外搭/外套仅在风格本身天然需要叠穿层次时才可保留（如学院风、森女风、法式风等），不得为丰富层次、凑材质对比或制造穿搭差异而存在。若加了外搭/外套，反问：这件外套是风格的核心组成部分，还是为了凑数而加的？后者一律删除。
 2. 层次：层次来自单品自身的设计（如褶皱、叠片、不对称剪裁、领口×项链的层次关系），而非强加外套。检查：是否有单品仅为了凑层次而存在？
 3. 焦点：视觉焦点是否明确？是否有多余单品在争夺注意力？核心设计记忆点是否清晰突出？
@@ -100,7 +110,7 @@ STYLE_REVIEW_SYSTEM_PROMPT = """你是资深服饰美学审查师，核心职责
 
 ## 待审查方案
 风格名：「{style_name}」
-穿搭方案（JSON格式，固定包含 definition / morning_look / afternoon_look / difference 四个顶层字段）：
+穿搭方案（JSON格式，固定包含 definition / morning_look / afternoon_look / difference 顶层字段；若研究结果额外提供了夜间居家装 night_look 字段，则一并审查并在改进版中原样保留）：
 {payload_json}
 
 ### 前置锚定步骤
@@ -150,6 +160,12 @@ STYLE_REVIEW_SYSTEM_PROMPT = """你是资深服饰美学审查师，核心职责
 ### 8. 时尚度与现代转译
 - 是否存在老土设计：对照通用老土判定标准校验，大面积写实印花、密集满版纹样、高饱和宽边镶边、刻板传统版型均需修正
 - 传统服饰类风格是否完成现代审美转译：无复原款的重工密集装饰、厚重面料与陈旧版型
+
+### 9. 夜间居家装（night_look）专项（仅当方案含 night_look 字段时审查）
+- night_look 是否符合居家/睡前语境：禁止设计成外出服装；允许裸足或光腿、允许睡袍/开衫与内搭的天然叠穿、裙长可过膝但禁止及地拖尾
+- night_look 是否仍衔接整体风格体系：保留该风格的识别元素（配色/廓形/材质），而非泛化成通用睡衣
+- night_look 是否沿用全部既有硬约束（面部完整露出、发型规范、无妆容、无体型修正性语言等）
+- night_look 是否错误地出现在 difference 描述中（difference 仅覆盖 morning_look 与 afternoon_look 两套外出穿搭）
 
 ## 遣词造句
 若其他问题均无或者即将被你优化时，应该关注穿搭的遣词造句。
@@ -706,7 +722,8 @@ class DayflowService:
         if definition:
             lines.append(f"风格定义：{definition}")
 
-        for label, key in [("晨间第一套", "morning_look"), ("午后第二套", "afternoon_look")]:
+        # 兼容：night_look 为可选第三套（夜间居家装），旧版两套方案缺失该字段时自动跳过
+        for label, key in [("晨间第一套", "morning_look"), ("午后第二套", "afternoon_look"), ("夜间居家", "night_look")]:
             look = payload.get(key)
             if isinstance(look, dict):
                 pieces = self._clip_list(look.get("pieces"), max_items=8)
@@ -1284,10 +1301,15 @@ class DayflowService:
         improved_payload.pop("weather", None)
         improved_payload.pop("intent_overrides", None)
 
-        # Validate improved_payload has required structure
+        # Validate improved_payload has required structure.
+        # 兼容：仅强制 definition + morning_look（旧版两套方案），night_look 为可选第三套
         if not improved_payload.get("definition") or not isinstance(improved_payload.get("morning_look"), dict):
             logger.warning(f"[dayflow-风格审查] 改进方案结构不完整，保留原方案: style={style_name}")
             return self._render_style_reference(style_name, payload, all_sources), payload, all_sources, False, issues
+
+        # 若原方案含 night_look（第三套夜间居家装）而改进版缺失，从原方案补回，防止审核师误删第三套
+        if isinstance(payload.get("night_look"), dict) and not isinstance(improved_payload.get("night_look"), dict):
+            improved_payload["night_look"] = payload["night_look"]
 
         logger.info(f"[dayflow-风格审查] 使用改进方案: style={style_name}")
 
