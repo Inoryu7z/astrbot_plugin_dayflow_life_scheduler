@@ -276,6 +276,12 @@
             "description": "自动生成时间",
             "default": "07:00"
           },
+          "schedule_switch_time": {
+            "type": "string",
+            "description": "日程切换时间（近似起床时间）",
+            "default": "00:00",
+            "hint": "默认 00:00。配置为其他时间（如 07:00 起床时间）后，该时间之前角色对话注入的仍是前一日日程，保证跨天深夜对话的连续性；该时间起切换为当日新日程。"
+          },
           "retry_count": {
             "type": "int",
             "description": "重试次数",

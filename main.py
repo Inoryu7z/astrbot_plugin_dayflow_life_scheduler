@@ -43,11 +43,13 @@ def _build_injection_text(data: dict) -> str | None:
         return None
     outfit = str(data.get("outfit") or "").strip()
     schedule = str(data.get("schedule") or "").strip()
+    date_str = str((data.get("meta") or {}).get("date") or "").strip()
+    date_label = f"（{date_str}）" if date_str else ""
     parts = []
     if outfit:
-        parts.append(f"今日穿搭：{outfit}")
+        parts.append(f"今日穿搭{date_label}：{outfit}")
     if schedule:
-        parts.append(f"今日日程：\n{schedule}")
+        parts.append(f"今日日程{date_label}：\n{schedule}")
     body = "\n".join(parts)
     return f"{DAYFLOW_INJECTION_HEADER}\n{body}\n{DAYFLOW_INJECTION_FOOTER}"
 
@@ -141,7 +143,14 @@ class DayflowPlugin(Star):
                 req.system_prompt += f"\n\n{presence_injection}"
                 injection_flags.append(f"存在感(L{presence_level})")
 
-            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            now_dt = datetime.datetime.now()
+            if persona_cfg:
+                switch_h, switch_m = self.service._parse_hhmm(str(persona_cfg.get("schedule_switch_time") or "00:00"))
+            else:
+                switch_h, switch_m = 0, 0
+            if now_dt.hour * 60 + now_dt.minute < switch_h * 60 + switch_m:
+                now_dt = now_dt - datetime.timedelta(days=1)
+            today = now_dt.strftime("%Y-%m-%d")
             data = await self.service.get_life_context(session_id=session_id, target_date=today)
 
             injection = _build_injection_text(data)
