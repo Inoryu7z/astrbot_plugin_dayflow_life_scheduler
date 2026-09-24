@@ -2059,6 +2059,36 @@ button, input, textarea, select {
   display: block;
 }
 
+/* 日程穿搭 → 优秀库 */
+/* 按钮行必须放在 .collapsible-block 之外：折叠块是 max-height + overflow:hidden，
+   按钮放进去会被裁掉；放外面也顺带避开了块上的展开/收起点击。 */
+.outfit-import-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-2);
+}
+
+.import-note {
+  margin-top: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--accent-light);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.import-note-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: var(--space-2);
+}
+
+.import-note-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-2);
+}
+
 /* 编辑模式 */
 .schedule-edit-form {
   display: flex;

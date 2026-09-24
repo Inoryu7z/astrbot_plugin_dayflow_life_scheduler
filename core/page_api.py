@@ -30,6 +30,18 @@ from .designer import OutfitDesigner
 PLUGIN_NAME = "astrbot_plugin_dayflow_life_scheduler"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
+# 日程穿搭改写入库：以"用户修改意见"的形式下发给二次审核师。
+# 复用审核师的既有链路（散文输出 + 风格纯度/配色/材质/版型/配饰校验），
+# 但把任务从"按意见改进方案"改成"把日程里实际穿过的一套改写成规范款式描述"。
+SCHEDULE_IMPORT_REWRITE_FEEDBACK = """这身穿搭来自日程记录，是角色当天实际穿过的一套造型，原文里可能混有场景、动作、心情、时间、天气等非穿搭叙述。请把它改写为优秀穿搭库的规范款式描述。
+
+改写要求（按优先级）：
+1. **只留穿搭**：完整保留从头到脚的服装、袜、鞋、配饰、发型，剥离场景、动作、心情、时间、天气等一切非穿搭叙述
+2. **不许丢件**：剥离场景叙述后造型仍须完整，不得因为删掉场景描写而丢掉任何一件原本穿着的单品
+3. **不许改设计**：原有单品、配色倾向、材质、版型、装饰细节必须原样保留，不得替换成别的单品，也不得新增原文没有的单品
+4. **补全具体度**：把笼统的说法补写具体（笼统色名→具象色名、笼统材质→具体材质、补明版型），但不得改变原本的色彩倾向与材质类型
+5. **按优秀库格式输出**：散文描述，色名具体、材质具体、版型明确、配饰覆盖至少两项，不使用妆容描述，并给出一个 4-8 字、富有意象的款式名称"""
+
 
 class PluginPageApi:
     """优秀穿搭库 WebUI 的后端 API。"""
@@ -63,6 +75,7 @@ class PluginPageApi:
             (f"{PAGE_API_PREFIX}/outfits/delete", self.delete_outfit, ["POST"], "dayflow 优秀库：删除条目"),
             (f"{PAGE_API_PREFIX}/outfits/use_count", self.set_use_count, ["POST"], "dayflow 优秀库：调整使用计数"),
             (f"{PAGE_API_PREFIX}/outfits/tier", self.set_outfit_tier, ["POST"], "dayflow 优秀库：切换分级（starred/normal）"),
+            (f"{PAGE_API_PREFIX}/outfits/polish_from_schedule", self.polish_schedule_outfit, ["POST"], "dayflow 优秀库：把日程里的某套穿搭改写为规范款式描述"),
             (f"{PAGE_API_PREFIX}/probability", self.get_or_set_probability, ["GET", "POST"], "dayflow 优秀库：概率配置"),
             (f"{PAGE_API_PREFIX}/export", self.export_data, ["GET"], "dayflow 优秀库：导出全部数据"),
             (f"{PAGE_API_PREFIX}/import", self.import_data, ["POST"], "dayflow 优秀库：导入数据"),
@@ -327,6 +340,45 @@ class PluginPageApi:
         if not ok:
             return self._err(msg)
         return self._ok({"style": style_name, "name": name, "tier": tier, "message": msg})
+
+    async def polish_schedule_outfit(self):
+        """把日程里的一套穿搭改写为优秀库的规范款式描述（只改写，不入库）。
+
+        body: {style_name, name?, text}
+        - text: 该套穿搭的原始文案（前端已剥离「风格：X」首行）
+        - 复用二次审核师的链路：把改写要求作为"用户修改意见"下发，
+          审核师返回 {name, description, critique}
+        改写结果由前端回填弹窗，用户确认后再走 /outfits/add 入库。
+        """
+        data = await self._body()
+        style_name = str(data.get("style_name") or "").strip()
+        name = str(data.get("name") or "").strip()
+        text = str(data.get("text") or "").strip()
+        if not style_name:
+            return self._err("style_name 不能为空")
+        if not text:
+            return self._err("穿搭内容不能为空，无法改写")
+        try:
+            result = await self.outfit_designer.review(
+                style_name=style_name,
+                original_name=name or style_name,
+                original_description=text,
+                user_feedback=SCHEDULE_IMPORT_REWRITE_FEEDBACK,
+            )
+        except Exception as e:
+            logger.warning(f"[dayflow-优秀库] 日程穿搭改写异常: style={style_name}, error={e}")
+            return self._err(f"改写调用异常：{e}")
+        if not result.get("success"):
+            return self._err(result.get("error") or "审核师未产出有效结果")
+        logger.info(f"[dayflow-优秀库] 日程穿搭已改写: style={style_name}, name={result.get('name', '')}")
+        return self._ok({
+            "name": result.get("name", ""),
+            "description": result.get("description", ""),
+            "critique": result.get("critique", ""),
+            "style_name": style_name,
+            "original": text,
+            "note": "已改写为规范款式描述，确认后入库",
+        })
 
     async def get_or_set_probability(self):
         """GET: 读取（?style=xxx 指定单风格，无则返回全部）

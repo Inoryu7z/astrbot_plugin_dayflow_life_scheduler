@@ -447,8 +447,12 @@ function renderScheduleContent(data) {
   if (meta.fallback) tags.push(`<span class="schedule-tag fallback">回退</span>`);
   if (weather) tags.push(`<span class="schedule-tag weather">${esc(weather)}</span>`);
 
+  const outfitSetByKey = new Map(collectScheduleOutfitSets(data).map((s) => [s.key, s]));
+  const todayImportHtml = scheduleImportRowHtml(outfitSetByKey.get("today"));
+
   const timelineHtml = timeline.map((item, idx) => {
     const hasChange = !!item.outfit_change;
+    const importHtml = scheduleImportRowHtml(outfitSetByKey.get(`tl-${idx}`));
     return `
       <div class="schedule-timeline-item${hasChange ? " has-change" : ""}">
         <div class="schedule-timeline-header">
@@ -461,7 +465,7 @@ function renderScheduleContent(data) {
             <span class="schedule-timeline-change-label">换装 · 午后第二套</span>
             <div class="schedule-timeline-change-text">${esc(item.outfit_change)}</div>
             <div class="collapse-mask"></div>
-          </div>` : ""}
+          </div>${importHtml}` : ""}
       </div>`;
   }).join("");
 
@@ -481,7 +485,7 @@ function renderScheduleContent(data) {
             <div class="schedule-outfit-label">今日穿搭</div>
             <div class="schedule-outfit-text">${esc(outfit)}</div>
             <div class="collapse-mask"></div>
-          </div>` : ""}
+          </div>${todayImportHtml}` : ""}
         <div class="schedule-actions">
           <button class="btn btn-secondary btn-sm" id="btn-schedule-edit">编辑</button>
           <button class="btn btn-secondary btn-sm" id="btn-schedule-regenerate">重生成</button>
@@ -509,6 +513,11 @@ function renderScheduleContent(data) {
 
   bindHistoryItems();
   bindTomorrowSection();
+
+  // 「加入优秀库」按钮（放在可折叠块之外，避免被折叠裁切，也避免冒泡触发折叠）
+  area.querySelectorAll("[data-import-set]").forEach((btn) => {
+    btn.addEventListener("click", () => openImportFromScheduleModal(btn.dataset.importSet, data));
+  });
 
   // 可折叠文本块（穿搭/换装超长时自动折叠）
   area.querySelectorAll(".collapsible-block").forEach((el) => {
@@ -880,6 +889,262 @@ async function saveScheduleEdit() {
   } catch (e) {
     toast(`保存失败: ${e.message}`, "error");
   }
+}
+
+// ── 日程穿搭 → 优秀库 ──
+// 日程里的 outfit 字段首行固定为「风格：X」（生成阶段强制写入），
+// 入库时剥离该行——它对应的是人格配置的风格，与入库风格名未必一致，
+// 也不属于款式描述本身。与后端约定：清洗只在前端做，入库内容所见即所得。
+function stripScheduleStyleHeader(text) {
+  return String(text || "").replace(/^\s*风格\s*[：:][^\n]*\n?/, "").trim();
+}
+
+function buildScheduleImportName(dateStr, timeStart) {
+  const digits = String(dateStr || "").replace(/[^0-9]/g, "");
+  const mmdd = digits.length >= 8 ? digits.slice(4, 8) : digits;
+  const time = String(timeStart || "").trim();
+  if (!mmdd) return time || "";
+  return time ? `${mmdd} ${time}` : `${mmdd} 晨间`;
+}
+
+// 时段的 time_start 是否落在傍晚/晚间（>= 18:00）。解析不出小时时按"不是晚间"处理。
+// 日程固定结构里"下午换装"在下午（<18:00），"晚间回家→沐浴→换夜间居家装"在晚间。
+function isEveningSegment(segment) {
+  const hour = parseInt(String((segment || {}).time_start || "").split(":")[0], 10);
+  return Number.isFinite(hour) && hour >= 18;
+}
+
+// 收集该日程里的所有穿搭套（key: "today" | "tl-<timeline索引>"）。
+// 入库策略也在这里定：日程固定结构是
+//   今日穿搭(outfit) → 下午换装(第一个 outfit_change) → 晚间回家换夜间居家装(后续 outfit_change)
+// 夜间居家装（第三套）暂不入库——优秀库条目没有"时段"语义，收进去后会被当外出款复用。
+// 放行条件 = 是第一个换装时段 **且** 不在晚间，两个条件缺一不可：
+//   - 只看"第一个"：若某天午后换装字段为空，夜间居家会顺位变成第一个而被误放行
+//   - 只看"时间"：若午后换装被写在傍晚，会漏放行；且时间可被 LLM 写歪
+function collectScheduleOutfitSets(data) {
+  const sets = [];
+  if (!data) return sets;
+  const date = (data.meta || {}).date || "";
+  const todayText = stripScheduleStyleHeader(data.outfit);
+  if (todayText) {
+    sets.push({
+      key: "today",
+      label: "今日穿搭",
+      timeStart: "",
+      text: todayText,
+      date,
+      importable: true,
+      blockReason: "",
+    });
+  }
+  const timeline = Array.isArray(data.timeline) ? data.timeline : [];
+  const firstChangeIdx = timeline.findIndex((s) => s && String(s.outfit_change || "").trim());
+  timeline.forEach((segment, idx) => {
+    if (!segment) return;
+    const text = stripScheduleStyleHeader(segment.outfit_change);
+    if (!text) return;
+    const importable = idx === firstChangeIdx && !isEveningSegment(segment);
+    const range = `${segment.time_start || ""}-${segment.time_end || ""}`;
+    const title = String(segment.title || "").trim();
+    sets.push({
+      key: `tl-${idx}`,
+      label: `换装 · ${[range, title].filter(Boolean).join(" ")}`.trim(),
+      timeStart: segment.time_start || "",
+      text,
+      date,
+      importable,
+      blockReason: importable ? "" : "夜间居家装暂不入库",
+    });
+  });
+  return sets;
+}
+
+function findScheduleOutfitSet(key, data) {
+  return collectScheduleOutfitSets(data).find((s) => s.key === key) || null;
+}
+
+// 一套穿搭下方的操作行：可入库 -> 按钮；不可入库 -> 说明文案；无此套 -> 空
+function scheduleImportRowHtml(set) {
+  if (!set) return "";
+  if (!set.importable) {
+    return `
+          <div class="outfit-import-row">
+            <span class="text-small text-muted">${esc(set.blockReason || "该套暂不支持入库")}</span>
+          </div>`;
+  }
+  return `
+          <div class="outfit-import-row">
+            <button class="btn btn-secondary btn-sm" data-import-set="${set.key}">加入优秀库</button>
+          </div>`;
+}
+
+function openImportFromScheduleModal(key, data) {
+  const outfitSet = findScheduleOutfitSet(key, data);
+  if (!outfitSet) {
+    toast("该套穿搭内容为空，无法入库", "warning");
+    return;
+  }
+  if (!outfitSet.importable) {
+    toast(outfitSet.blockReason || "该套暂不支持入库", "warning");
+    return;
+  }
+  const persona = state.scheduleSelectedPersona || "";
+  const date = outfitSet.date || state.scheduleSelectedDate || todayStr();
+  const styleName = String(data.outfit_style || "").trim();
+  const suggestedName = buildScheduleImportName(date, outfitSet.timeStart);
+  const descHint = (len) =>
+    `已去掉「风格：X」首行，当前 ${len} 字。可直接入库，或点「先经审核师改写」生成规范款式描述。入库分级固定为经典款（normal）。`;
+
+  const bodyHtml = `
+    <div class="form-group">
+      <label class="form-label">来源</label>
+      <div class="text-small" style="padding:8px 12px;background:var(--bg-app);border-radius:6px;border:1px solid var(--border-light)">${esc(`${persona || "—"} · ${date} · ${outfitSet.label}`)}</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">风格（入库到该风格下）</label>
+      <input type="text" id="modal-import-style" class="form-input" value="${esc(styleName)}" placeholder="例如：甜系洛丽塔" />
+      <div class="form-hint">默认取自该日程的风格名，可修改；该风格尚无条目时会新建一组。</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">款式名称</label>
+      <input type="text" id="modal-import-name" class="form-input" value="${esc(suggestedName)}" />
+      <div class="form-hint">同一风格下不可重名。</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">款式描述（入库内容）</label>
+      <textarea id="modal-import-desc" class="form-textarea" rows="10">${esc(outfitSet.text)}</textarea>
+      <div class="form-hint" id="modal-import-hint">${esc(descHint(outfitSet.text.length))}</div>
+    </div>
+    <div id="modal-import-extra"></div>
+  `;
+  const footerHtml = `
+    <button class="btn btn-secondary" data-modal-cancel>取消</button>
+    <button class="btn btn-secondary" data-modal-polish>先经审核师改写</button>
+    <button class="btn btn-success" data-modal-confirm>确认入库</button>
+  `;
+
+  showModal({
+    title: "加入优秀库",
+    bodyHtml,
+    footerHtml,
+    onMount: (container, close) => {
+      const cancelBtn = container.querySelector("[data-modal-cancel]");
+      const polishBtn = container.querySelector("[data-modal-polish]");
+      const confirmBtn = container.querySelector("[data-modal-confirm]");
+      const styleEl = container.querySelector("#modal-import-style");
+      const nameEl = container.querySelector("#modal-import-name");
+      const descEl = container.querySelector("#modal-import-desc");
+      const hintEl = container.querySelector("#modal-import-hint");
+      const extraEl = container.querySelector("#modal-import-extra");
+      // 记录改写前的状态，"恢复原文"用
+      const snapshot = { text: descEl.value.trim(), name: nameEl.value.trim(), autoNamed: false, usedPolish: false };
+
+      cancelBtn.addEventListener("click", close);
+
+      descEl.addEventListener("input", () => {
+        if (hintEl) hintEl.textContent = descHint(descEl.value.trim().length);
+      });
+
+      polishBtn.addEventListener("click", async () => {
+        const style = styleEl.value.trim();
+        const text = descEl.value.trim();
+        if (!style || !text) {
+          toast("风格与描述不能为空", "warning");
+          return;
+        }
+        polishBtn.disabled = true;
+        confirmBtn.disabled = true;
+        polishBtn.textContent = "改写中...";
+        try {
+          const res = await api.post("outfits/polish_from_schedule", {
+            style_name: style,
+            name: nameEl.value.trim(),
+            text,
+          });
+          const polishedDesc = String((res && res.description) || "").trim();
+          if (!polishedDesc) throw new Error("改写结果为空");
+          const polishedName = String((res && res.name) || "").trim();
+          // 用户没改过名字时才采用审核师给的名称，避免覆盖手填的名字
+          if (polishedName && nameEl.value.trim() === suggestedName) {
+            nameEl.value = polishedName;
+            snapshot.autoNamed = true;
+          }
+          descEl.value = polishedDesc;
+          descEl.dispatchEvent(new Event("input"));
+          snapshot.usedPolish = true;
+          const critique = String((res && res.critique) || "").trim();
+          if (extraEl) {
+            extraEl.innerHTML = `
+              <div class="import-note">
+                <div class="import-note-title">审核师改写完成 — 确认无误后再入库</div>
+                ${critique ? `
+                  <details class="default-prompt-collapse">
+                    <summary>查看审核师说明</summary>
+                    <pre class="default-prompt-pre">${esc(critique)}</pre>
+                  </details>` : ""}
+                <div class="import-note-actions">
+                  <button class="btn btn-ghost btn-sm" data-modal-restore>恢复原文</button>
+                </div>
+              </div>`;
+            const restoreBtn = extraEl.querySelector("[data-modal-restore]");
+            if (restoreBtn) {
+              restoreBtn.addEventListener("click", () => {
+                descEl.value = snapshot.text;
+                if (snapshot.autoNamed) {
+                  nameEl.value = snapshot.name;
+                  snapshot.autoNamed = false;
+                }
+                snapshot.usedPolish = false;
+                descEl.dispatchEvent(new Event("input"));
+                extraEl.innerHTML = "";
+                toast("已恢复为原文", "info");
+              });
+            }
+          }
+          toast("已改写为规范款式描述，确认后入库", "success");
+        } catch (e) {
+          toast(`改写失败: ${e.message}`, "error");
+        } finally {
+          polishBtn.disabled = false;
+          confirmBtn.disabled = false;
+          polishBtn.textContent = "先经审核师改写";
+        }
+      });
+
+      confirmBtn.addEventListener("click", async () => {
+        const style = styleEl.value.trim();
+        const name = nameEl.value.trim();
+        const desc = descEl.value.trim();
+        if (!style || !name || !desc) {
+          toast("风格、款式名与描述均不能为空", "warning");
+          return;
+        }
+        confirmBtn.disabled = true;
+        polishBtn.disabled = true;
+        confirmBtn.textContent = "入库中...";
+        try {
+          await api.post("outfits/add", {
+            style_name: style,
+            name,
+            description: desc,
+            // 走过审核师改写记 1 次迭代（优秀库列表会显示"迭代 N 次"）
+            iterations: snapshot.usedPolish ? 1 : 0,
+            tier: "normal",
+          });
+          toast(`已加入优秀库：${name}`, "success");
+          close();
+          loadLibrary();
+          loadStyles();
+          loadOverview();
+        } catch (e) {
+          toast(`入库失败: ${e.message}`, "error");
+          confirmBtn.disabled = false;
+          polishBtn.disabled = false;
+          confirmBtn.textContent = "确认入库";
+        }
+      });
+    },
+  });
 }
 
 // ── 日程生成 ──
