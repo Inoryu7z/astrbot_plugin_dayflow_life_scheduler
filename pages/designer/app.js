@@ -453,6 +453,8 @@ function renderScheduleContent(data) {
   const timelineHtml = timeline.map((item, idx) => {
     const hasChange = !!item.outfit_change;
     const importHtml = scheduleImportRowHtml(outfitSetByKey.get(`tl-${idx}`));
+    // 标签只写时段，不声称"第几套"：夜间居家装以前会被硬编码的"午后第二套"标签误导
+    const changeRange = [item.time_start, item.time_end].filter(Boolean).join("-");
     return `
       <div class="schedule-timeline-item${hasChange ? " has-change" : ""}">
         <div class="schedule-timeline-header">
@@ -462,7 +464,7 @@ function renderScheduleContent(data) {
         <div class="schedule-timeline-detail">${esc(item.detail || "")}</div>
         ${hasChange ? `
           <div class="schedule-timeline-change collapsible-block">
-            <span class="schedule-timeline-change-label">换装 · 午后第二套</span>
+            <span class="schedule-timeline-change-label">换装${changeRange ? " · " + esc(changeRange) : ""}</span>
             <div class="schedule-timeline-change-text">${esc(item.outfit_change)}</div>
             <div class="collapse-mask"></div>
           </div>${importHtml}` : ""}
@@ -907,20 +909,14 @@ function buildScheduleImportName(dateStr, timeStart) {
   return time ? `${mmdd} ${time}` : `${mmdd} 晨间`;
 }
 
-// 时段的 time_start 是否落在傍晚/晚间（>= 18:00）。解析不出小时时按"不是晚间"处理。
-// 日程固定结构里"下午换装"在下午（<18:00），"晚间回家→沐浴→换夜间居家装"在晚间。
-function isEveningSegment(segment) {
-  const hour = parseInt(String((segment || {}).time_start || "").split(":")[0], 10);
-  return Number.isFinite(hour) && hour >= 18;
-}
-
 // 收集该日程里的所有穿搭套（key: "today" | "tl-<timeline索引>"）。
-// 入库策略也在这里定：日程固定结构是
-//   今日穿搭(outfit) → 下午换装(第一个 outfit_change) → 晚间回家换夜间居家装(后续 outfit_change)
-// 夜间居家装（第三套）暂不入库——优秀库条目没有"时段"语义，收进去后会被当外出款复用。
-// 放行条件 = 是第一个换装时段 **且** 不在晚间，两个条件缺一不可：
-//   - 只看"第一个"：若某天午后换装字段为空，夜间居家会顺位变成第一个而被误放行
-//   - 只看"时间"：若午后换装被写在傍晚，会漏放行；且时间可被 LLM 写歪
+// 入库策略也在这里定：**夜间居家装（最后一套）不入库**。
+// 判定规则（用户 2026-09-24 拍板）：
+//   - 带换装的时段里，**最后一个**就是夜间居家装 —— 不给入库入口
+//   - 全天只有 1 个换装时段时，说明这天没有夜间居家装（未启用 night_look 或研究未提供），
+//     它就是午后第二套 —— 可以入库
+// 刻意**不用**"时间 >= 18:00"判定：下午换装被 LLM 写到 18:00 之后是常事，
+// 那会把下午那套误当成夜间款拦掉（v1.8.5 的实际体验问题）。
 function collectScheduleOutfitSets(data) {
   const sets = [];
   if (!data) return sets;
@@ -938,12 +934,17 @@ function collectScheduleOutfitSets(data) {
     });
   }
   const timeline = Array.isArray(data.timeline) ? data.timeline : [];
-  const firstChangeIdx = timeline.findIndex((s) => s && String(s.outfit_change || "").trim());
+  const changeIndexes = [];
+  timeline.forEach((segment, idx) => {
+    if (segment && String(segment.outfit_change || "").trim()) changeIndexes.push(idx);
+  });
+  // 只有一个换装时段 = 这天没有第三套，不按夜间拦截
+  const nightIdx = changeIndexes.length >= 2 ? changeIndexes[changeIndexes.length - 1] : -1;
   timeline.forEach((segment, idx) => {
     if (!segment) return;
     const text = stripScheduleStyleHeader(segment.outfit_change);
     if (!text) return;
-    const importable = idx === firstChangeIdx && !isEveningSegment(segment);
+    const importable = idx !== nightIdx;
     const range = `${segment.time_start || ""}-${segment.time_end || ""}`;
     const title = String(segment.title || "").trim();
     sets.push({
