@@ -910,7 +910,7 @@ class DayflowService:
         self._style_research_cache["_sub_variants_usage"] = usage_history
         self._save_style_research_cache()
 
-    def _build_sub_variants_append(self, style_name: str, variants: list[dict], all_day: bool = False) -> str:
+    def _build_sub_variants_append(self, style_name: str, variants: list[dict], all_day: bool = False, period: str = "morning") -> str:
         if not variants or len(variants) < 1:
             return ""
         if all_day and len(variants) == 1:
@@ -933,6 +933,37 @@ class DayflowService:
             # 内置子款式（STYLE_SUB_VARIANTS）无 tier 字段时默认为 starred（绝对正确基准）
             tier_label = "【标星收藏款】" if str(v.get("tier") or "starred").lower() == "starred" else "【经典款】"
             lines.append(f"### {name}（全天）{tier_label}")
+            lines.append(desc)
+            lines.append("")
+        elif len(variants) == 1:
+            # 单款只服务一个时段：另一套必须另行设计不同搭配，不得沿用此款
+            # （曾把单款当"全天款"注入，导致白天两套同款微调、看起来只有一套）
+            if str(period or "").strip().lower() == "afternoon":
+                period_label, period_look, other_look, slot_label = (
+                    "午后第二套", "午后穿搭（afternoon_look）", "晨间穿搭（morning_look）", "（午后）",
+                )
+            else:
+                period_label, period_look, other_look, slot_label = (
+                    "晨间第一套", "晨间穿搭（morning_look）", "午后穿搭（afternoon_look）", "（晨间）",
+                )
+            lines = [
+                "",
+                "## 指定经典款式（强制遵循）",
+                f"以下为该风格下一款真实经典搭配的完整描述，仅用于{period_label}。你的穿搭设计必须严格基于此款描述，具体要求：",
+                f"1. **单阶段适用**：{period_look}必须严格基于此款描述设计；{other_look}必须另行设计一款与它明显不同的搭配——单品选择、配色、廓形、装饰细节至少两项不同，不得沿用此款，也不得只做配饰微调",
+                "2. **忠实还原**：单品选择、配色方案、廓形结构、装饰细节必须与款式描述一致。描述中提到的每个关键元素都必须在输出中体现",
+                "3. **搜索仅补充**：联网搜索仅用于补充描述中未涉及的细节（如具体色号、材质工艺），不得用搜索结果替换款式描述中的任何设计要素",
+                "4. **禁止泛化**：不得将此经典款泛化为‘同一风格的通用搭配’",
+                "5. **禁止风格偏移**：如果款式描述是甜美系，不得出现暗黑、哥特、甜酷等偏离风格",
+                "6. **详尽度对齐**：输出中每个单品的描述详尽度不得低于款式描述中同类单品的详尽度",
+                "7. **格式优先级**：当本段要求与上方输出格式要求冲突时，以本段为准",
+                "",
+            ]
+            v = variants[0]
+            name = v.get("name", "")
+            desc = v.get("description", "")
+            tier_label = "【标星收藏款】" if str(v.get("tier") or "starred").lower() == "starred" else "【经典款】"
+            lines.append(f"### {name} {slot_label}{tier_label}")
             lines.append(desc)
             lines.append("")
         else:
@@ -1057,8 +1088,12 @@ class DayflowService:
                 style_name, count=2, exclude_names=builtin_names,
             )
             if curated_variants:
+                # 优秀库条目按"晨间/午后"两槽配对注入；库里该风格只有 1 条时，
+                # 随机指定给其中一个时段，另一时段由设计师另行设计不同搭配。
+                # （曾把单条当 all_day 全天款注入 → 白天两套变成同一款的配饰微调）
+                curated_period = random.choice(("morning", "afternoon")) if len(curated_variants) == 1 else "morning"
                 curated_append = self._build_sub_variants_append(
-                    style_name, curated_variants, all_day=(len(curated_variants) == 1),
+                    style_name, curated_variants, all_day=False, period=curated_period,
                 )
                 if curated_append:
                     system_prompt += curated_append
@@ -1068,6 +1103,7 @@ class DayflowService:
                     injected_curated_names = [v.get("name", "") for v in curated_variants]
                     logger.info(
                         f"[dayflow-风格研究] 优秀库注入: style={style_name}, curated={injected_curated_names}"
+                        + (f", 单款仅用于={curated_period}" if len(curated_variants) == 1 else ", 两槽配对")
                     )
         else:
             logger.debug(
