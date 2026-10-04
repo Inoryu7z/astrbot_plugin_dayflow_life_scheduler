@@ -2053,9 +2053,26 @@ class DayflowService:
         if not cleaned_timeline:
             return False, "时间线不能为空"
 
+        # 晨间第一套的正式载体是晨起时段的 outfit_change。
+        # WebUI「今日穿搭」编辑框编辑的即第一套，写入规则：
+        # - 最早非空换装时段在午前（ts < 12:00，即晨起换装）→ 写入该时段
+        # - 否则（旧结构晨起段本为 null、换装在午后，或 timeline 无换装）→ 退化写入顶层 outfit 字段，
+        #   避免把第一套覆盖进午后时段销毁第二套；dailysharing 解析层对顶层 outfit 兼容。
+        from .utils import earliest_outfit_change_item, parse_hhmm_to_minutes
+        edited_data_probe = {"timeline": cleaned_timeline}
+        earliest = earliest_outfit_change_item(edited_data_probe)
+        ts = parse_hhmm_to_minutes(str((earliest or {}).get("time_start") or ""))
+        if earliest is not None and "time_start" in earliest and ts is not None and ts < 12 * 60:
+            for item in cleaned_timeline:
+                if str(item.get("time_start") or "") == str(earliest.get("time_start") or ""):
+                    item["outfit_change"] = outfit
+                    break
+            top_outfit = ""
+        else:
+            top_outfit = outfit
+
         from .generator import _synthesize_schedule_from_timeline
         data = {
-            "outfit": outfit,
             "summary": summary,
             "outfit_style": outfit_style,
             "weather": weather,
@@ -2074,6 +2091,9 @@ class DayflowService:
             "memo": str(existing.get("memo") or ""),
             "long_term_memory": existing.get("long_term_memory") or [],
         }
+        if top_outfit:
+            # 退化兼容：timeline 无任何换装时段时，第一套保留在顶层 outfit 字段（get_first_outfit 可读）
+            data["outfit"] = top_outfit
         if existing.get("sub_events"):
             data["sub_events"] = existing["sub_events"]
 
@@ -2490,12 +2510,9 @@ class DayflowService:
         ctx: GenerationContext,
     ) -> dict:
         parsed_style = str(payload.get("outfit_style") or ctx.outfit_style).strip()
-        outfit = str(payload.get("outfit") or "").strip()
         schedule = str(payload.get("schedule") or "").strip()
         summary = str(payload.get("summary") or "").strip()
         timeline_data = payload.get("timeline")
-        if not outfit:
-            return build_generation_error_data(ctx.normalized_persona_name, ctx.validate_persona, "JSON 缺少 outfit 字段")
         if not schedule and not timeline_data:
             return build_generation_error_data(ctx.normalized_persona_name, ctx.validate_persona, "JSON 缺少 schedule 和 timeline 字段")
         used_fallback = (
@@ -2507,7 +2524,6 @@ class DayflowService:
             f"[dayflow] LLM 日程已生成: persona={ctx.normalized_persona_name}, provider={ctx.actual_provider_id or '无'}, fallback={used_fallback}, date={ctx.date_str}"
         )
         return {
-            "outfit": outfit,
             "schedule": schedule,
             "summary": summary,
             "meta": {
@@ -2520,7 +2536,7 @@ class DayflowService:
                 "configured_provider_id": ctx.configured_provider_id or "",
                 "source_session_id": ctx.effective_session_id or "",
                 "weather": ctx.today_weather,
-                "prompt_template_version": "persona_full_template_v9_timeline_struct",
+                "prompt_template_version": "persona_full_template_v10_timeline_outfit_in_change",
                 "fallback": used_fallback,
                 "variation_configured": ctx.configured_variation,
                 "variation_effective": ctx.effective_variation,
@@ -2565,10 +2581,9 @@ class DayflowService:
                 ok, reason = validate_payload(payload, validate_persona)
                 last_reason = reason
             if ok and payload:
-                outfit = str(payload.get("outfit") or "").strip()
                 schedule = str(payload.get("schedule") or "").strip()
                 timeline_data = payload.get("timeline")
-                if outfit and (schedule or timeline_data):
+                if (schedule or timeline_data):
                     logger.info(
                         f"[dayflow] 竞速胜出: provider={actual_provider_id or provider_id}, persona={normalized_persona_name}"
                     )

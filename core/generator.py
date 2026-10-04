@@ -30,7 +30,8 @@ def render_timeline_block(timeline: list, start_idx: int = 1) -> str:
 
 
 def render_schedule_display(data: dict) -> str:
-    outfit = str(data.get("outfit") or "").strip()
+    from .utils import get_first_outfit
+    outfit = get_first_outfit(data)
     summary = str(data.get("summary") or "").strip()
     timeline = data.get("timeline")
 
@@ -52,7 +53,8 @@ def build_schedule_segments(data: dict) -> list[str]:
     第一条 = 今日穿搭（含摘要），之后每条 timeline 时段各一段。
     无 timeline 时退化为单段完整文本。
     """
-    outfit = str(data.get("outfit") or "").strip()
+    from .utils import get_first_outfit
+    outfit = get_first_outfit(data)
     summary = str(data.get("summary") or "").strip()
     timeline = data.get("timeline")
 
@@ -114,12 +116,11 @@ FORMAT_PRIORITY_APPEND_PROMPT = """
 
 请严格遵守以下规则：
 1. 只允许输出 JSON 对象本体，不要 Markdown，不要代码块，不要解释，不要额外前后缀。
-2. JSON 必须包含字段：outfit_style、outfit、summary、timeline。
-3. outfit_style 必须严格等于指定风格，不允许近义改写，不允许变体，不允许替换措辞。
-4. outfit 的第一行必须严格写为：风格：{outfit_style}
-5. 除了"风格：{outfit_style}"这行以外，不允许写成"【风格】"、"穿搭风格："、"风格为："或任何其他变体。
-6. timeline 必须是数组，每个元素包含 time_start、time_end、title、detail、outfit_change 五个字段。
-7. title 禁止出现"核心事件"、"XX驱动"等元标签。
+2. JSON 必须包含字段：summary、timeline。不要输出顶层 outfit 或 outfit_style 字段——三套穿搭全部写在 timeline 各换装时段的 outfit_change 里。
+3. 晨起准备时段（起床洗漱换衣）的 outfit_change 必须为第一套穿搭的完整描述，第一行严格写为：风格：{outfit_style}
+4. 除了"风格：{outfit_style}"这行以外，不允许写成"【风格】"、"穿搭风格："、"风格为："或任何其他变体。
+5. 午后换装时段与晚间居家换装时段的 outfit_change 各为完整穿搭描述，写法与第一套一致。
+6. title 禁止出现"核心事件"、"XX驱动"等元标签。
 """
 
 
@@ -257,21 +258,20 @@ def normalize_payload(payload: dict | None, persona: dict[str, Any]) -> dict | N
     required_style = str(persona.get("outfit_style") or "").strip()
     normalized = dict(payload)
 
+    # outfit_style 由程序回写（LLM 不再要求输出该字段，风格由冻结随机决定）
     if required_style:
         normalized["outfit_style"] = required_style
 
-    outfit = str(normalized.get("outfit") or "")
-    if required_style and outfit.strip():
-        lines = outfit.splitlines()
-        if lines:
-            first = lines[0].strip()
-            m = STYLE_LINE_RE.match(first)
-            if m or first != f"风格：{required_style}":
-                lines[0] = f"风格：{required_style}"
-                outfit = "\n".join(lines)
-        else:
-            outfit = f"风格：{required_style}"
-        normalized["outfit"] = outfit
+    # 顶层 outfit 字段废弃：第一套统一迁移到晨起时段（最早换装时段）的 outfit_change。
+    # 兼容处理：
+    # - LLM 仍输出顶层 outfit（旧模板）且晨起时段已有等值 outfit_change → 仅视为复读，删除顶层字段
+    # - LLM 输出顶层 outfit 且晨起时段无 outfit_change → 保留到临时校验（validate_payload 会判失败，
+    #   由 repair 提示词指示把第一套写进晨起时段 outfit_change），此处不做凭空迁移
+    top_outfit = str(normalized.get("outfit") or "").strip()
+    if top_outfit:
+        # 旧模板输出携带顶层 outfit：保留到内部标记，交给 validate_payload 判定晨起时段是否已承载第一套
+        normalized["_legacy_top_outfit"] = top_outfit
+    normalized.pop("outfit", None)
 
     # 兼容 DayMind：若模型输出了 timeline 但未输出 schedule，
     # 从 timeline 数组合成 schedule 字符串，确保 DayMind 可正常读取日程。
@@ -296,30 +296,57 @@ def validate_payload(payload: dict | None, persona: dict[str, Any]) -> tuple[boo
     required_style = str(persona.get("outfit_style") or "").strip()
     user_specified_style = str(persona.get("user_specified_outfit_style") or "").strip()
     outfit_style = str(payload.get("outfit_style") or "").strip()
-    outfit = str(payload.get("outfit") or "").strip()
 
-    if not outfit:
-        return False, "outfit 不能为空"
+    from .utils import earliest_outfit_change_item, _norm_outfit_text, parse_hhmm_to_minutes
+
+    # 第一套穿搭的正式载体是晨起时段（最早换装时段）的 outfit_change。
+    # 旧模板输出会带顶层 outfit 字段（normalize 已剥离到 _legacy_top_outfit），
+    # 以它为参照判定晨起时段是否已承载第一套；新结构输出则要求最早换装时段必须落在中午前
+    #（起床换衣时段），防止"午后第二套"被误当成第一套通过校验。
+    legacy_top = str(payload.get("_legacy_top_outfit") or "").strip()
+    earliest = earliest_outfit_change_item(payload)
+    first_outfit = str((earliest or {}).get("outfit_change") or "").strip()
+    if legacy_top:
+        if not earliest or _norm_outfit_text(first_outfit) != _norm_outfit_text(legacy_top):
+            return False, (
+                "缺少晨起第一套穿搭：晨起准备时段（起床换衣）的 outfit_change 必须为第一套穿搭的完整描述"
+                "（不要再输出顶层 outfit 字段，第一套要写进晨起时段的 outfit_change 里）"
+            )
+    else:
+        if not earliest:
+            return False, "缺少晨起第一套穿搭：晨起准备时段（起床换衣）的 outfit_change 不能为空，必须为第一套完整穿搭描述"
+        ts = parse_hhmm_to_minutes(str(earliest.get("time_start") or ""))
+        if ts is not None and ts >= 12 * 60:
+            return False, (
+                "缺少晨起第一套穿搭：最早的换装时段已在午后，晨起准备时段（起床换衣）的 outfit_change "
+                "必须先写入第一套完整穿搭（首行：风格：{style}），午后换装时段写第二套".replace("{style}", required_style)
+            )
+    if not first_outfit:
+        return False, "缺少晨起第一套穿搭：晨起准备时段（起床换衣）的 outfit_change 不能为空，必须为第一套完整穿搭描述"
     if required_style and outfit_style != required_style:
         if user_specified_style and outfit_style == user_specified_style:
             pass
         else:
             return False, f'outfit_style 必须严格等于 "{required_style}"'
     if required_style:
-        first_line = (outfit.splitlines()[0] if outfit.splitlines() else "").strip()
+        first_line = (first_outfit.splitlines()[0] if first_outfit.splitlines() else "").strip()
+        m = STYLE_LINE_RE.match(first_line)
         expected_first_line = f"风格：{required_style}"
         if first_line != expected_first_line:
             if user_specified_style and first_line == f"风格：{user_specified_style}":
                 pass
+            elif m:
+                # 风格行存在但写法/风格不对：normalize 阶段已无法处理（载体变了），修复指示覆盖
+                return False, f'晨起第一套穿搭（晨起时段 outfit_change）第一行必须为 "风格：{required_style}"'
             else:
-                return False, f'outfit 第一行必须为 "风格：{required_style}"'
+                return False, f'晨起第一套穿搭（晨起时段 outfit_change）第一行必须为 "风格：{required_style}"，不要写成"【风格】"、"穿搭风格："等变体'
 
     # 第一套穿搭必须包含完整详细描述：仅"风格：X"一行（无具体穿法）视为残缺，
-    # 避免"今日穿搭"只显示风格名而无第一套穿搭细节（午后换装必须详细，晨间第一套同等重要）。
-    body_text = "\n".join(ln for ln in outfit.splitlines()[1:] if ln.strip()).strip()
+    # 晨间第一套与午后换装同等重要，细节完整度要求一致。
+    body_text = "\n".join(ln for ln in first_outfit.splitlines()[1:] if ln.strip()).strip()
     if len(body_text) < 30:
         return False, (
-            f'outfit 缺少详细穿搭描述：除"风格：{required_style}"外，'
+            f'晨起第一套穿搭缺少详细描述：晨起时段 outfit_change 除"风格：{required_style}"外，'
             "必须完整描述第一套穿搭的衣着细节（材质/版型/配饰，参考午后换装的细节完整度），仅风格行视为失败"
         )
 
@@ -344,6 +371,8 @@ def validate_payload(payload: dict | None, persona: dict[str, Any]) -> tuple[boo
             if meta_label in title:
                 return False, f'timeline[{i}] 的 title 包含禁止的元标签："{meta_label}"'
 
+    # 清理内部标记，避免写入存储
+    payload.pop("_legacy_top_outfit", None)
     return True, ""
 
 
@@ -380,24 +409,25 @@ def build_repair_prompt(
         mode_intro = (
             "【补全模式】\n"
             f"这是你第 {retry_index} 次因校验失败被退回修复。\n"
-            "上次输出残缺（缺少 timeline 等核心字段），请保留上次输出中已正确的字段（如 outfit_style/outfit/summary），"
+            "上次输出残缺（缺少 timeline 等核心字段），请保留上次输出中已正确的字段（如 summary、各时段 outfit_change），"
             "仅补全缺失的核心字段。不要重新生成已正确的字段，避免重复消耗篇幅导致后续字段再次丢失。\n"
         )
 
     if timeline_issue:
         mode_intro += (
             "⚠️ 特别指示：上次输出缺少 timeline 字段或 timeline 不合法。"
-            "请直接保留上次输出中的 outfit_style/outfit/summary 内容原样不动，仅补充完整的 timeline 数组（8-10 个连续时段，覆盖 00:00-23:59）。\n"
-            "不要重新生成 outfit，不要改动已正确的字段。\n"
+            "请直接保留上次输出中已正确的内容原样不动，仅补充完整的 timeline 数组（8-10 个连续时段，覆盖 00:00-23:59）。"
+            "晨起准备时段的 outfit_change 必须是第一套穿搭的完整描述（首行：风格：{outfit_style}）。\n"
+            "不要重新生成已正确的字段。\n"
         )
 
-    # 针对性指示：失败原因与 outfit 详细描述相关时，明确要求补齐第一套穿搭描述，不动 timeline
-    outfit_issue = "详细穿搭描述" in reason_lower or "仅风格行" in reason_lower
+    # 针对性指示：失败原因与晨起第一套详细描述相关时，明确要求补齐晨起时段 outfit_change，不动 timeline 其他项
+    outfit_issue = "详细描述" in reason_lower or "仅风格行" in reason_lower or "晨起第一套" in reason_lower
     if outfit_issue:
         mode_intro += (
-            "⚠️ 特别指示：上次输出缺少第一套穿搭的详细描述（outfit 只有风格行）。"
-            "请保留 outfit_style 与 timeline 原样不动，仅把 outfit 补齐为包含第一套穿搭的完整详细描述："
-            "风格行之下逐件描述衣着细节（材质/版型/配饰），细节完整度参考午后换装。\n"
+            "⚠️ 特别指示：上次输出的晨起第一套穿搭不合规（晨起时段 outfit_change 缺失、只有风格行或缺少详细描述）。"
+            "请保留 summary 与 timeline 其他时段原样不动，仅把晨起准备时段（起床换衣）的 outfit_change 补齐为第一套穿搭的完整详细描述："
+            "首行为 风格：{outfit_style}，其下逐件描述衣着细节（材质/版型/配饰），细节完整度参考午后换装。\n"
         )
 
     result = (
@@ -416,8 +446,10 @@ def build_repair_prompt(
         f"必须遵循日程主线类型：{required_main_type}\n"
         f"必须遵循核心事件驱动：{required_driver}\n"
         "只允许输出 JSON 对象本体，不要 Markdown，不要解释，不要代码块。\n"
-        f"JSON 的 outfit_style 必须严格等于 \"{required_style}\"。\n"
-        f"outfit 第一行必须严格为：风格：{required_style}\n"
+        "JSON 只包含 summary 和 timeline 字段，不要输出顶层 outfit 或 outfit_style。\n"
+        "三套穿搭全部写在 timeline 各换装时段的 outfit_change 字段里："
+        "晨起准备时段的 outfit_change 为第一套完整穿搭（首行必须严格为：风格：" + required_style + "），"
+        "午后换装时段为第二套，晚间居家换装时段为第三套。\n"
         "不要写成“【风格】”、“穿搭风格：”、“风格为：”或任何其他变体。\n"
         "JSON 必须包含 timeline 数组，每个元素含 time_start、time_end、title、detail、outfit_change。\n"
         "title 禁止出现“核心事件”、“XX驱动”等元标签。\n"

@@ -80,8 +80,9 @@ persona_desc 中关于"对话回复"的约束（字数限制、标点限制、�
 7. 禁止把"核心事件驱动"扩写成全天统一主线
 8. 禁止"日程主线类型"与"核心事件驱动"各自生成平行日程，整天只有一条主线
 9. 若近日日记提供了延续线索，可融入今日安排，但不能机械复述原文
-10. 穿搭与外貌细节仅限outfit/outfit_change字段；事件时段只在穿搭/外貌是事件推动力时可提及，禁止装饰性穿插
+10. 穿搭与外貌细节仅限outfit_change字段；事件时段只在穿搭/外貌是事件推动力时可提及，禁止装饰性穿插
 11. 禁止改编“联网风格研究参考”下的信息，必须遵循版块下给出的穿搭方案
+12. 禁止输出顶层 outfit 或 outfit_style 字段——三套穿搭全部写在 timeline 各换装时段的 outfit_change 里
 
 ## ✨ 事件创造性
 日程不是真实人类的无聊流水账，而是为角色创造有趣生活的机会。
@@ -91,28 +92,25 @@ persona_desc 中关于"对话回复"的约束（字数限制、标点限制、�
 - 禁止两个以上连续时段都是被动消磨型内容（刷手机/看剧/打游戏），须穿插主动行为或社交互动
 
 ## 穿搭与换装
-- 晨起第一套穿搭写入outfit字段，从里到外完整描述
+- 三套穿搭全部通过 timeline 各换装时段的 outfit_change 字段承载，不输出顶层 outfit 字段
+- 晨起第一套穿搭写入晨起准备时段（起床洗漱换衣）的 outfit_change 字段，首行以 "风格：{outfit_style}" 开头，其下从里到外完整描述
 - 下午换装写入对应时段的outfit_change字段，从里到外完整描述
 - 若联网风格研究参考提供了夜间居家装（第三套穿搭），将其写入晚间"回家→沐浴→换装"时段的outfit_change字段，从里到外完整描述；该时段须为睡前发生在住处的事件
 - 若有联网风格研究参考，直接使用其中的穿搭建议；若无，则根据风格名和人设自行搭配
 
 ## 输出结构
 - 只输出 JSON 对象本体，不要 Markdown/代码块/解释
-- JSON 字段：outfit_style、outfit、summary、timeline
-- outfit_style 值严格等于 "{outfit_style}"
-- outfit 第一行以 "风格：{outfit_style}" 开头
+- JSON 字段：summary、timeline（不要输出顶层 outfit 或 outfit_style）
 - summary：25字内概括今天的主题和心情，贴合角色气质，禁止总结式罗列
 - timeline：8-10个连续时段，每个对象含 time_start、time_end、title、detail、outfit_change。本字段你已多次未产出，必须注意
 - 所有时段起止时间无缝衔接，覆盖00:00-23:59
 - title：富有创意，每段不同，用诗意或生动的短语概括该时段核心意象
 - detail：生动饱满，包含行为目标、细节动作、结果/情绪反馈
-- outfit_change：不换装时为null，换装时为完整穿搭描述
-- 固定结构：开头（入睡→醒来）→ 晨起准备（含第一套穿搭）→ 核心主线（4-6小时）→ 下午换装 → 晚间回家（沐浴→换夜间居家装）→ 结尾（护理→入睡）
+- outfit_change：不换装时为null，换装时为完整穿搭描述；晨起准备时段的 outfit_change 必须为第一套完整穿搭（缺失视为未产出）
+- 固定结构：开头（入睡→醒来）→ 晨起准备（outfit_change=第一套穿搭）→ 核心主线（4-6小时）→ 下午换装（outfit_change=第二套）→ 晚间回家（沐浴→outfit_change=夜间居家装）→ 结尾（护理→入睡）
 
 ## Output Format（重申，这首先是一个格式合规任务）
 {{
- "outfit_style": "{outfit_style}",
- "outfit": "...",
  "summary": "...",
  "timeline": [
   {{
@@ -125,9 +123,9 @@ persona_desc 中关于"对话回复"的约束（字数限制、标点限制、�
   {{
    "time_start": "08:30",
    "time_end": "09:30",
-   "title": "另一个创意标题",
+   "title": "晨起准备",
    "detail": "详细描述",
-   "outfit_change": "完整穿搭描述"
+   "outfit_change": "风格：{outfit_style} 后面紧跟第一套穿搭的完整描述"
   }}
  ]
 }}''' + REPETITION_GUARD_PROMPT + r'''
@@ -147,7 +145,8 @@ persona_desc 中关于"对话回复"的约束（字数限制、标点限制、�
 8. 禁止"日程主线类型"与"核心事件驱动"各自生成平行日程，整天只有一条主线
 9. 第二次换装须与第一套保持同一风格体系，但不允许换成另一个相近风格，也不允许两套高度雷同
 10. 若近日日记提供了延续线索，可融入今日安排，但不能机械复述原文
-11. 穿搭与外貌细节仅限outfit/outfit_change字段；事件时段只在穿搭/外貌是事件推动力时可提及，禁止装饰性穿插
+11. 穿搭与外貌细节仅限outfit_change字段；事件时段只在穿搭/外貌是事件推动力时可提及，禁止装饰性穿插
+12. 禁止输出顶层 outfit 或 outfit_style 字段——三套穿搭全部写在 timeline 各换装时段的 outfit_change 里
 
 ## ✨ 事件创造性
 日程不是真实人类的无聊流水账，而是为角色创造有趣生活的机会。
@@ -157,7 +156,8 @@ persona_desc 中关于"对话回复"的约束（字数限制、标点限制、�
 - 禁止两个以上连续时段都是被动消磨型内容（刷手机/看剧/打游戏），须穿插主动行为或社交互动
 
 ## 穿搭与换装
-- 晨起第一套穿搭写入outfit字段，从头到脚完整描述
+- 三套穿搭全部通过 timeline 各换装时段的 outfit_change 字段承载，不输出顶层 outfit 字段
+- 晨起第一套穿搭写入晨起准备时段（起床洗漱换衣）的 outfit_change 字段，首行以 "风格：{outfit_style}" 开头，其下从头到脚完整描述
 - 下午换装写入对应时段的outfit_change字段，从头到脚完整描述
 - 若联网风格研究参考提供了夜间居家装（第三套穿搭），将其写入晚间"回家→沐浴→换装"时段的outfit_change字段，从头到脚完整描述；该时段须为睡前发生在住处的事件
 - 两次外出穿搭必须在同一风格体系下呈现明显差异：单品选择、配色深浅、层次搭配、版型轮廓等至少两项以上不同，让两套各有辨识度
@@ -172,21 +172,17 @@ persona_desc 中关于"对话回复"的约束（字数限制、标点限制、�
 
 ## 输出结构
 - 只输出 JSON 对象本体，不要 Markdown/代码块/解释
-- JSON 字段：outfit_style、outfit、summary、timeline
-- outfit_style 值严格等于 "{outfit_style}"
-- outfit 第一行以 "风格：{outfit_style}" 开头
+- JSON 字段：summary、timeline（不要输出顶层 outfit 或 outfit_style）
 - summary：25字内概括今天的主题和心情，贴合角色气质，禁止总结式罗列
 - timeline：8-10个连续时段，每个对象含 time_start、time_end、title、detail、outfit_change
 - 所有时段起止时间无缝衔接，覆盖00:00-23:59
 - title：富有创意，每段不同，用诗意或生动的短语概括该时段核心意象
 - detail：生动饱满，包含行为目标、细节动作、结果/情绪反馈
-- outfit_change：不换装时为null，换装时为完整穿搭描述
-- 固定结构：开头（入睡→醒来）→ 晨起准备（含第一套穿搭）→ 核心主线（4-6小时）→ 下午换装 → 晚间回家（沐浴→换夜间居家装）→ 结尾（护理→入睡）
+- outfit_change：不换装时为null，换装时为完整穿搭描述；晨起准备时段的 outfit_change 必须为第一套完整穿搭（缺失视为未产出）
+- 固定结构：开头（入睡→醒来）→ 晨起准备（outfit_change=第一套穿搭）→ 核心主线（4-6小时）→ 下午换装（outfit_change=第二套）→ 晚间回家（沐浴→outfit_change=夜间居家装）→ 结尾（护理→入睡）
 
 ## Output Format
 {{
- "outfit_style": "{outfit_style}",
- "outfit": "...",
  "summary": "...",
  "timeline": [
   {{
@@ -199,9 +195,9 @@ persona_desc 中关于"对话回复"的约束（字数限制、标点限制、�
   {{
    "time_start": "08:30",
    "time_end": "09:30",
-   "title": "另一个创意标题",
+   "title": "晨起准备",
    "detail": "详细描述",
-   "outfit_change": "完整穿搭描述"
+   "outfit_change": "风格：{outfit_style} 后面紧跟第一套穿搭的完整描述"
   }}
  ]
 }}'''

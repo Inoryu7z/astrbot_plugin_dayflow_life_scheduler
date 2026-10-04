@@ -219,7 +219,8 @@ class DayflowPlugin(Star):
                     change_idx = i
                     break
             if change_idx is not None and change_idx > 0:
-                outfit = str(data.get("outfit") or "").strip()
+                from .core.utils import get_first_outfit
+                outfit = get_first_outfit(data)
                 summary = str(data.get("summary") or "").strip()
                 part1 = f"👕 今日穿搭：{outfit}"
                 if summary:

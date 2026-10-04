@@ -496,6 +496,14 @@ class PluginPageApi:
             return self._err("persona 参数不能为空")
         try:
             data = self.service.get_schedule_for_persona(persona, date or None)
+            # 新结构数据顶层无 outfit 字段（第一套在晨起时段 outfit_change），
+            # 响应增强：前端「今日穿搭」编辑框始终拿到第一套描述，前端零改动。
+            # 注意：get_schedule_for_persona 对当日返回的是 memory_store 活对象，
+            # 必须浅拷贝后再注入，否则冗余 outfit 会被写回存储污染新结构数据。
+            if isinstance(data, dict) and not str(data.get("outfit") or "").strip():
+                from .utils import get_first_outfit
+                data = dict(data)
+                data["outfit"] = get_first_outfit(data)
             return self._ok(data)
         except Exception as e:
             logger.warning(f"[dayflow-日程] 获取日程失败: persona={persona}, date={date}, error={e}")

@@ -17,6 +17,54 @@ def parse_hhmm_to_minutes(time_str: str) -> int | None:
     return None
 
 
+def _norm_outfit_text(text) -> str:
+    """穿搭文本归一化：去全部空白后比对，用于识别晨起复读。"""
+    return "".join(str(text or "").split())
+
+
+def get_first_outfit(data: dict) -> str:
+    """取晨间第一套穿搭。兼容两种数据结构：
+
+    - 旧结构：顶层 ``outfit`` 字段承载第一套（历史上晨起时段 outfit_change 还会复读一份）
+    - 新结构：顶层字段已废弃，第一套写在晨起时段（timeline 中最早的换装时段）的 outfit_change
+
+    判定规则：顶层 outfit 非空 → 旧结构直接返回；为空 → 返回最早换装时段的 outfit_change。
+    """
+    data = data or {}
+    base = str(data.get("outfit") or "").strip()
+    if base:
+        return base
+    best, best_key = "", None
+    for item in data.get("timeline") or []:
+        if not isinstance(item, dict):
+            continue
+        oc = str(item.get("outfit_change") or "").strip()
+        if not oc:
+            continue
+        ts = parse_hhmm_to_minutes(str(item.get("time_start") or ""))
+        key = (ts is None, ts if ts is not None else 0)
+        if best_key is None or key < best_key:
+            best, best_key = oc, key
+    return best
+
+
+def earliest_outfit_change_item(data: dict) -> dict | None:
+    """返回 timeline 中最早的换装时段项（outfit_change 非空），无换装时返回 None。"""
+    data = data or {}
+    best, best_key = None, None
+    for item in data.get("timeline") or []:
+        if not isinstance(item, dict):
+            continue
+        oc = str(item.get("outfit_change") or "").strip()
+        if not oc:
+            continue
+        ts = parse_hhmm_to_minutes(str(item.get("time_start") or ""))
+        key = (ts is None, ts if ts is not None else 0)
+        if best_key is None or key < best_key:
+            best, best_key = item, key
+    return best
+
+
 def deep_copy_schedule(data: dict) -> dict:
     return copy.deepcopy(data)
 

@@ -176,11 +176,12 @@ class DayflowStore:
         if not selected:
             return "（暂无近日日程）"
         parts = []
+        from .utils import get_first_outfit
         for item in selected:
             converted = self._history_item_to_schedule(persona_name, item) or {}
             date_str = str((converted.get("meta") or {}).get("date") or item.get("date") or "")
             parts.append(
-                f"[{date_str}]\n穿搭：{converted.get('outfit', '')}\n日程：{str(converted.get('schedule', ''))[:800]}"
+                f"[{date_str}]\n穿搭：{get_first_outfit(converted)}\n日程：{str(converted.get('schedule', ''))[:800]}"
             )
         return "\n\n".join(parts)
 
@@ -200,7 +201,8 @@ class DayflowStore:
             if self._normalize_style_key(item_style) != normalized_target:
                 continue
             date_str = str((converted.get("meta") or {}).get("date") or item.get("date") or "")
-            morning_outfit = str(converted.get("outfit") or "").strip()
+            from .utils import get_first_outfit
+            morning_outfit = get_first_outfit(converted)
             afternoon_outfits = []
             timeline = converted.get("timeline")
             if isinstance(timeline, list):
