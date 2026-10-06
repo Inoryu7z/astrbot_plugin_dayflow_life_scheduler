@@ -252,6 +252,10 @@ CUSTOM_SCHEDULE_DESIGN_APPEND = """
 不得因追求风格纯度、精简或防冗余而省略用户明确要求的单品；该单品须与该风格的美学体系自然融合。
 """
 
+# 指甲油颜色随机池（硬编码，等权重；与自用设计师提示词的封闭清单一致）。
+# 每日按 frozen 机制抽 3 次放回，依次对应晨间/午后/夜间三套造型，代码层真随机后注入设计师。
+NAIL_POLISH_COLOR_POOL = ["车厘子红", "裸奶杏色", "奶白色", "纯黑色", "豆沙粉", "牛油果绿", "雾霾蓝", "香芋紫", "无"]
+
 SUBDIVISION_SYSTEM_PROMPT = """你是日程细分编辑。将以下日程的每个时段拆分为更细粒度的活动片段。
 
 ## 角色
@@ -577,15 +581,17 @@ class DayflowService:
         schedule_main_type = random.choice(schedule_main_types_pool) if schedule_main_types_pool else "日常常规型"
         core_event_driver = random.choice(core_event_drivers_pool) if core_event_drivers_pool else "任务驱动"
         effective_variation = self._effective_variation_level(configured_variation)
+        nail_colors = [random.choice(NAIL_POLISH_COLOR_POOL) for _ in range(3)]
         frozen = {
             "today_weather": today_weather,
             "outfit_style": outfit_style,
             "schedule_main_type": schedule_main_type,
             "core_event_driver": core_event_driver,
             "effective_variation": effective_variation,
+            "nail_colors": nail_colors,
         }
         self._frozen_randoms[cache_key] = frozen
-        logger.debug(f"[dayflow] 冻结随机值: key={cache_key}, style={outfit_style}, weather={today_weather}")
+        logger.debug(f"[dayflow] 冻结随机值: key={cache_key}, style={outfit_style}, weather={today_weather}, nail={nail_colors}")
         return frozen
 
     def clear_frozen_randoms(self, store_key: str, target_date: str):
@@ -1026,7 +1032,7 @@ class DayflowService:
             query += f" | 同时查询{str(location).strip()}今日真实天气"
         return query
 
-    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None, specified_sub_variant_names: dict[str, str | None] | None = None, sub_variant_all_day: bool = False, style_research_prompt: str | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
+    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None, specified_sub_variant_names: dict[str, str | None] | None = None, sub_variant_all_day: bool = False, style_research_prompt: str | None = None, nail_colors: list[str] | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
         style_name = str(style_name or "").strip()
         if not style_name:
             return "", {}, [], None, None
@@ -1061,6 +1067,16 @@ class DayflowService:
         query = self._build_style_research_query(style_name, location=location)
         system_prompt = style_research_prompt or self._style_research_system_prompt()
         system_prompt += f"\n\n本次需要设计的风格：「{style_name}」。你的穿搭设计必须严格围绕此风格，不得偏移到其他风格。"
+
+        if nail_colors:
+            nail_list = [str(c).strip() for c in nail_colors if str(c or "").strip()]
+            if len(nail_list) == 3:
+                system_prompt += (
+                    f"\n\n指甲油颜色（代码随机预选的既定结果，禁止自行更改、替换或省略）："
+                    f"晨间 {nail_list[0]}、午后 {nail_list[1]}、夜间 {nail_list[2]}（「无」=不涂甲油）。"
+                    "三套造型的指甲油必须分别使用上述对应颜色。"
+                )
+                logger.info(f"[dayflow-风格研究] 指甲油既定色注入: style={style_name}, nail={nail_list}")
 
         if has_anti_repetition:
             system_prompt += anti_repetition_append
@@ -3231,7 +3247,7 @@ class DayflowService:
         persona_location = str(persona.get("location") or "").strip()
         style_reference, style_payload, style_sources, intent_overrides, real_weather = await self._research_style_reference(
             outfit_style, extra_requirement=extra_requirement, pool_options=pool_options, location=persona_location or None, persona_name=normalized_persona_name,
-            style_research_prompt=persona.get("style_research_prompt_template"),
+            style_research_prompt=persona.get("style_research_prompt_template"), nail_colors=frozen.get("nail_colors"),
         )
 
         if real_weather:
@@ -3274,7 +3290,7 @@ class DayflowService:
             elif override_item:
                 user_specified_outfit_item = override_item
             if override_style and override_style != outfit_style:
-                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, extra_requirement=extra_requirement, location=persona_location or None, persona_name=normalized_persona_name, specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day, style_research_prompt=persona.get("style_research_prompt_template"))
+                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, extra_requirement=extra_requirement, location=persona_location or None, persona_name=normalized_persona_name, specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day, style_research_prompt=persona.get("style_research_prompt_template"), nail_colors=frozen.get("nail_colors"))
                 if override_weather:
                     real_weather = override_weather
                     today_weather = override_weather
