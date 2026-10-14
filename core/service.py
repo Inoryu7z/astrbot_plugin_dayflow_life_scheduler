@@ -1103,7 +1103,7 @@ class DayflowService:
             query += f" | 同时查询{str(location).strip()}今日真实天气"
         return query
 
-    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None, specified_sub_variant_names: dict[str, str | None] | None = None, sub_variant_all_day: bool = False, style_research_prompt: str | None = None, nail_colors: list[str] | None = None, archive_bucket: list[dict[str, Any]] | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
+    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None, specified_sub_variant_names: dict[str, str | None] | None = None, sub_variant_all_day: bool = False, style_research_prompt: str | None = None, nail_colors: list[str] | None = None, archive_bucket: list[dict[str, Any]] | None = None, _retried: bool = False) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
         style_name = str(style_name or "").strip()
         if not style_name:
             return "", {}, [], None, None
@@ -1164,6 +1164,12 @@ class DayflowService:
         query = self._build_style_research_query(style_name, location=location)
         system_prompt = style_research_prompt or self._style_research_system_prompt()
         system_prompt += f"\n\n本次需要设计的风格：「{style_name}」。你的穿搭设计必须严格围绕此风格，不得偏移到其他风格。"
+
+        if _retried:
+            system_prompt += (
+                "\n\n注意：上一次尝试未产出完整有效的 JSON 结果（疑似中途截断或输出了过程性文字）。"
+                "本次必须一次性输出完整的 JSON 对象，禁止任何中间陈述、过程说明或残缺内容。"
+            )
 
         if nail_colors:
             nail_list = [str(c).strip() for c in nail_colors if str(c or "").strip()]
@@ -1256,12 +1262,9 @@ class DayflowService:
 
         if not result.get("ok"):
             last_reason = str(result.get("error") or "grok search failed")
-            raw_from_error = str(result.get("raw") or "").strip()
-            if raw_from_error:
-                raw_text = raw_from_error
-                logger.warning(f"[dayflow] 风格研究搜索失败(降级): style={style_name}, error={last_reason}")
-            else:
-                logger.warning(f"[dayflow] 风格研究搜索失败: style={style_name}, reason={last_reason}")
+            # error 结果的 raw 是 API 响应体/错误详情，不是设计产出，
+            # 不再当纯文本参考降级（注入生成器是垃圾）——统一由下方重试兜底
+            logger.warning(f"[dayflow] 风格研究搜索失败: style={style_name}, reason={last_reason}")
         else:
             raw_text = str(result.get("content") or "").strip()
             logger.info(f"[dayflow-风格研究] 原始响应: style={style_name}, content={self._preview_text(raw_text, limit=1600)}")
@@ -1319,9 +1322,36 @@ class DayflowService:
                 "sources": sources,
                 "weather": real_weather,
                 "nail_colors": list(nail_colors or []),
-                "note": "",
+                "note": "上一次产出无效，重试一次后成功" if _retried else "",
             })
             return summary, parsed_payload, sources, intent_overrides, real_weather
+
+        # 统一兜底重试：未产出有效 payload（搜索失败/中间陈述等垃圾短文本/长文 JSON 解析失败）
+        # 都给一次重写机会；重试仍失败才按原路径降级。递归调用 archive_bucket 原样下传，
+        # 两次尝试的档案都会落档。
+        if not parsed_payload and not _retried:
+            logger.warning(
+                f"[dayflow] 风格研究未产出有效结果（reason={last_reason or '非 JSON 输出'}, raw_len={len(raw_text)}），重试一次: style={style_name}"
+            )
+            self._archive_bucket_add(archive_bucket, {
+                "kind": "research",
+                "status": "failed_retrying",
+                "style": style_name,
+                "query": query,
+                "system_prompt": system_prompt,
+                "raw_response": raw_text,
+                "payload": {},
+                "sources": sources,
+                "weather": None,
+                "nail_colors": list(nail_colors or []),
+                "note": f"首次尝试未产出有效结果（reason={last_reason or '非 JSON 输出'}, raw_len={len(raw_text)}），打回重写",
+            })
+            return await self._research_style_reference(
+                style_name, extra_requirement=extra_requirement, pool_options=pool_options, location=location,
+                persona_name=persona_name, specified_sub_variant_names=specified_sub_variant_names,
+                sub_variant_all_day=sub_variant_all_day, style_research_prompt=style_research_prompt,
+                nail_colors=nail_colors, archive_bucket=archive_bucket, _retried=True,
+            )
 
         if raw_text:
             summary = self._render_style_reference_from_plain_text(style_name, raw_text, sources)
@@ -1357,7 +1387,8 @@ class DayflowService:
                 "sources": sources,
                 "weather": None,
                 "nail_colors": list(nail_colors or []),
-                "note": f"JSON 解析失败已降级为纯文本参考（reason={last_reason or '非 JSON 输出'}）；三套结构化方案缺失，生成器拿不到 morning/afternoon/night_look",
+                "note": ("已重试一次仍失败；" if _retried else "")
+                + f"JSON 解析失败已降级为纯文本参考（reason={last_reason or '非 JSON 输出'}）；三套结构化方案缺失，生成器拿不到 morning/afternoon/night_look，且 payload 为空导致二次审查被跳过",
             })
             return summary, {}, sources, intent_overrides, None
 
@@ -1383,7 +1414,8 @@ class DayflowService:
             "sources": sources,
             "weather": None,
             "nail_colors": list(nail_colors or []),
-            "note": f"研究彻底失败（reason={last_reason or 'grok 无返回'}），style_reference 为空串注入模板",
+            "note": ("已重试一次仍失败；" if _retried else "")
+            + f"研究彻底失败（reason={last_reason or 'grok 无返回'}），style_reference 为空串注入模板",
         })
         return "", {}, sources, intent_overrides, None
 

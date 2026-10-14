@@ -1187,6 +1187,7 @@ function regenerateSchedule() {
 const RESEARCH_STEP_STATUS_LABELS = {
   cache_hit: ["缓存命中", "st-ok"],
   fresh_json: ["新研究成功", "st-ok"],
+  failed_retrying: ["首次失败重写", "st-warn"],
   plain_text_fallback: ["降级纯文本", "st-warn"],
   unavailable: ["研究失败", "st-bad"],
   unavailable_no_grok: ["grok插件缺失", "st-bad"],
