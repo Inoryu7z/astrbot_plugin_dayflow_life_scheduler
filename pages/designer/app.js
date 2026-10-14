@@ -1399,6 +1399,10 @@ async function pollGenerationStatus(persona) {
         await loadSchedulePersonas();
         // 3 秒后隐藏状态条
         setTimeout(() => hideGenerationStatus(), 3000);
+      } else if (result === "force_stopped") {
+        showGenerationStatus("error", "生成已被手动强制停止", updateTime);
+        toast("生成已被手动强制停止", "warning");
+        await loadSchedulePersonas();
       } else if (result === "error") {
         const errMsg = status.last_error || "生成失败";
         showGenerationStatus("error", `生成失败: ${errMsg}`, updateTime);
@@ -1421,7 +1425,40 @@ function showGenerationStatus(type, message, timeStr) {
   bar.className = `schedule-gen-status${type === "success" ? " success" : type === "error" ? " error" : ""}`;
   const spinner = type === "generating" ? `<span class="spinner"></span>` : "";
   const timeHtml = timeStr ? `<span class="schedule-gen-status-time">${esc(timeStr)}</span>` : "";
-  bar.innerHTML = `${spinner}<span class="schedule-gen-status-text">${esc(message)}</span>${timeHtml}`;
+  // 生成中提供强制停止出口：曾出现任务卡死 1 小时且无法解锁的情况
+  const stopHtml = type === "generating" ? `<button class="btn btn-ghost btn-sm schedule-gen-stop-btn" data-gen-stop>强制停止</button>` : "";
+  bar.innerHTML = `${spinner}<span class="schedule-gen-status-text">${esc(message)}</span>${timeHtml}${stopHtml}`;
+  const stopBtn = bar.querySelector("[data-gen-stop]");
+  if (stopBtn) stopBtn.addEventListener("click", () => forceStopGeneration());
+}
+
+async function forceStopGeneration() {
+  const persona = state.scheduleSelectedPersona;
+  if (!persona) return;
+  confirmModal({
+    title: "强制停止生成",
+    message: "确定强制停止该人格的日程生成？进行中的生成任务将被中止并释放生成锁。",
+    confirmText: "强制停止",
+    danger: true,
+    onConfirm: async (close) => {
+      try {
+        await api.post("schedule/force_stop", { persona });
+        if (state.scheduleGenPollTimer) {
+          clearTimeout(state.scheduleGenPollTimer);
+          state.scheduleGenPollTimer = null;
+        }
+        state.scheduleGenPolling = false;
+        updateScheduleGenBadge({ is_generating: false });
+        showGenerationStatus("error", "生成已被手动强制停止", "");
+        toast("已强制停止生成", "success");
+        await loadSchedulePersonas();
+      } catch (e) {
+        toast(`强制停止失败：${e.message}`, "error");
+      } finally {
+        close();
+      }
+    },
+  });
 }
 
 function hideGenerationStatus() {

@@ -256,6 +256,10 @@ CUSTOM_SCHEDULE_DESIGN_APPEND = """
 # 每日按 frozen 机制抽 3 次放回，依次对应晨间/午后/夜间三套造型，代码层真随机后注入设计师。
 NAIL_POLISH_COLOR_POOL = ["车厘子红", "裸奶杏色", "奶白色", "纯黑色", "豆沙粉", "牛油果绿", "雾霾蓝", "香芋紫", "无"]
 
+# WebUI 后台生成的总超时兜底：曾出现 LLM 调用挂死导致任务卡 1 小时、生成锁一直不释放
+WEBUI_GENERATION_TIMEOUT = 1200.0   # 主日程生成（研究+审查+生成）20 分钟
+SUBDIVISION_TIMEOUT = 600.0         # 细分 10 分钟
+
 SUBDIVISION_SYSTEM_PROMPT = """你是日程细分编辑。将以下日程的每个时段拆分为更细粒度的活动片段。
 
 ## 角色
@@ -357,6 +361,8 @@ class DayflowService:
         self._llm_concurrency_sem = asyncio.Semaphore(4)
         # WebUI 触发的生成任务状态跟踪：persona -> {generating, started_at, last_result, last_error, last_updated}
         self._webui_generation_status: dict[str, dict[str, Any]] = {}
+        # WebUI 后台生成任务句柄：供"强制停止"取消任务；任务结束（含异常/取消）自行清除
+        self._webui_generation_tasks: dict[str, "asyncio.Task"] = {}
 
     def _update_debug_payload(self, updates: dict[str, Any]):
         with self._debug_payload_lock:
@@ -2385,10 +2391,8 @@ class DayflowService:
 
         effective_date = str(target_date or datetime.datetime.now().strftime("%Y-%m-%d")).strip()
 
-        # 检查是否已有生成任务
-        if store_key in self.store.generating_personas:
-            return {"started": False, "error": "该人格已有生成任务在进行中，请稍后再试"}
-
+        # 检查是否已有生成任务：enter_generation 内部会先清理超过 stale 阈值的僵死锁
+        # （曾只在这里查锁存在性就拒绝——锁因任务卡死残留超过 1 小时也无法重生成）
         ok = await self.store.enter_generation(store_key)
         if not ok:
             return {"started": False, "error": "该人格已有生成任务在进行中，请稍后再试"}
@@ -2403,7 +2407,8 @@ class DayflowService:
             "last_updated": datetime.datetime.now().isoformat(),
         }
 
-        asyncio.create_task(self._run_webui_generation(store_key, persona_name, extra_requirement, effective_date))
+        task = asyncio.create_task(self._run_webui_generation(store_key, persona_name, extra_requirement, effective_date))
+        self._webui_generation_tasks[store_key] = task
         return {"started": True, "persona": store_key, "target_date": effective_date}
 
     async def _run_webui_generation(self, store_key: str, persona_name: str, extra_requirement: str | None, target_date: str):
@@ -2412,16 +2417,23 @@ class DayflowService:
             persona_ctx = await self._resolve_persona_context_internal(persona_name=persona_name)
             persona_desc = persona_ctx.get("persona_desc", "")
             auto_session_id = await self._get_recent_session_id_for_persona(persona_name, persona_ctx.get("persona_id"))
-            data = await self.generate_schedule(
-                event=None,
-                persona_name=persona_name,
-                persona_desc=persona_desc,
-                session_id=auto_session_id,
-                target_date=target_date,
-                auto_retry=True,
-                extra_requirement=extra_requirement,
-                force_regenerate=True,
-            )
+            # 总超时兜底：曾出现 LLM 调用挂死导致任务卡 1 小时、生成锁一直不释放
+            try:
+                data = await asyncio.wait_for(
+                    self.generate_schedule(
+                        event=None,
+                        persona_name=persona_name,
+                        persona_desc=persona_desc,
+                        session_id=auto_session_id,
+                        target_date=target_date,
+                        auto_retry=True,
+                        extra_requirement=extra_requirement,
+                        force_regenerate=True,
+                    ),
+                    timeout=WEBUI_GENERATION_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError(f"生成超时（超过 {int(WEBUI_GENERATION_TIMEOUT // 60)} 分钟），已强制中止")
             if data.get("meta", {}).get("error"):
                 error_msg = data.get("memo") or data.get("meta", {}).get("fallback_reason") or "生成失败"
                 self._webui_generation_status[store_key] = {
@@ -2439,12 +2451,19 @@ class DayflowService:
             await self.save_generated(store_key, data)
             persona_cfg = self.get_persona_config(persona_name)
             if persona_cfg and bool(persona_cfg.get("enable_subdivision", False)):
-                sub_result = await self._generate_subdivision(
-                    result=data,
-                    persona_name=persona_name,
-                    persona_desc=persona_desc,
-                    persona=persona_cfg,
-                )
+                try:
+                    sub_result = await asyncio.wait_for(
+                        self._generate_subdivision(
+                            result=data,
+                            persona_name=persona_name,
+                            persona_desc=persona_desc,
+                            persona=persona_cfg,
+                        ),
+                        timeout=SUBDIVISION_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"[dayflow-webui] 细分超时（超过 {int(SUBDIVISION_TIMEOUT // 60)} 分钟），跳过细分: persona={store_key}")
+                    sub_result = None
                 if sub_result:
                     sub_events, converted_details = sub_result
                     self._apply_subdivision_translation(data, sub_events, converted_details)
@@ -2472,7 +2491,37 @@ class DayflowService:
             }
             logger.warning(f"[dayflow-webui] 生成异常: persona={store_key}, error={e}")
         finally:
+            self._webui_generation_tasks.pop(store_key, None)
             await self.store.exit_generation(store_key)
+
+    async def force_stop_webui_generation(self, persona_name: str) -> dict[str, Any]:
+        """强制停止 WebUI 后台生成任务并释放生成锁。
+
+        - WebUI 任务有句柄：cancel 之（CancelledError 不被 except Exception 吞掉，finally 放锁）；
+        - 调度器/命令路径的任务无句柄：仅清锁放行（旧任务若还活着会自然结束，不再阻塞重新生成）。
+        """
+        store_key = self.normalize_persona_key(persona_name)
+        task = self._webui_generation_tasks.get(store_key)
+        task_cancelled = False
+        if task is not None and not task.done():
+            task.cancel()
+            task_cancelled = True
+        had_lock = store_key in self.store.generating_personas
+        self._webui_generation_tasks.pop(store_key, None)
+        await self.store.exit_generation(store_key)
+        prev = self._webui_generation_status.get(store_key) or {}
+        stopped = task_cancelled or bool(prev.get("generating")) or had_lock
+        self._webui_generation_status[store_key] = {
+            "generating": False,
+            "started_at": prev.get("started_at"),
+            "target_date": prev.get("target_date"),
+            "extra_requirement": prev.get("extra_requirement"),
+            "last_result": "force_stopped" if stopped else "idle",
+            "last_error": "已被手动强制停止" if stopped else None,
+            "last_updated": datetime.datetime.now().isoformat(),
+        }
+        logger.warning(f"[dayflow-webui] 强制停止生成: persona={store_key}, task_cancelled={task_cancelled}")
+        return {"persona": store_key, "task_cancelled": task_cancelled, "lock_released": True}
 
     def get_webui_generation_status(self, persona_name: str) -> dict[str, Any]:
         """查询 WebUI 生成状态。同时检查 store 级别的生成锁。"""

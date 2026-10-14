@@ -1773,6 +1773,11 @@ button, input, textarea, select {
   border-left-color: var(--danger);
 }
 
+.schedule-gen-status .schedule-gen-stop-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .schedule-gen-status .spinner {
   flex-shrink: 0;
 }

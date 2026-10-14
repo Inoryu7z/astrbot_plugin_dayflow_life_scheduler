@@ -91,6 +91,7 @@ class PluginPageApi:
             (f"{PAGE_API_PREFIX}/schedule/regenerate", self.regenerate_schedule, ["POST"], "dayflow 日程：触发重生成"),
             (f"{PAGE_API_PREFIX}/schedule/custom", self.custom_schedule, ["POST"], "dayflow 日程：触发定制生成"),
             (f"{PAGE_API_PREFIX}/schedule/status", self.get_generation_status, ["GET"], "dayflow 日程：生成状态查询"),
+            (f"{PAGE_API_PREFIX}/schedule/force_stop", self.force_stop_generation, ["POST"], "dayflow 日程：强制停止生成并释放锁"),
             (f"{PAGE_API_PREFIX}/schedule/tomorrow", self.get_or_set_tomorrow_request, ["GET", "POST"], "dayflow 日程：明日定制要求"),
             (f"{PAGE_API_PREFIX}/schedule/tomorrow/cancel", self.cancel_tomorrow_request, ["POST"], "dayflow 日程：取消明日定制"),
             (f"{PAGE_API_PREFIX}/schedule/research_log", self.get_research_log, ["GET"], "dayflow 日程：风格研究/审查档案（调试）"),
@@ -608,6 +609,19 @@ class PluginPageApi:
         except Exception as e:
             logger.warning(f"[dayflow-日程] 查询生成状态失败: persona={persona}, error={e}")
             return self._err(f"查询状态失败：{e}")
+
+    async def force_stop_generation(self):
+        """强制停止指定人格的日程生成并释放生成锁。body: {persona}"""
+        data = await self._body()
+        persona = str(data.get("persona") or "").strip()
+        if not persona:
+            return self._err("persona 不能为空")
+        try:
+            result = await self.service.force_stop_webui_generation(persona)
+            return self._ok(result)
+        except Exception as e:
+            logger.warning(f"[dayflow-日程] 强制停止失败: persona={persona}, error={e}")
+            return self._err(f"强制停止失败：{e}")
 
     async def get_or_set_tomorrow_request(self):
         """GET: 获取明日定制要求 ?persona=xxx
