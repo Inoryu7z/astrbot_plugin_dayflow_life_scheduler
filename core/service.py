@@ -349,6 +349,7 @@ class DayflowService:
         self._debug_payload_lock = threading.Lock()
         self._style_cache_path = self.data_dir / "style_research_cache.json"
         self._style_research_cache: dict[str, Any] = {}
+        self._style_log_path = self.data_dir / "style_research_log.json"
         self._frozen_randoms: dict[str, dict[str, str]] = {}
         self._last_interaction_times: dict[str, str] = {}
         self._schedule_renderer = ScheduleRenderer(self.data_dir)
@@ -638,6 +639,76 @@ class DayflowService:
             )
         except Exception as e:
             logger.warning(f"[dayflow] 保存风格研究缓存失败: {e}")
+
+    @staticmethod
+    def _archive_bucket_add(bucket: list[dict[str, Any]] | None, entry: dict[str, Any]):
+        """把一条研究/审查档案追加到本次生成的局部档案桶（bucket 为 None 时静默跳过）。"""
+        if bucket is None:
+            return
+        try:
+            bucket.append(entry)
+        except Exception:
+            pass
+
+    def _flush_style_research_archive(
+        self,
+        bucket: list[dict[str, Any]] | None,
+        persona_name: str | None,
+        date_str: str,
+        outfit_style: str,
+        weather: str | None,
+        rendered_prompt: str,
+    ):
+        """把本次生成的风格研究/审查档案持久化到 style_research_log.json。
+
+        键为 "{persona_key}::{YYYY-MM-DD}"，同日多次生成 append 到 records；
+        保留期跟随日程保留期（schedule_retention_days），写入时按日期裁剪过期键。
+        档案失败只 warning，绝不影响生成主流程。
+        """
+        if not bucket:
+            return
+        try:
+            now = datetime.datetime.now()
+            log_date = str(date_str or "").strip() or now.strftime("%Y-%m-%d")
+            data: dict[str, Any] = {}
+            if self._style_log_path.exists():
+                try:
+                    loaded = json.loads(self._style_log_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data = loaded
+                except Exception:
+                    data = {}
+            key = f"{self.normalize_persona_key(persona_name)}::{log_date}"
+            entry = data.get(key)
+            if not isinstance(entry, dict) or not isinstance(entry.get("records"), list):
+                entry = {"records": []}
+            entry["records"].append({
+                "recorded_at": now.isoformat(timespec="seconds"),
+                "outfit_style": str(outfit_style or ""),
+                "weather": str(weather or ""),
+                "steps": bucket,
+                "rendered_prompt": str(rendered_prompt or ""),
+            })
+            data[key] = entry
+            # 按保留期裁剪过期日期键
+            retention_days = self._schedule_retention_days()
+            if retention_days > 0:
+                cutoff = (now - datetime.timedelta(days=retention_days)).strftime("%Y-%m-%d")
+                data = {
+                    k: v for k, v in data.items()
+                    if str(k).rsplit("::", 1)[-1] >= cutoff
+                }
+            self._style_log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._style_log_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info(
+                f"[dayflow-研究档案] 已记录: persona={persona_name}, date={log_date}, "
+                f"style={outfit_style}, steps={len(bucket)}"
+            )
+        except Exception as e:
+            logger.warning(f"[dayflow] 保存研究档案失败（不影响生成）: {e}")
 
     def _is_style_cache_entry_valid(self, entry: dict[str, Any] | None) -> bool:
         if not isinstance(entry, dict):
@@ -1032,7 +1103,7 @@ class DayflowService:
             query += f" | 同时查询{str(location).strip()}今日真实天气"
         return query
 
-    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None, specified_sub_variant_names: dict[str, str | None] | None = None, sub_variant_all_day: bool = False, style_research_prompt: str | None = None, nail_colors: list[str] | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
+    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None, specified_sub_variant_names: dict[str, str | None] | None = None, sub_variant_all_day: bool = False, style_research_prompt: str | None = None, nail_colors: list[str] | None = None, archive_bucket: list[dict[str, Any]] | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
         style_name = str(style_name or "").strip()
         if not style_name:
             return "", {}, [], None, None
@@ -1057,11 +1128,37 @@ class DayflowService:
                 "style_research_weather": cached_weather,
             })
             logger.info(f"[dayflow-风格研究] 缓存命中: style={style_name}, weather={cached_weather}")
+            self._archive_bucket_add(archive_bucket, {
+                "kind": "research",
+                "status": "cache_hit",
+                "style": style_name,
+                "query": self._build_style_research_query(style_name, location=location),
+                "system_prompt": "",
+                "raw_response": str(cached.get("raw_response") or ""),
+                "payload": payload,
+                "sources": sources,
+                "weather": cached_weather,
+                "nail_colors": list(nail_colors or []),
+                "note": "缓存命中；system_prompt 为缓存产出时的历史值，不在缓存中留存",
+            })
             return summary, payload, sources, None, cached_weather
 
         grok = self._find_grok_plugin()
         if grok is None:
             logger.warning(f"[dayflow] 未找到 grok 插件，跳过风格研究: style={style_name}")
+            self._archive_bucket_add(archive_bucket, {
+                "kind": "research",
+                "status": "unavailable_no_grok",
+                "style": style_name,
+                "query": "",
+                "system_prompt": "",
+                "raw_response": "",
+                "payload": {},
+                "sources": [],
+                "weather": None,
+                "nail_colors": list(nail_colors or []),
+                "note": "未找到 grok 插件，研究彻底跳过，style_reference 为空",
+            })
             return "", {}, [], None, None
 
         query = self._build_style_research_query(style_name, location=location)
@@ -1211,6 +1308,19 @@ class DayflowService:
                 "style_research_weather": real_weather,
             })
             logger.info(f"[dayflow] 风格研究成功: style={style_name}, sources={len(sources)}, weather={real_weather}")
+            self._archive_bucket_add(archive_bucket, {
+                "kind": "research",
+                "status": "fresh_json",
+                "style": style_name,
+                "query": query,
+                "system_prompt": system_prompt,
+                "raw_response": raw_text,
+                "payload": parsed_payload,
+                "sources": sources,
+                "weather": real_weather,
+                "nail_colors": list(nail_colors or []),
+                "note": "",
+            })
             return summary, parsed_payload, sources, intent_overrides, real_weather
 
         if raw_text:
@@ -1236,6 +1346,19 @@ class DayflowService:
                 "style_research_weather": None,
             })
             logger.warning(f"[dayflow] 风格研究降级为纯文本: style={style_name}, reason={last_reason or '非 JSON 输出'}")
+            self._archive_bucket_add(archive_bucket, {
+                "kind": "research",
+                "status": "plain_text_fallback",
+                "style": style_name,
+                "query": query,
+                "system_prompt": system_prompt,
+                "raw_response": raw_text,
+                "payload": {},
+                "sources": sources,
+                "weather": None,
+                "nail_colors": list(nail_colors or []),
+                "note": f"JSON 解析失败已降级为纯文本参考（reason={last_reason or '非 JSON 输出'}）；三套结构化方案缺失，生成器拿不到 morning/afternoon/night_look",
+            })
             return summary, {}, sources, intent_overrides, None
 
         if last_reason:
@@ -1249,9 +1372,22 @@ class DayflowService:
             "style_research_sources_preview": self._render_sources_preview(sources),
             "style_research_weather": None,
         })
+        self._archive_bucket_add(archive_bucket, {
+            "kind": "research",
+            "status": "unavailable",
+            "style": style_name,
+            "query": query,
+            "system_prompt": system_prompt,
+            "raw_response": raw_text,
+            "payload": {},
+            "sources": sources,
+            "weather": None,
+            "nail_colors": list(nail_colors or []),
+            "note": f"研究彻底失败（reason={last_reason or 'grok 无返回'}），style_reference 为空串注入模板",
+        })
         return "", {}, sources, intent_overrides, None
 
-    async def _review_style_payload(self, style_name: str, payload: dict[str, Any], sources: list[dict[str, str]], persona_name: str | None = None, style_review_prompt: str | None = None, extra_requirement: str | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], bool, list[str]]:
+    async def _review_style_payload(self, style_name: str, payload: dict[str, Any], sources: list[dict[str, str]], persona_name: str | None = None, style_review_prompt: str | None = None, extra_requirement: str | None = None, archive_bucket: list[dict[str, Any]] | None = None) -> tuple[str, dict[str, Any], list[dict[str, str]], bool, list[str]]:
         """二次审查风格研究产出的穿搭方案。
 
         Returns: (final_summary, final_payload, final_sources, was_improved, issues)
@@ -1264,6 +1400,18 @@ class DayflowService:
         grok = self._find_grok_plugin()
         if grok is None:
             logger.warning(f"[dayflow-风格审查] 未找到 grok 插件，跳过审查: style={style_name}")
+            self._archive_bucket_add(archive_bucket, {
+                "kind": "review",
+                "status": "skipped_no_grok",
+                "style": style_name,
+                "query": "",
+                "system_prompt": "",
+                "raw_response": "",
+                "payload": payload,
+                "issues": [],
+                "sources": sources,
+                "note": "未找到 grok 插件，审查跳过，原方案直接采用",
+            })
             return self._render_style_reference(style_name, payload, sources), payload, sources, False, []
 
         query = f"「{style_name}」穿搭风格 经典搭配范例 高级感配色 材质组合 廓形比例 美学要点"
@@ -1275,6 +1423,18 @@ class DayflowService:
             )
         except Exception as e:
             logger.warning(f"[dayflow-风格审查] 系统提示词格式化失败: {e}")
+            self._archive_bucket_add(archive_bucket, {
+                "kind": "review",
+                "status": "skipped_prompt_error",
+                "style": style_name,
+                "query": query,
+                "system_prompt": "",
+                "raw_response": "",
+                "payload": payload,
+                "issues": [],
+                "sources": sources,
+                "note": f"审查系统提示词格式化失败（{e}），审查跳过，原方案直接采用",
+            })
             return self._render_style_reference(style_name, payload, sources), payload, sources, False, []
 
         # 用户定制要求注入审查基准：审查师也能看到用户需求，且不得删掉用户明确要求的单品
@@ -1319,6 +1479,18 @@ class DayflowService:
         if not result.get("ok"):
             last_reason = str(result.get("error") or "grok search failed")
             logger.warning(f"[dayflow-风格审查] 搜索失败: style={style_name}, reason={last_reason}")
+            self._archive_bucket_add(archive_bucket, {
+                "kind": "review",
+                "status": "search_failed",
+                "style": style_name,
+                "query": query,
+                "system_prompt": system_prompt,
+                "raw_response": str(result.get("raw") or ""),
+                "payload": payload,
+                "issues": [],
+                "sources": sources,
+                "note": f"审查搜索失败（{last_reason}），原方案直接采用",
+            })
             return self._render_style_reference(style_name, payload, sources), payload, sources, False, []
 
         raw_text = str(result.get("content") or "").strip()
@@ -1330,6 +1502,18 @@ class DayflowService:
         parsed = safe_json_loads(raw_text)
         if not isinstance(parsed, dict):
             logger.warning(f"[dayflow-风格审查] 响应解析失败: style={style_name}")
+            self._archive_bucket_add(archive_bucket, {
+                "kind": "review",
+                "status": "parse_failed",
+                "style": style_name,
+                "query": query,
+                "system_prompt": system_prompt,
+                "raw_response": raw_text,
+                "payload": payload,
+                "issues": [],
+                "sources": all_sources,
+                "note": "审查响应不是有效 JSON，原方案直接采用",
+            })
             return self._render_style_reference(style_name, payload, all_sources), payload, all_sources, False, []
 
         approved = bool(parsed.get("approved", False))
@@ -1347,6 +1531,18 @@ class DayflowService:
                 cached["reviewed"] = True
                 cached["sources"] = all_sources
                 self._save_style_research_cache()
+            self._archive_bucket_add(archive_bucket, {
+                "kind": "review",
+                "status": "approved",
+                "style": style_name,
+                "query": query,
+                "system_prompt": system_prompt,
+                "raw_response": raw_text,
+                "payload": payload,
+                "issues": issues,
+                "sources": all_sources,
+                "note": "审查通过（approved），原方案直接采用",
+            })
             return self._render_style_reference(style_name, payload, all_sources), payload, all_sources, False, issues
 
         # Clean improved payload: remove fields not expected in cached payload
@@ -1357,6 +1553,18 @@ class DayflowService:
         # 兼容：仅强制 definition + morning_look（旧版两套方案），night_look 为可选第三套
         if not improved_payload.get("definition") or not isinstance(improved_payload.get("morning_look"), dict):
             logger.warning(f"[dayflow-风格审查] 改进方案结构不完整，保留原方案: style={style_name}")
+            self._archive_bucket_add(archive_bucket, {
+                "kind": "review",
+                "status": "improved_invalid",
+                "style": style_name,
+                "query": query,
+                "system_prompt": system_prompt,
+                "raw_response": raw_text,
+                "payload": payload,
+                "issues": issues,
+                "sources": all_sources,
+                "note": "审查给出了改进方案但结构不完整（缺 definition/morning_look），保留原方案",
+            })
             return self._render_style_reference(style_name, payload, all_sources), payload, all_sources, False, issues
 
         # 若原方案含 night_look（第三套夜间居家装）而改进版缺失，从原方案补回，防止审核师误删第三套
@@ -1387,6 +1595,19 @@ class DayflowService:
             "style_research_sources_preview": self._render_sources_preview(all_sources),
         })
 
+        self._archive_bucket_add(archive_bucket, {
+            "kind": "review",
+            "status": "improved",
+            "style": style_name,
+            "query": query,
+            "system_prompt": system_prompt,
+            "raw_response": raw_text,
+            "payload": payload,
+            "issues": issues,
+            "improved_payload": improved_payload,
+            "sources": all_sources,
+            "note": "审查给出改进方案并已采用（原 payload 为审查前设计师产出，improved_payload 为改后采用版）",
+        })
         return improved_summary, improved_payload, all_sources, True, issues
 
     async def initialize(self):
@@ -2761,6 +2982,37 @@ class DayflowService:
         with self._debug_payload_lock:
             return dict(self._last_debug_payload)
 
+    def get_style_research_log(self, persona_name: str, date_str: str | None = None) -> dict[str, Any]:
+        """读取风格研究/审查档案（WebUI 调试用）。
+
+        date_str 非空：返回该人格该日的全部生成记录（records）；
+        date_str 为空：返回该人格保留期内所有日期键与各自记录数。
+        """
+        try:
+            if not self._style_log_path.exists():
+                return {"found": False, "dates": {}, "records": []}
+            loaded = json.loads(self._style_log_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                return {"found": False, "dates": {}, "records": []}
+            persona_key = self.normalize_persona_key(persona_name)
+            dates: dict[str, int] = {}
+            for key, value in loaded.items():
+                parts = str(key).split("::", 1)
+                if len(parts) != 2 or parts[0] != persona_key:
+                    continue
+                records = value.get("records") if isinstance(value, dict) else None
+                dates[parts[1]] = len(records) if isinstance(records, list) else 0
+            if not date_str:
+                return {"found": bool(dates), "dates": dict(sorted(dates.items(), reverse=True)), "records": []}
+            entry = loaded.get(f"{persona_key}::{str(date_str).strip()}")
+            records = entry.get("records") if isinstance(entry, dict) else None
+            if not isinstance(records, list):
+                return {"found": bool(dates), "dates": dict(sorted(dates.items(), reverse=True)), "records": []}
+            return {"found": True, "dates": dict(sorted(dates.items(), reverse=True)), "records": records}
+        except Exception as e:
+            logger.warning(f"[dayflow] 读取研究档案失败: persona={persona_name}, date={date_str}, error={e}")
+            return {"found": False, "dates": {}, "records": [], "error": str(e)}
+
     async def build_debug_snapshot(self, event=None, persona_name: str | None = None) -> dict[str, Any]:
         persona_ctx = await self.resolve_persona_context(event=event, persona_name=persona_name)
         resolved_name = self.normalize_persona_key(persona_ctx.get("persona_name"), persona_ctx.get("persona_id"))
@@ -3245,9 +3497,11 @@ class DayflowService:
             }
 
         persona_location = str(persona.get("location") or "").strip()
+        research_archive_bucket: list[dict[str, Any]] = []
         style_reference, style_payload, style_sources, intent_overrides, real_weather = await self._research_style_reference(
             outfit_style, extra_requirement=extra_requirement, pool_options=pool_options, location=persona_location or None, persona_name=normalized_persona_name,
             style_research_prompt=persona.get("style_research_prompt_template"), nail_colors=frozen.get("nail_colors"),
+            archive_bucket=research_archive_bucket,
         )
 
         if real_weather:
@@ -3290,7 +3544,7 @@ class DayflowService:
             elif override_item:
                 user_specified_outfit_item = override_item
             if override_style and override_style != outfit_style:
-                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, extra_requirement=extra_requirement, location=persona_location or None, persona_name=normalized_persona_name, specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day, style_research_prompt=persona.get("style_research_prompt_template"), nail_colors=frozen.get("nail_colors"))
+                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, extra_requirement=extra_requirement, location=persona_location or None, persona_name=normalized_persona_name, specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day, style_research_prompt=persona.get("style_research_prompt_template"), nail_colors=frozen.get("nail_colors"), archive_bucket=research_archive_bucket)
                 if override_weather:
                     real_weather = override_weather
                     today_weather = override_weather
@@ -3323,6 +3577,7 @@ class DayflowService:
                 outfit_style, extra_requirement=extra_requirement, location=persona_location or None, persona_name=normalized_persona_name,
                 specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day,
                 style_research_prompt=persona.get("style_research_prompt_template"),
+                archive_bucket=research_archive_bucket,
             )
             logger.info(f"[dayflow] 子款式指定重做风格研究: style={outfit_style}, variants={specified_sub_variant_names}, all_day={sub_variant_all_day}")
 
@@ -3334,12 +3589,25 @@ class DayflowService:
             # 定制日程(extra_requirement)强制重新审查，不跳过
             if review_cached.get("reviewed") and not extra_requirement:
                 logger.info(f"[dayflow-风格审查] 缓存已审查，跳过 | persona={normalized_persona_name} | style={outfit_style}")
+                self._archive_bucket_add(research_archive_bucket, {
+                    "kind": "review",
+                    "status": "skipped_review_cache",
+                    "style": outfit_style,
+                    "query": "",
+                    "system_prompt": "",
+                    "raw_response": "",
+                    "payload": style_payload,
+                    "issues": [],
+                    "sources": style_sources,
+                    "note": "该风格的研究缓存已带审查通过标记，本次生成跳过审查（复用缓存方案）",
+                })
             else:
                 try:
                     reviewed_reference, reviewed_payload, reviewed_sources, was_improved, review_issues = await self._review_style_payload(
                         outfit_style, style_payload, style_sources, persona_name=normalized_persona_name,
                         style_review_prompt=persona.get("style_review_prompt_template"),
                         extra_requirement=extra_requirement,
+                        archive_bucket=research_archive_bucket,
                     )
                     style_reference = reviewed_reference
                     style_payload = reviewed_payload
@@ -3395,6 +3663,16 @@ class DayflowService:
             "user_specified_outfit_style": user_specified_outfit_style,
         }
         prompt += build_format_priority_append_prompt(validate_persona)
+        # 研究/审查档案落盘：研究与审查均已完成、最终 prompt 已渲染，此刻信息最完整；
+        # 之后的 provider 校验失败/生成失败不影响档案价值（研究花了钱就要留痕）
+        self._flush_style_research_archive(
+            research_archive_bucket,
+            normalized_persona_name,
+            date_str,
+            outfit_style,
+            today_weather,
+            prompt,
+        )
         self._update_debug_payload({
             "persona_name": normalized_persona_name,
             "persona_desc_preview": (replacements["persona_desc"] or "")[:1200],

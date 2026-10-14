@@ -492,6 +492,7 @@ function renderScheduleContent(data) {
           <button class="btn btn-secondary btn-sm" id="btn-schedule-edit">编辑</button>
           <button class="btn btn-secondary btn-sm" id="btn-schedule-regenerate">重生成</button>
           <button class="btn btn-secondary btn-sm" id="btn-schedule-custom">定制生成</button>
+          <button class="btn btn-secondary btn-sm" id="btn-schedule-research-log">研究档案</button>
         </div>
       </div>
       ${timeline.length > 0 ? `
@@ -512,6 +513,8 @@ function renderScheduleContent(data) {
   if (regenBtn) regenBtn.addEventListener("click", () => regenerateSchedule());
   const customBtn = $("btn-schedule-custom");
   if (customBtn) customBtn.addEventListener("click", () => openCustomScheduleModal());
+  const researchLogBtn = $("btn-schedule-research-log");
+  if (researchLogBtn) researchLogBtn.addEventListener("click", () => openResearchLogModal());
 
   bindHistoryItems();
   bindTomorrowSection();
@@ -1177,6 +1180,102 @@ function regenerateSchedule() {
         toast(`触发生成失败: ${e.message}`, "error");
       }
     },
+  });
+}
+
+// 研究档案：状态 → [展示文案, 徽章类]。plain_text_fallback/unavailable 正是"午后风格放飞"最常见的前因
+const RESEARCH_STEP_STATUS_LABELS = {
+  cache_hit: ["缓存命中", "st-ok"],
+  fresh_json: ["新研究成功", "st-ok"],
+  plain_text_fallback: ["降级纯文本", "st-warn"],
+  unavailable: ["研究失败", "st-bad"],
+  unavailable_no_grok: ["grok插件缺失", "st-bad"],
+  approved: ["审查通过", "st-ok"],
+  improved: ["已采用改进", "st-ok"],
+  improved_invalid: ["改进无效", "st-warn"],
+  search_failed: ["审查搜索失败", "st-bad"],
+  parse_failed: ["审查解析失败", "st-bad"],
+  skipped_no_grok: ["审查跳过", "st-warn"],
+  skipped_prompt_error: ["审查跳过", "st-warn"],
+  skipped_review_cache: ["审查缓存跳过", "st-warn"],
+};
+
+function researchStatusBadge(kind, status) {
+  const [label, cls] = RESEARCH_STEP_STATUS_LABELS[status] || [status || "未知", "st-warn"];
+  const kindLabel = kind === "review" ? "审查" : "研究";
+  return `<span class="research-step-badge ${cls}">${kindLabel}·${esc(label)}</span>`;
+}
+
+function researchDetailBlock(title, text, open = false) {
+  const content = String(text || "").trim();
+  if (!content) return "";
+  return `
+    <details class="default-prompt-collapse research-log-collapse"${open ? " open" : ""}>
+      <summary>${esc(title)}</summary>
+      <pre class="default-prompt-pre">${esc(content)}</pre>
+    </details>`;
+}
+
+async function openResearchLogModal() {
+  const persona = state.scheduleSelectedPersona;
+  const date = state.scheduleSelectedDate || todayStr();
+  if (!persona) {
+    toast("请先选择人格", "warning");
+    return;
+  }
+  let res;
+  try {
+    res = await api.get("schedule/research_log", { persona, date });
+  } catch (e) {
+    toast(`获取研究档案失败：${e.message}`, "error");
+    return;
+  }
+  const records = (res && res.records) || [];
+  if (!records.length) {
+    showModal({
+      title: `研究档案 · ${date}`,
+      bodyHtml: `<div style="color:var(--text-secondary);line-height:1.6">该日期没有研究档案。可能原因：当日尚未生成过日程；档案生成于本功能上线之前；或流程在风格研究开始前就失败了。</div>`,
+    });
+    return;
+  }
+  const recordHtml = records.map((rec, ri) => {
+    const steps = (rec.steps || []).map((step) => {
+      const payloadJson = step.payload && Object.keys(step.payload).length ? JSON.stringify(step.payload, null, 2) : "";
+      const improvedJson = step.improved_payload && Object.keys(step.improved_payload).length ? JSON.stringify(step.improved_payload, null, 2) : "";
+      const sourcesText = (step.sources || []).map((s) => (s && (s.url || s.title)) || "").filter(Boolean).join("\n");
+      const nailText = (step.nail_colors || []).filter(Boolean).join("、");
+      // 异常状态默认展开模型原始返回，便于一眼定位降级原因
+      const openRaw = ["plain_text_fallback", "unavailable", "search_failed", "parse_failed"].includes(step.status);
+      return `
+        <div class="research-step">
+          <div class="research-step-head">
+            ${researchStatusBadge(step.kind, step.status)}
+            <span class="research-step-style">风格：${esc(step.style || "—")}</span>
+          </div>
+          ${step.note ? `<div class="research-step-note">${esc(step.note)}</div>` : ""}
+          ${nailText ? `<div class="research-step-note">指甲油既定色：${esc(nailText)}</div>` : ""}
+          ${researchDetailBlock("搜索 query", step.query)}
+          ${researchDetailBlock("系统提示词（完整）", step.system_prompt)}
+          ${researchDetailBlock("模型原始返回（完整）", step.raw_response, openRaw)}
+          ${researchDetailBlock("解析后穿搭方案 payload", payloadJson)}
+          ${researchDetailBlock("审查改进方案 payload", improvedJson)}
+          ${researchDetailBlock("参考来源", sourcesText)}
+        </div>`;
+    }).join("");
+    return `
+      <div class="research-record">
+        <div class="research-record-head">
+          <span class="research-record-time">${esc(rec.recorded_at || `第${ri + 1}次生成`)}</span>
+          ${rec.outfit_style ? `<span class="research-record-style">当日风格：${esc(rec.outfit_style)}</span>` : ""}
+          ${rec.weather ? `<span class="research-record-weather">${esc(rec.weather)}</span>` : ""}
+        </div>
+        ${steps || `<div class="research-step-note">本次生成未产生研究/审查步骤记录</div>`}
+        ${researchDetailBlock("最终生成器 prompt（完整）", rec.rendered_prompt)}
+      </div>`;
+  }).join("");
+  showModal({
+    title: `研究档案 · ${date}`,
+    bodyHtml: `<div class="research-log-body">${recordHtml}</div>`,
   });
 }
 

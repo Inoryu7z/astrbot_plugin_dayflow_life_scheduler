@@ -2430,3 +2430,104 @@ button, input, textarea, select {
     min-width: 100%;
   }
 }
+
+/* ------------------------------------------------------------------
+ * 研究档案（调试）
+ * ------------------------------------------------------------------ */
+.research-log-body {
+  max-height: 70vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.research-record {
+  border: 1px solid var(--border-normal);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.research-record-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.research-record-time {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.research-record-style,
+.research-record-weather {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.research-step {
+  border-top: 1px dashed var(--border-normal);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.research-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.research-step-style {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.research-step-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.research-step-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.research-step-badge.st-ok {
+  background: rgba(46, 160, 67, 0.15);
+  color: #1a7f37;
+}
+
+.research-step-badge.st-warn {
+  background: rgba(187, 128, 9, 0.15);
+  color: #9a6700;
+}
+
+.research-step-badge.st-bad {
+  background: rgba(207, 34, 46, 0.12);
+  color: #cf222e;
+}
+
+.research-log-collapse {
+  margin: 0;
+}
+
+.research-log-collapse > summary {
+  font-size: 12px;
+}
+
+.research-log-collapse .default-prompt-pre {
+  max-height: 260px;
+  overflow: auto;
+}

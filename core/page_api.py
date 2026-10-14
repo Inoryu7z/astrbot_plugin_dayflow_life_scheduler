@@ -93,6 +93,7 @@ class PluginPageApi:
             (f"{PAGE_API_PREFIX}/schedule/status", self.get_generation_status, ["GET"], "dayflow 日程：生成状态查询"),
             (f"{PAGE_API_PREFIX}/schedule/tomorrow", self.get_or_set_tomorrow_request, ["GET", "POST"], "dayflow 日程：明日定制要求"),
             (f"{PAGE_API_PREFIX}/schedule/tomorrow/cancel", self.cancel_tomorrow_request, ["POST"], "dayflow 日程：取消明日定制"),
+            (f"{PAGE_API_PREFIX}/schedule/research_log", self.get_research_log, ["GET"], "dayflow 日程：风格研究/审查档案（调试）"),
         ]
         for route, handler, methods, desc in routes:
             register(route, handler, methods, desc)
@@ -520,6 +521,19 @@ class PluginPageApi:
         except Exception as e:
             logger.warning(f"[dayflow-日程] 获取历史日程失败: persona={persona}, error={e}")
             return self._err(f"获取历史日程失败：{e}")
+
+    async def get_research_log(self):
+        """获取风格研究/审查档案（调试）。?persona=xxx&date=yyyy-MM-dd（date 省略时返回可用日期列表）"""
+        persona = self._query("persona")
+        date = self._query("date")
+        if not persona:
+            return self._err("persona 参数不能为空")
+        try:
+            data = self.service.get_style_research_log(persona, date or None)
+            return self._ok(data)
+        except Exception as e:
+            logger.warning(f"[dayflow-日程] 获取研究档案失败: persona={persona}, date={date}, error={e}")
+            return self._err(f"获取研究档案失败：{e}")
 
     async def save_schedule_edit(self):
         """保存手动编辑的日程。body: {persona, date, outfit, summary, outfit_style, weather, timeline}"""
