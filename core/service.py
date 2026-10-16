@@ -256,6 +256,32 @@ CUSTOM_SCHEDULE_DESIGN_APPEND = """
 # 每日按 frozen 机制抽 3 次放回，依次对应晨间/午后/夜间三套造型，代码层真随机后注入设计师。
 NAIL_POLISH_COLOR_POOL = ["车厘子红", "裸奶杏色", "奶白色", "纯黑色", "豆沙粉", "牛油果绿", "雾霾蓝", "香芋紫", "无"]
 
+# 丝袜随机池（硬编码权重；大类别×款式交叉抽取，对齐指甲油的 frozen 注入模式）。
+# 提花款即"X色镂空提花蕾丝丝袜"融合款，渔网款/提花款免厚度——细则在用户自用设计师提示词第七节。
+STOCKINGS_CATEGORIES = [("连裤袜", 2), ("过膝袜", 1), ("吊带袜", 2)]
+STOCKINGS_STYLES = [("素面基础款", 1), ("提花款", 2), ("烫饰款", 1), ("渔网款", 3), ("蕾丝款", 1), ("立体装饰款", 2)]
+
+
+def _draw_stockings() -> dict:
+    """抽两组丝袜（晨间/午后）：大类别按权重抽且两套不取重；款式按权重独立抽；不对称各独立 1/10。"""
+    cats = [c for c, _ in STOCKINGS_CATEGORIES]
+    cat_w = [w for _, w in STOCKINGS_CATEGORIES]
+    c1 = random.choices(cats, weights=cat_w)[0]
+    rest = [(c, w) for c, w in STOCKINGS_CATEGORIES if c != c1]
+    c2 = random.choices([c for c, _ in rest], weights=[w for _, w in rest])[0]
+
+    styles = [s for s, _ in STOCKINGS_STYLES]
+    style_w = [w for _, w in STOCKINGS_STYLES]
+
+    def _one(category: str) -> dict:
+        return {
+            "category": category,
+            "style": random.choices(styles, weights=style_w)[0],
+            "asymmetric": random.random() < 0.1,
+        }
+
+    return {"morning": _one(c1), "afternoon": _one(c2)}
+
 # WebUI 后台生成的总超时兜底：曾出现 LLM 调用挂死导致任务卡 1 小时、生成锁一直不释放
 WEBUI_GENERATION_TIMEOUT = 1200.0   # 主日程生成（研究+审查+生成）20 分钟
 SUBDIVISION_TIMEOUT = 600.0         # 细分 10 分钟
@@ -589,6 +615,7 @@ class DayflowService:
         core_event_driver = random.choice(core_event_drivers_pool) if core_event_drivers_pool else "任务驱动"
         effective_variation = self._effective_variation_level(configured_variation)
         nail_colors = [random.choice(NAIL_POLISH_COLOR_POOL) for _ in range(3)]
+        stockings = _draw_stockings()
         frozen = {
             "today_weather": today_weather,
             "outfit_style": outfit_style,
@@ -596,9 +623,10 @@ class DayflowService:
             "core_event_driver": core_event_driver,
             "effective_variation": effective_variation,
             "nail_colors": nail_colors,
+            "stockings": stockings,
         }
         self._frozen_randoms[cache_key] = frozen
-        logger.debug(f"[dayflow] 冻结随机值: key={cache_key}, style={outfit_style}, weather={today_weather}, nail={nail_colors}")
+        logger.debug(f"[dayflow] 冻结随机值: key={cache_key}, style={outfit_style}, weather={today_weather}, nail={nail_colors}, stockings={stockings}")
         return frozen
 
     def clear_frozen_randoms(self, store_key: str, target_date: str):
@@ -1098,6 +1126,27 @@ class DayflowService:
             lines.append("")
         return "\n".join(lines)
 
+    @staticmethod
+    def _build_stockings_injection(stockings: dict | None) -> str | None:
+        """把冻结抽定的丝袜结果拼成研究提示词注入段；结构不完整时返回 None（不注入）。"""
+        if not isinstance(stockings, dict):
+            return None
+        slot_labels = {"morning": "晨间套", "afternoon": "午后套"}
+        lines = ["丝袜款式（代码随机预选的既定结果，禁止自行更改、替换或省略）："]
+        for slot in ("morning", "afternoon"):
+            s = stockings.get(slot)
+            if not isinstance(s, dict) or not s.get("category") or not s.get("style"):
+                return None
+            desc = f"{s['category']}+{s['style']}"
+            if s["style"] == "提花款":
+                desc += "（丝袜处描述仅限\"X色镂空花藤提花蕾丝丝袜\"或\"X色镂空藤蔓提花蕾丝丝袜\"字样，禁止展开描述与厚度）"
+            elif s["style"] == "渔网款":
+                desc += "（无需描述厚度）"
+            if s.get("asymmetric"):
+                desc += "；本套启用不对称设计（两腿颜色/款式可不同）"
+            lines.append(f"{slot_labels[slot]} {desc}")
+        return "\n".join(lines)
+
     def _build_style_research_query(self, style_name: str, location: str | None = None) -> str:
         template = self._style_research_query_template()
         try:
@@ -1109,7 +1158,7 @@ class DayflowService:
             query += f" | 同时查询{str(location).strip()}今日真实天气"
         return query
 
-    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None, specified_sub_variant_names: dict[str, str | None] | None = None, sub_variant_all_day: bool = False, style_research_prompt: str | None = None, nail_colors: list[str] | None = None, archive_bucket: list[dict[str, Any]] | None = None, _retried: bool = False) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
+    async def _research_style_reference(self, style_name: str, extra_requirement: str | None = None, pool_options: dict | None = None, location: str | None = None, persona_name: str | None = None, specified_sub_variant_names: dict[str, str | None] | None = None, sub_variant_all_day: bool = False, style_research_prompt: str | None = None, nail_colors: list[str] | None = None, stockings: dict | None = None, archive_bucket: list[dict[str, Any]] | None = None, _retried: bool = False) -> tuple[str, dict[str, Any], list[dict[str, str]], dict[str, Any] | None, str | None]:
         style_name = str(style_name or "").strip()
         if not style_name:
             return "", {}, [], None, None
@@ -1145,6 +1194,7 @@ class DayflowService:
                 "sources": sources,
                 "weather": cached_weather,
                 "nail_colors": list(nail_colors or []),
+                "stockings": dict(stockings or {}),
                 "note": "缓存命中；system_prompt 为缓存产出时的历史值，不在缓存中留存",
             })
             return summary, payload, sources, None, cached_weather
@@ -1163,6 +1213,7 @@ class DayflowService:
                 "sources": [],
                 "weather": None,
                 "nail_colors": list(nail_colors or []),
+                "stockings": dict(stockings or {}),
                 "note": "未找到 grok 插件，研究彻底跳过，style_reference 为空",
             })
             return "", {}, [], None, None
@@ -1186,6 +1237,11 @@ class DayflowService:
                     "三套造型的指甲油必须分别使用上述对应颜色。"
                 )
                 logger.info(f"[dayflow-风格研究] 指甲油既定色注入: style={style_name}, nail={nail_list}")
+
+        stockings_injection = self._build_stockings_injection(stockings)
+        if stockings_injection:
+            system_prompt += f"\n\n{stockings_injection}"
+            logger.info(f"[dayflow-风格研究] 丝袜既定款注入: style={style_name}, stockings={stockings}")
 
         if has_anti_repetition:
             system_prompt += anti_repetition_append
@@ -1328,6 +1384,7 @@ class DayflowService:
                 "sources": sources,
                 "weather": real_weather,
                 "nail_colors": list(nail_colors or []),
+                "stockings": dict(stockings or {}),
                 "note": "上一次产出无效，重试一次后成功" if _retried else "",
             })
             return summary, parsed_payload, sources, intent_overrides, real_weather
@@ -1350,13 +1407,14 @@ class DayflowService:
                 "sources": sources,
                 "weather": None,
                 "nail_colors": list(nail_colors or []),
+                "stockings": dict(stockings or {}),
                 "note": f"首次尝试未产出有效结果（reason={last_reason or '非 JSON 输出'}, raw_len={len(raw_text)}），打回重写",
             })
             return await self._research_style_reference(
                 style_name, extra_requirement=extra_requirement, pool_options=pool_options, location=location,
                 persona_name=persona_name, specified_sub_variant_names=specified_sub_variant_names,
                 sub_variant_all_day=sub_variant_all_day, style_research_prompt=style_research_prompt,
-                nail_colors=nail_colors, archive_bucket=archive_bucket, _retried=True,
+                nail_colors=nail_colors, stockings=stockings, archive_bucket=archive_bucket, _retried=True,
             )
 
         if raw_text:
@@ -1393,6 +1451,7 @@ class DayflowService:
                 "sources": sources,
                 "weather": None,
                 "nail_colors": list(nail_colors or []),
+                "stockings": dict(stockings or {}),
                 "note": ("已重试一次仍失败；" if _retried else "")
                 + f"JSON 解析失败已降级为纯文本参考（reason={last_reason or '非 JSON 输出'}）；三套结构化方案缺失，生成器拿不到 morning/afternoon/night_look，且 payload 为空导致二次审查被跳过",
             })
@@ -1420,6 +1479,7 @@ class DayflowService:
             "sources": sources,
             "weather": None,
             "nail_colors": list(nail_colors or []),
+            "stockings": dict(stockings or {}),
             "note": ("已重试一次仍失败；" if _retried else "")
             + f"研究彻底失败（reason={last_reason or 'grok 无返回'}），style_reference 为空串注入模板",
         })
@@ -3434,11 +3494,13 @@ class DayflowService:
             logger.warning(f"[dayflow-细分] 生成异常: persona={persona_name}, error={e}")
             return None
 
-    def build_current_sub_activity_injection(self, persona_name: str) -> str | None:
+    def build_current_sub_activity_injection(self, persona_name: str, target_date: str | None = None) -> str | None:
         if not persona_name:
             return None
         try:
-            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            # target_date 未传时回退查今天；主注入侧（main.py on_llm_request）按
+            # schedule_switch_time 算好切换感知日期后显式传入，保证凌晨窗口读到昨日熬夜段
+            today = target_date or datetime.datetime.now().strftime("%Y-%m-%d")
             store_key = self.normalize_persona_key(persona_name)
             data = self.store.get_schedule_for_date(store_key, today)
             if not data or data.get("meta", {}).get("error"):
@@ -3475,8 +3537,13 @@ class DayflowService:
                 if start_min is not None and end_min is not None:
                     duration = end_min - start_min
                     if duration <= 0:
+                        # 跨零点段（如 23:40-05:30）：凌晨时刻（now < start）视为次日的 now 参与匹配，
+                        # 修复 0 点后 now_minutes < start_min 导致的匹配缺口
                         duration += 24 * 60
-                    if start_min <= now_minutes < start_min + duration:
+                        eff_now = now_minutes + 24 * 60 if now_minutes < start_min else now_minutes
+                    else:
+                        eff_now = now_minutes
+                    if start_min <= eff_now < start_min + duration:
                         current_idx = i
                         break
 
@@ -3581,7 +3648,7 @@ class DayflowService:
         research_archive_bucket: list[dict[str, Any]] = []
         style_reference, style_payload, style_sources, intent_overrides, real_weather = await self._research_style_reference(
             outfit_style, extra_requirement=extra_requirement, pool_options=pool_options, location=persona_location or None, persona_name=normalized_persona_name,
-            style_research_prompt=persona.get("style_research_prompt_template"), nail_colors=frozen.get("nail_colors"),
+            style_research_prompt=persona.get("style_research_prompt_template"), nail_colors=frozen.get("nail_colors"), stockings=frozen.get("stockings"),
             archive_bucket=research_archive_bucket,
         )
 
@@ -3625,7 +3692,7 @@ class DayflowService:
             elif override_item:
                 user_specified_outfit_item = override_item
             if override_style and override_style != outfit_style:
-                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, extra_requirement=extra_requirement, location=persona_location or None, persona_name=normalized_persona_name, specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day, style_research_prompt=persona.get("style_research_prompt_template"), nail_colors=frozen.get("nail_colors"), archive_bucket=research_archive_bucket)
+                style_reference, style_payload, style_sources, _, override_weather = await self._research_style_reference(override_style, extra_requirement=extra_requirement, location=persona_location or None, persona_name=normalized_persona_name, specified_sub_variant_names=specified_sub_variant_names, sub_variant_all_day=sub_variant_all_day, style_research_prompt=persona.get("style_research_prompt_template"), nail_colors=frozen.get("nail_colors"), stockings=frozen.get("stockings"), archive_bucket=research_archive_bucket)
                 if override_weather:
                     real_weather = override_weather
                     today_weather = override_weather
@@ -3735,6 +3802,26 @@ class DayflowService:
                     prompt += f"\n- 全天穿着此款，不换装"
             if outfit_adjustments:
                 prompt += f"\n- 穿搭调整：{outfit_adjustments}"
+
+        # 入睡时刻池：候选注入给模型，由模型随机决定入睡时刻（不做代码抽定）
+        sleep_pool = []
+        for _x in (persona.get("sleep_time_pool") or []):
+            _s = str(_x).strip()
+            if not _s:
+                continue
+            _m = parse_hhmm_to_minutes(_s)
+            if _m is None or _m > 6 * 60:
+                logger.warning(f"[dayflow] 入睡时刻池忽略非法/超范围候选（须为 00:00-06:00 的次日 HH:MM）: {_s}")
+                continue
+            sleep_pool.append(_s)
+        if sleep_pool:
+            prompt += (
+                "\n\n---\n【今晚入睡时刻（硬性约束）】\n"
+                f"今晚的入睡时刻（日程最后一段的 time_end）必须从以下候选中随机选择一个：{'、'.join(sleep_pool)}。\n"
+                "这是随机选择：不要总选第一个，也不要每次都选同一个，把候选视为等概率的抽签结果。\n"
+                "候选之外的时间一律不得作为入睡时刻；选定后按入睡时刻倒排深夜收尾活动。\n"
+                "本约束优先于「入睡时刻自然浮动」中的分布建议——入睡时刻池已配置时，以候选为准。"
+            )
 
         validate_persona = {
             "outfit_style": outfit_style,

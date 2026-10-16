@@ -160,7 +160,7 @@ class DayflowPlugin(Star):
 
             persona_name_for_sub = resolved_ctx.get("persona_name") if resolved_ctx else None
             if persona_name_for_sub:
-                sub_activity = self.service.build_current_sub_activity_injection(persona_name_for_sub)
+                sub_activity = self.service.build_current_sub_activity_injection(persona_name_for_sub, target_date=today)
                 if sub_activity:
                     req.system_prompt, _ = _remove_sub_activity_injection(req.system_prompt)
                     sub_injection = _build_sub_activity_injection_text(sub_activity)

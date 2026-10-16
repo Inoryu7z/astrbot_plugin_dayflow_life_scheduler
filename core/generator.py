@@ -416,7 +416,7 @@ def build_repair_prompt(
     if timeline_issue:
         mode_intro += (
             "⚠️ 特别指示：上次输出缺少 timeline 字段或 timeline 不合法。"
-            "请直接保留上次输出中已正确的内容原样不动，仅补充完整的 timeline 数组（8-10 个连续时段，覆盖 00:00-23:59）。"
+            "请直接保留上次输出中已正确的内容原样不动，仅补充完整的 timeline 数组（8-10 个连续时段，从 00:00 开始，至入睡时刻结束；结尾段可跨零点，time_end 写次日 HH:MM）。"
             "晨起准备时段的 outfit_change 必须是第一套穿搭的完整描述（首行：风格：{outfit_style}）。\n"
             "不要重新生成已正确的字段。\n"
         )

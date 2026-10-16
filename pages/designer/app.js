@@ -1245,6 +1245,16 @@ async function openResearchLogModal() {
       const improvedJson = step.improved_payload && Object.keys(step.improved_payload).length ? JSON.stringify(step.improved_payload, null, 2) : "";
       const sourcesText = (step.sources || []).map((s) => (s && (s.url || s.title)) || "").filter(Boolean).join("\n");
       const nailText = (step.nail_colors || []).filter(Boolean).join("、");
+      const stockingsParts = [];
+      if (step.stockings && typeof step.stockings === "object") {
+        for (const slot of ["morning", "afternoon"]) {
+          const s = step.stockings[slot];
+          if (s && s.category && s.style) {
+            stockingsParts.push(`${slot === "morning" ? "晨间" : "午后"} ${s.category}+${s.style}${s.asymmetric ? "（不对称）" : ""}`);
+          }
+        }
+      }
+      const stockingsText = stockingsParts.join("；");
       // 异常状态默认展开模型原始返回，便于一眼定位降级原因
       const openRaw = ["plain_text_fallback", "unavailable", "search_failed", "parse_failed"].includes(step.status);
       return `
@@ -1255,6 +1265,7 @@ async function openResearchLogModal() {
           </div>
           ${step.note ? `<div class="research-step-note">${esc(step.note)}</div>` : ""}
           ${nailText ? `<div class="research-step-note">指甲油既定色：${esc(nailText)}</div>` : ""}
+          ${stockingsText ? `<div class="research-step-note">丝袜既定款：${esc(stockingsText)}</div>` : ""}
           ${researchDetailBlock("搜索 query", step.query)}
           ${researchDetailBlock("系统提示词（完整）", step.system_prompt)}
           ${researchDetailBlock("模型原始返回（完整）", step.raw_response, openRaw)}
