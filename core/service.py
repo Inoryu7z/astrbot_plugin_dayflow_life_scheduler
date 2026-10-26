@@ -62,7 +62,7 @@ STYLE_RESEARCH_SYSTEM_PROMPT = """你是专业服饰设计师。你的任务是�
 - morning_look: object，晨间第一套穿搭方案，包含：
   - pieces: string[]，单品。每条为一段完整描述，须涵盖单品名、材质、色名、版型与设计细节，具体到可直接想象出实物。**详尽度分级**：连衣裙、上装、下装等核心服装单品描述不少于100字，须包含至少2个具体设计细节（如刺绣图案、装饰件、边缘处理、层次结构等）；内搭、袜子、腰饰等辅助单品不做字数要求，但材质与设计细节仍须具体。外搭/外套等叠穿单品仅当风格本身天然包含叠穿层次时才可存在，且仅当作为核心单品时才需满足100字要求。袜子为功能型或装饰型腿部穿着（丝袜、裤袜等），腿饰为装饰型（腿环等）。鞋子根据整体穿搭进行设计。禁止实用性描述（如"透气舒适""方便活动""适合XX天气"）
   - accessories: string[]，配饰。发饰为优先选择项，其余可选项为包/手套等，包的选择需要慎重，不可滥用，只有确认该搭配确实需要包作为辅助时才可使用。
-  - hair_makeup: string，仅描述发型。须包含具体名称及特征描述。
+  - hair_makeup: string，发型与指甲。发型须包含具体名称及特征描述；末尾须以「；指甲：<指甲长度>，<甲油颜色>」格式描述指甲，指甲长度与甲油颜色严格使用系统另行指定的既定规格，不得自行选择，「不涂」写作「；指甲：<指甲长度>，不涂甲油」。
 - afternoon_look: object，午后第二套换装方案，结构同 morning_look
 - night_look: object，夜间居家第三套穿搭方案，结构同 morning_look。用于角色晚间回到住处、沐浴后穿着的居家/睡前造型
 - difference: string[]，仅描述 morning_look 与 afternoon_look 两套外出穿搭之间的审美维度差异，1条及以上。每条应体现具体的审美维度差异（配色方向/廓形语言/材质情绪/风格倾向），禁止使用实用性理由。night_look 不参与本字段
@@ -252,14 +252,34 @@ CUSTOM_SCHEDULE_DESIGN_APPEND = """
 不得因追求风格纯度、精简或防冗余而省略用户明确要求的单品；该单品须与该风格的美学体系自然融合。
 """
 
-# 指甲油颜色随机池（硬编码，等权重；与自用设计师提示词的封闭清单一致）。
-# 每日按 frozen 机制抽 3 次放回，依次对应晨间/午后/夜间三套造型，代码层真随机后注入设计师。
-NAIL_POLISH_COLOR_POOL = ["车厘子红", "裸奶杏色", "奶白色", "纯黑色", "豆沙粉", "牛油果绿", "雾霾蓝", "香芋紫", "无"]
+# 指甲油颜色随机池（硬编码权重；与自用设计师提示词的封闭清单一致，对齐丝袜的加权抽取模式）。
+# 每日按 frozen 机制放回抽 3 次，依次对应晨间/午后/夜间三套造型，代码层真随机后注入设计师。
+NAIL_POLISH_COLORS = [
+    ("冰透车厘子红", 1),
+    ("水光裸奶杏", 1),
+    ("清透奶白色渐变", 1),
+    ("纯黑色", 1),
+    ("冰透裸粉渐变", 2),
+    ("奶霜牛油果绿", 1),
+    ("冰透雾霾蓝", 1),
+    ("冰透香芋紫", 1),
+    ("不涂", 0.5),
+    ("冰透深蓝猫眼", 0.5),
+]
+# 指甲长度固定为长指甲（介于短甲与超长甲之间），随甲油颜色一并注入。
+NAIL_LENGTH = "长指甲"
 
 # 丝袜随机池（硬编码权重；大类别×款式交叉抽取，对齐指甲油的 frozen 注入模式）。
 # 提花款即"X色镂空提花蕾丝丝袜"融合款，渔网款/提花款免厚度——细则在用户自用设计师提示词第七节。
 STOCKINGS_CATEGORIES = [("连裤袜", 2), ("过膝袜", 1), ("吊带袜", 2)]
 STOCKINGS_STYLES = [("素面基础款", 1), ("提花款", 2), ("烫饰款", 1), ("渔网款", 3), ("蕾丝款", 1), ("立体装饰款", 2)]
+
+
+def _draw_nail_colors() -> list[str]:
+    """按权重放回抽三色（晨间/午后/夜间各一次）。"""
+    colors = [c for c, _ in NAIL_POLISH_COLORS]
+    weights = [w for _, w in NAIL_POLISH_COLORS]
+    return [random.choices(colors, weights=weights)[0] for _ in range(3)]
 
 
 def _draw_stockings() -> dict:
@@ -614,7 +634,7 @@ class DayflowService:
         schedule_main_type = random.choice(schedule_main_types_pool) if schedule_main_types_pool else "日常常规型"
         core_event_driver = random.choice(core_event_drivers_pool) if core_event_drivers_pool else "任务驱动"
         effective_variation = self._effective_variation_level(configured_variation)
-        nail_colors = [random.choice(NAIL_POLISH_COLOR_POOL) for _ in range(3)]
+        nail_colors = _draw_nail_colors()
         stockings = _draw_stockings()
         frozen = {
             "today_weather": today_weather,
@@ -847,7 +867,7 @@ class DayflowService:
                     lines.append(f"{label}配饰：")
                     lines.extend(f"- {item}" for item in accessories)
                 if hair_makeup:
-                    lines.append(f"{label}发型：{hair_makeup}")
+                    lines.append(f"{label}发型/美甲：{hair_makeup}")
             elif isinstance(look, list):
                 clipped = self._clip_list(look, max_items=8)
                 if clipped:
@@ -1232,11 +1252,13 @@ class DayflowService:
             nail_list = [str(c).strip() for c in nail_colors if str(c or "").strip()]
             if len(nail_list) == 3:
                 system_prompt += (
-                    f"\n\n指甲油颜色（代码随机预选的既定结果，禁止自行更改、替换或省略）："
-                    f"晨间 {nail_list[0]}、午后 {nail_list[1]}、夜间 {nail_list[2]}（「无」=不涂甲油）。"
-                    "三套造型的指甲油必须分别使用上述对应颜色。"
+                    f"\n\n指甲（代码随机预选的既定结果，禁止自行更改、替换或省略）："
+                    f"三套造型的指甲长度统一为{NAIL_LENGTH}（介于短甲与超长甲之间），禁止改写为短甲或超长甲。"
+                    f"指甲油颜色：晨间 {nail_list[0]}、午后 {nail_list[1]}、夜间 {nail_list[2]}（「不涂」=不涂甲油，保持素甲）。"
+                    f"每套必须把指甲写进该套 hair_makeup 字段末尾，格式为「；指甲：{NAIL_LENGTH}，<甲油颜色>」，"
+                    f"「不涂」时写作「；指甲：{NAIL_LENGTH}，不涂甲油」。"
                 )
-                logger.info(f"[dayflow-风格研究] 指甲油既定色注入: style={style_name}, nail={nail_list}")
+                logger.info(f"[dayflow-风格研究] 指甲既定规格注入: style={style_name}, nail={nail_list}, length={NAIL_LENGTH}")
 
         stockings_injection = self._build_stockings_injection(stockings)
         if stockings_injection:
